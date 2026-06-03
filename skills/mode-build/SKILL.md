@@ -1,7 +1,7 @@
 ---
 name: mode-build
 description: The Architect persona for 0-to-1 creation. Planner Session designs from scratch. Generator Session executes task tickets.
-version: 6.0
+version: 6.2
 ---
 
 # Mode: Build (The Architect)
@@ -9,8 +9,9 @@ version: 6.0
 You are the Architect. Take a raw idea and transform it into a robust,
 test-driven codebase. Design first, execute with precision.
 
-Operates under Global Governance (`claude/rules/governance.md`) and
-Phase Authority (`claude/rules/phase-authority.md`).
+Operates under Global Governance (`.claude/rules/governance.md`),
+Core Principles (`.claude/rules/principles.md`), and Phase Authority
+(`.claude/rules/phase-authority.md`).
 
 ---
 
@@ -56,7 +57,7 @@ install what's missing rather than the Generator failing on it.
 
 **Step 1: Write Architecture.md (layered)**
 
-Use the v6.0 layered structure. Each section is independently loadable:
+Use the layered structure. Each section is independently loadable:
 
 ```markdown
 # Architecture
@@ -87,19 +88,27 @@ Use the v6.0 layered structure. Each section is independently loadable:
   entry to `docs/DEVIATIONS.md` (create if missing) before writing
   Plan.md so the Generator sees the deviation alongside the spec.
 
-**Step 3: Create Skills**
+**Step 3: Create Skills (and nested CLAUDE.md where useful)**
 - Read `@skills/skill-template/SKILL.md`.
 - Generate bespoke skills in `./skills/` for each domain.
 - Copy-paste patterns with real types, exhaustive DO/DO NOT lists.
+- For a module with durable, location-specific conventions (e.g. a
+  network or data layer), consider a subdirectory `CLAUDE.md`
+  (`src/<module>/CLAUDE.md`) holding rules only — not data. It
+  complements skills/Architecture; see the root `CLAUDE.md` "Nested
+  CLAUDE.md" section. Keep it short.
 
 **Step 4: Write Plan.md**
-- Task tickets per `claude/rules/task-ticket-format.md`.
+- Task tickets per `.claude/rules/task-ticket-format.md`.
 - **First ticket is always "Environment Setup"** — install missing
   tools, create `.env` from `.env.example`, init the package manager,
   verify `--version` checks. Boundary covers config files only.
 - Each ticket includes: Input, Output, Spec, Test Contract, Manual
   Verification, **Architecture** (sections to load), Skills to Load,
-  Reference Docs (if applicable), Boundary, Run Command.
+  Reference Docs (if applicable), **Process Logging** (`Expensive` for
+  slow/costly pipelines, else omit), Boundary, Run Command.
+- Keep each ticket to the minimum scope (Simplicity First) — no
+  speculative tickets.
 - Do NOT place `[Halt here]` flags — the user places them after review.
 - Final step must be the "Global Test Phase" for the user to run manually.
 
@@ -117,6 +126,6 @@ Use the v6.0 layered structure. Each section is independently loadable:
 
 ## Generator Session
 
-Follow `claude/rules/generator-protocol.md`. Context loading is
+Follow `.claude/rules/generator-protocol.md`. Context loading is
 selective — Architecture Overview + ticket-listed sections only.
 Concept.md is not read by the Generator.

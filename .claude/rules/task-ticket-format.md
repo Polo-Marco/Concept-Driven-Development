@@ -29,6 +29,7 @@ The Generator executes these tickets mechanically.
 **Architecture:** [Sections of Architecture.md to read, comma-separated]
 **Skills to Load:** @skills/[relevant-skill]/SKILL.md
 **Reference Docs:** @docs/[file].md (Section: [Name])   ← optional
+**Process Logging:** [Expensive | none]   ← optional, default none
 **Boundary:** [Exact directories/files the Generator may touch]
 **Run Command:** [Exact command to run tests for this step]
 ```
@@ -62,8 +63,15 @@ When this field is present, the Generator also reads
 `docs/DEVIATIONS.md` to know which parts of the spec have been
 superseded.
 
+**Process Logging:** Optional. Set to `Expensive` when the ticket
+implements a slow/costly pipeline (OCR, long agentic chains, batch
+jobs). The Generator then emits structured stage logs per
+`.claude/rules/governance.md` §3. Default `none` — do NOT set it on
+short, cheap functions (over-engineering).
+
 **Boundary:** Every file the Generator may touch. Anything outside
-triggers a session stop.
+triggers a session stop. If a directory in the Boundary has a
+subdirectory `CLAUDE.md`, its conventions bind the ticket.
 
 **Run Command:** Exact shell command. Copy-pasteable.
 
@@ -77,6 +85,9 @@ Before ending the Planner session, verify for each ticket:
 - Is the Test Contract specific enough to write tests from?
 - Does Manual Verification tell the user exactly what to check?
 - Does the **Architecture:** field list every section the ticket needs?
+- Is the ticket scoped to the minimum change (no speculative work)?
+- If it's an expensive/long-running pipeline, is **Process Logging**
+  set to `Expensive`?
 - If a Reference Doc applies, is it listed (and any deviation logged
   in `docs/DEVIATIONS.md`)?
 

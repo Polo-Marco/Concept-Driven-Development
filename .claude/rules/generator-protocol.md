@@ -12,7 +12,7 @@ When the user types `start execution`, follow this protocol.
   - If both exist → ask the user which to execute.
   - If neither exists → tell the user there is nothing to execute.
 
-## Step 2: Load Context (v6.0 — selective)
+## Step 2: Load Context (selective)
 
 Load context in this order:
 
@@ -28,6 +28,9 @@ Load context in this order:
 5. If the ticket has a **Reference Docs:** field, read each referenced
    doc in `docs/` AND read `docs/DEVIATIONS.md` to know which parts
    of the original spec have been superseded.
+6. For each directory the ticket's **Boundary** touches, read the
+   nearest subdirectory `CLAUDE.md` (if any) as read-only module
+   context. Its conventions are binding for files in that directory.
 
 `Concept.md` is NOT loaded by the Generator. The Architecture Overview
 provides sufficient project context for execution.
@@ -62,7 +65,15 @@ For each ticket, in order:
 ### 3d. Self-Review
 - Security: any hardcoded secrets?
 - Boundary: any files touched outside Boundary?
-- Alignment: does code match the loaded Architecture sections?
+- Simplicity & surgery (`.claude/rules/principles.md`): is this the
+  minimum code for the ticket? Any speculative feature, single-use
+  abstraction, or change to adjacent code that the ticket didn't ask
+  for? Did you orphan any imports/symbols?
+- Alignment: does code match the loaded Architecture sections and any
+  nested `CLAUDE.md` conventions?
+- Logging: if the ticket is flagged as an expensive/long-running
+  pipeline, does it emit structured stage logs per
+  `.claude/rules/governance.md` §3?
 - Reference Docs: if a Reference Doc is listed, does the code respect
   it (or follow a logged deviation in `docs/DEVIATIONS.md`)?
 - Skill compliance: every DO/DO NOT rule followed?

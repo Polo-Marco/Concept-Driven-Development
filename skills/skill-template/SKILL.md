@@ -2,10 +2,10 @@
 name: skill-template
 description: Standard for bespoke execution skills. The Planner reads this during Spec Phase to write skills the Generator can follow mechanically.
 author: framework
-version: 6.0
+version: 6.2
 ---
 
-# Skill Template Standard (v6.0)
+# Skill Template Standard (v6.2)
 
 ## Purpose
 
@@ -70,7 +70,7 @@ When the Planner revises a skill:
 
 Generator must NEVER modify skill files.
 
-## 5. Architecture.md Coupling (v6.0)
+## 5. Architecture.md Coupling
 
 Skills reference real types and endpoints from `Architecture.md`.
 The document is layered — every skill should declare which sections

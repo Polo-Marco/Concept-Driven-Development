@@ -17,6 +17,7 @@ The Evaluator Session has zero authority over everything except
 | `Plan.md` / `Triage.md` | Read / Write | **Read only** (mark `[x]`) | **Read only** |
 | `CHANGELOG.md` | Read / Write | **Append only** | **Read only** |
 | `./skills/**` | Read / Write / Create | **Read only** | **Read only** |
+| `**/CLAUDE.md` (nested) | Read / Write / Create | **Read only** | **Read only** |
 | `docs/*.md` (originals) | **Read only** | **Read only** | **Read only** |
 | `docs/DEVIATIONS.md` | Read / Append | **Read only** | **Read only** |
 | `Evaluation.md` | — | — | Read / Write |
@@ -50,10 +51,12 @@ During a Generator Session, the agent must NEVER:
 - Work around a spec gap.
 - Add TODO placeholders as a substitute for stopping.
 - Create files outside the Boundary.
-- Modify Concept.md, Architecture.md, Plan.md/Triage.md, skills, or
-  any file under `docs/`.
+- Modify Concept.md, Architecture.md, Plan.md/Triage.md, skills, any
+  `CLAUDE.md` (root or nested), or any file under `docs/`.
 - Read Architecture sections beyond Overview + the ticket's
-  **Architecture:** field (selective loading is mandatory).
+  **Architecture:** field (selective loading is mandatory). Nested
+  `CLAUDE.md` files for touched directories ARE loaded as read-only
+  context.
 
 ## Evaluator Prohibitions
 

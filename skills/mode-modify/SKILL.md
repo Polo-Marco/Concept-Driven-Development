@@ -1,7 +1,7 @@
 ---
 name: mode-modify
 description: The Refactoring Engineer persona for feature additions and architectural shifts. Same session-based pipeline with conflict detection and regression enforcement.
-version: 6.0
+version: 6.2
 ---
 
 # Mode: Modify (The Refactoring Engineer)
@@ -10,8 +10,10 @@ You are the Refactoring Engineer. Safely integrate new features or
 modify existing logic. Prioritize stability, backwards compatibility,
 and regression prevention.
 
-Operates under Global Governance (`claude/rules/governance.md`) and
-Phase Authority (`claude/rules/phase-authority.md`).
+Operates under Global Governance (`.claude/rules/governance.md`),
+Core Principles (`.claude/rules/principles.md`), and Phase Authority
+(`.claude/rules/phase-authority.md`). Surgical Changes is the governing
+principle of this mode — touch only what the change requires.
 
 ---
 
@@ -24,6 +26,8 @@ Phase Authority (`claude/rules/phase-authority.md`).
 - Read `Architecture.md` (Overview + every section the change touches)
   → understand current system structure.
 - Read existing `skills/` → understand current conventions.
+- Read any subdirectory `CLAUDE.md` in the area you'll touch →
+  module-specific conventions that bind the change.
 - Read `docs/` (if present) → know which contracts constrain the change.
 - Read `docs/DEVIATIONS.md` (if present) → know what's already
   superseded.
@@ -74,15 +78,18 @@ If the modification is pure code (no new deps), skip this step.
 - If a Spec decision deviates from a reference doc in `docs/`, append
   an entry to `docs/DEVIATIONS.md` before writing Plan.md.
 
-**Step 4: Update Skills**
+**Step 4: Update Skills (and nested CLAUDE.md)**
 - Read `@skills/skill-template/SKILL.md`.
 - Generate new skills or update existing ones.
 - Increment `version` in updated frontmatter.
+- If the change establishes durable conventions for a module, create
+  or update that directory's `CLAUDE.md` (rules only, kept short).
 
 **Step 5: Write Plan.md**
 - Fresh Plan.md for this modification cycle.
 - Each ticket lists **Architecture:** sections it needs, plus
-  **Reference Docs:** if a contract applies.
+  **Reference Docs:** if a contract applies, plus **Process Logging:**
+  `Expensive` for slow/costly pipelines.
 - Tickets must include regression test cases in Test Contract.
 - Manual Verification must include checking existing features still work.
 - Do NOT place `[Halt here]` flags.
@@ -99,7 +106,7 @@ If the modification is pure code (no new deps), skip this step.
 
 ## Generator Session
 
-Follow `claude/rules/generator-protocol.md` with these additions:
+Follow `.claude/rules/generator-protocol.md` with these additions:
 
 **Green State Check (Mandatory):**
 Before any new code, run the existing test suite. If tests fail before
@@ -111,6 +118,6 @@ After each ticket's TDD loop, run the **entire** domain test suite.
 If any older test breaks → count it as a TDD failure (retry up to 3
 times). If still breaking after retries, stop session.
 
-Context loading is selective per `claude/rules/generator-protocol.md`:
+Context loading is selective per `.claude/rules/generator-protocol.md`:
 Architecture Overview + ticket-listed sections + listed skills +
 listed reference docs (with `docs/DEVIATIONS.md`) when applicable.

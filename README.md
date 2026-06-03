@@ -1,10 +1,14 @@
-# Vibe Coding Framework 6.0
+# Concept-Driven Development (CDD) 6.2
 
 A structured AI development framework built on a session-based pipeline.
 The Planner designs. The Generator builds. The Evaluator (optional)
 audits. You sign off. Git is the checkpoint system.
 
-**Works with Claude Code and Cursor.**
+The name says the method: every line of code traces back to an explicit
+**Concept** and **Architecture** agreed *before* building — not invented
+mid-stream by the agent.
+
+**Works with Claude Code and Cursor.** *(Formerly "Vibe Coding Framework.")*
 
 ## The Problem
 
@@ -19,11 +23,21 @@ AI coding agents fail in predictable ways:
    tools, missing `.env`, missing package managers.
 6. **Spec drift.** Implementations slowly diverge from external
    contracts (API specs, design systems) without anyone noticing.
+7. **Over-engineering.** The agent adds speculative features,
+   abstractions, and config nobody asked for.
+8. **Blind merges.** Asked to combine two codebases, the agent plans
+   before it understands either version — and produces a mess.
+9. **Expensive debugging.** When a slow pipeline (OCR, long agentic
+   chains) fails, reproducing the failure to debug it is costly.
 
-This framework solves all six with a strict Planner → Generator →
+This framework addresses all nine with a strict Planner → Generator →
 Evaluator pipeline, structured files as external memory, layered
-Architecture for selective loading, an environment audit baked into
-the Planner, and `docs/` + `DEVIATIONS.md` for tracked spec drift.
+Architecture and nested `CLAUDE.md` for selective loading, always-on
+engineering **principles** (simplicity, surgical change), an
+environment audit baked into the Planner, a dedicated `[/merge]` mode
+that models each source *before* merging, opt-in process logging for
+expensive pipelines, and `docs/` + `DEVIATIONS.md` for tracked spec
+drift.
 
 ## How It Works
 
@@ -34,17 +48,18 @@ Planner Session              Generator Session            Evaluator Session
 ────────────────             ─────────────────            ──────────────────
 [/build] / [/modify]         start execution              [/evaluate]
 [/debug] / [/migrate]
+[/merge]
 
-Ask: interrogate user        Read Architecture Overview   Read plan + diff
-Env audit                    Read ticket → load only      Run tests
-Spec: write core files       the sections it lists        Write Evaluation.md
-      write Plan/Triage      TDD loop per ticket          (no commit)
-      log deviations         Commit after each ticket
-Git commit all
-STOP                         STOP when done               STOP
+Ask: interrogate user        Read Architecture Overview   Independently audit:
+Env audit                    Read ticket → load only       run code/tests,
+Spec: write core files        the sections it lists        check Concept/docs,
+      write Plan/Triage      TDD loop per ticket           simplicity, context
+      log deviations         Commit after each ticket     Write Evaluation.md
+Git commit all                                             with a verdict
+STOP                         STOP when done               STOP (no commit)
 
      ↓                            ↓                            ↓
-User reviews plan           User runs tests            User follows checklist
+User reviews plan           User runs tests            User acts on verdict
 User places [Halt here]     User can run [/evaluate]   User deletes Plan +
   (optional)                                              Evaluation
 ```
@@ -57,9 +72,11 @@ needs.
 task tickets and executes them literally. Selective context loading
 keeps it focused on the sections each ticket actually needs.
 
-**Evaluator Session** is optional. It cannot modify code — it produces
-`Evaluation.md`, a checklist that lets a non-expert user audit the
-output thoroughly. Useful when working in unfamiliar domains.
+**Evaluator Session** is optional and independent. It cannot modify
+code — it runs the output, cross-checks it against the Concept,
+Architecture, and docs, audits for redundancy and missing context, and
+writes `Evaluation.md` with a clear verdict. Useful when working in
+unfamiliar domains or after a merge.
 
 **You are the final Evaluator.** You sign off when the work is done.
 
@@ -74,7 +91,7 @@ Git commits at each ticket give you clean recovery points:
 - **Partial success?** Keep what worked, start a new Planner session
   to address what didn't.
 
-### The Five Modes
+### The Six Modes
 
 | Command | Persona | Purpose |
 |---|---|---|
@@ -82,11 +99,24 @@ Git commits at each ticket give you clean recovery points:
 | `[/modify]` | The Refactoring Engineer | Feature additions, refactoring |
 | `[/debug]` | The QA Lead | Root-cause analysis, bug fixing |
 | `[/migrate]` | Migration Specialist | Bring an existing codebase under the framework |
-| `[/evaluate]` | The Evaluator | Audit a completed Generator session |
+| `[/merge]` | Integration Architect | Combine two+ existing projects, Architecture-first |
+| `[/evaluate]` | The Auditor | Independently audit a completed Generator session |
 
-Planner modes (`build` / `modify` / `debug`) drive the Planner →
-Generator pipeline. `[/migrate]` is Planner-only. `[/evaluate]` runs
-after the Generator and is optional.
+Planner modes (`build` / `modify` / `debug` / `merge`) drive the
+Planner → Generator pipeline. `[/migrate]` is Planner-only.
+`[/evaluate]` runs after the Generator and is optional.
+
+### Always-On Principles
+
+Three engineering principles apply in every session
+(`.claude/rules/principles.md`):
+
+- **Simplicity First** — minimum code that satisfies the ticket; no
+  speculative features or abstractions.
+- **Surgical Changes** — touch only what the ticket requires; match
+  existing style; don't refactor what isn't broken.
+- **Think Before Coding** — state assumptions and surface trade-offs
+  before building (the "concept-driven" half of the pipeline).
 
 ### Phase-Based Authority
 
@@ -99,6 +129,7 @@ Authority binds to the session type, not the model:
 | Plan.md / Triage.md | Read / Write | Read only (mark `[x]`) | Read only |
 | CHANGELOG.md | Read / Write | Append only | Read only |
 | skills/ | Read / Write / Create | Read only | Read only |
+| `**/CLAUDE.md` (nested) | Read / Write / Create | Read only | Read only |
 | docs/*.md | Read only | Read only | Read only |
 | docs/DEVIATIONS.md | Read / Append | Read only | Read only |
 | Evaluation.md | — | — | Read / Write |
@@ -113,18 +144,75 @@ Authority binds to the session type, not the model:
 | `CHANGELOG.md` | Persistent | What changed, when |
 | `Plan.md` | **Ephemeral** | Task tickets — deleted after the loop |
 | `Triage.md` | **Ephemeral** | Bug hypotheses — deleted after the loop |
-| `Evaluation.md` | **Ephemeral** | Evaluator checklist — deleted after sign-off |
+| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** | `[/merge]` per-source models + conflict map |
+| `Evaluation.md` | **Ephemeral** | Evaluator verdict — deleted after sign-off |
 | `skills/` | Persistent | Execution patterns, rules, conventions |
+| `**/CLAUDE.md` (nested) | Persistent | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | User-maintained | External reference docs (immutable to agents) |
 | `docs/DEVIATIONS.md` | Planner-appendable | Tracked departures from reference docs |
 
-## What's New in 6.0
+## What's New in 6.2
 
-### 1. Layered Architecture.md (selective loading)
+### 1. Renamed: Concept-Driven Development
 
-`Architecture.md` is now a layered document. The Generator always
-reads `## Overview` (a self-contained 20–30-line snapshot) and only
-the sections each ticket lists in its `**Architecture:**` field:
+The framework's method *is* concept-driven — design from an explicit
+Concept and Architecture before writing code. The name now matches.
+Rules live under the conventional `.claude/rules/` directory (dotted,
+matching Claude Code's convention).
+
+### 2. Always-on engineering principles
+
+`.claude/rules/principles.md` adds **Simplicity First** and **Surgical
+Changes** (with **Think Before Coding** reinforcing the Planner). These
+curb over-engineering and scope creep, and the Generator's self-review
+now checks against them.
+
+### 3. Nested `CLAUDE.md` (layered, location-triggered context)
+
+Subdirectory `CLAUDE.md` files (e.g. `src/<module>/CLAUDE.md`) hold
+durable, module-specific conventions and auto-load when the agent works
+in that directory. They **complement** the layered `Architecture.md`
+(loaded per-ticket) and bespoke skills — not replace them. Keep them to
+rules, not data.
+
+### 4. `[/merge]` mode — Architecture-first project merging
+
+A dedicated Planner mode for combining two or more existing projects.
+It is forbidden from designing the union until it has reverse-engineered
+an Architecture model of **every** source and written a
+`Merge-Analysis.md` conflict map. This fixes the "blind merge" failure.
+
+### 5. Redefined Evaluator — independent Auditor
+
+`[/evaluate]` is no longer a checklist that restates TDD. The Auditor
+runs four independent audits and emits a verdict:
+1. **Execution** — actually runs tests (and the app where feasible);
+   trusts no prior claim of success.
+2. **Document/Concept consistency** — cross-checks Concept ↔
+   Architecture ↔ docs ↔ code; flags untracked deviations.
+3. **Simplicity / redundancy** — audits against the principles.
+4. **Context sufficiency** — flags missing/outdated documentation
+   (e.g. a new package with no usage doc).
+
+### 6. Opt-in process logging for expensive pipelines
+
+Tickets can set **Process Logging: Expensive**. The Generator then emits
+structured stage logs (stage, input summary, timing, success/failure)
+so slow/costly pipelines (OCR, long agentic chains) are debuggable
+without expensive re-runs. Logging only — no caching, no bespoke
+framework, and never applied to cheap functions.
+
+### Carried over from 6.0
+
+- **Layered Architecture.md** with selective loading.
+- **Environment audit** baked into the Planner.
+- **Reference docs** in `docs/` with `DEVIATIONS.md` for tracked drift.
+
+## Layered Architecture.md (selective loading)
+
+`Architecture.md` is a layered document. The Generator always reads
+`## Overview` (a self-contained 20–30-line snapshot) and only the
+sections each ticket lists in its `**Architecture:**` field:
 
 ```markdown
 # Architecture
@@ -144,39 +232,7 @@ Tickets declare what they need:
 
 Use `Full` to load the entire document.
 
-### 2. Environment Audit in the Planner
-
-Before writing Plan.md the Planner runs CLI checks (`python --version`,
-`uv --version`, `node --version`, …) and inspects config files
-(`pyproject.toml`, `.env.example`, …). Findings land in
-`Architecture.md ## Environment`, and the **first ticket of every Plan
-is "Environment Setup"** — install missing tools, create `.env`, init
-the package manager. The Generator stops failing on missing prereqs.
-
-`[/modify]` does the same audit if the change introduces new
-dependencies. `[/migrate]` audits during the codebase scan.
-
-### 3. Evaluator Session (`[/evaluate]`)
-
-A third session type. After the Generator finishes, run
-`[/evaluate]`. The Evaluator reads the plan, the git diff, and
-`docs/DEVIATIONS.md`; runs the test suite; and writes
-`Evaluation.md` containing:
-
-- Test results (pass / fail / coverage)
-- Architecture compliance (every endpoint / model named in
-  `Architecture.md` is checked)
-- Code-quality smells (hardcoded secrets, leftover TODOs, generic
-  excepts)
-- Manual verification checklist — aggregated from every ticket's
-  `Manual Verification` field, expanded into step-by-step instructions
-  a non-expert user can follow
-- Deviations from reference docs (flagged if not logged)
-
-The Evaluator **cannot modify code**. Fixes go through a fresh
-Planner → Generator cycle.
-
-### 4. Reference Docs with Deviation Tracking
+## Reference Docs with Deviation Tracking
 
 A `docs/` directory holds external specs the user wants the agents to
 respect — API contracts, design systems, SDK manuals. Originals are
@@ -199,7 +255,7 @@ Tickets opt in:
 When the Planner makes a decision that conflicts with a reference
 doc, it appends to `docs/DEVIATIONS.md` in the same session — the
 Generator then knows which parts of the spec are current. The
-Evaluator flags any code that contradicts a reference doc without
+Auditor flags any code that contradicts a reference doc without
 a logged deviation.
 
 `DEVIATIONS.md` format:
@@ -219,8 +275,9 @@ a logged deviation.
 ```
 your-project/
 ├── CLAUDE.md                       ← Router (auto-loaded by Claude Code & Cursor)
-├── claude/rules/
-│   ├── governance.md               ← Git, security, TDD, file lifecycle
+├── .claude/rules/
+│   ├── principles.md               ← Simplicity, Surgical change, Think-first
+│   ├── governance.md               ← Git, security, process logging, TDD, lifecycle
 │   ├── phase-authority.md          ← Authority matrix, boundary rules
 │   ├── generator-protocol.md       ← Selective context load, retry, halt
 │   └── task-ticket-format.md       ← Ticket format with Architecture: + Reference Docs:
@@ -230,15 +287,18 @@ your-project/
 │   ├── mode-modify/SKILL.md        ← The Refactoring Engineer
 │   ├── mode-debug/SKILL.md         ← The QA Lead
 │   ├── mode-migrate/SKILL.md       ← Migration Specialist
-│   └── mode-evaluate/SKILL.md      ← The Evaluator (new in 6.0)
-├── docs/                           ← User-maintained reference docs (new in 6.0)
+│   ├── mode-merge/SKILL.md         ← Integration Architect (new in 6.2)
+│   └── mode-evaluate/SKILL.md      ← The Auditor
+├── src/
+│   └── <module>/CLAUDE.md          ← Optional nested module rules (new in 6.2)
+├── docs/                           ← User-maintained reference docs
 │   ├── api-contract.md
 │   ├── design-system.md
 │   └── DEVIATIONS.md
 ├── Concept.md                      ← Vision (persistent)
 ├── Architecture.md                 ← Layered design (persistent)
 ├── Plan.md                         ← Work order (ephemeral)
-├── Evaluation.md                   ← Evaluator output (ephemeral)
+├── Evaluation.md                   ← Auditor output (ephemeral)
 ├── CHANGELOG.md                    ← History (persistent)
 └── README.md
 ```
@@ -267,11 +327,12 @@ Add the framework to your project:
 
 ```bash
 mkdir my-project && cd my-project && git init
-# Copy: CLAUDE.md, claude/, skills/ into project root
+# Copy: CLAUDE.md, .claude/, skills/ into project root
 ```
 
 Claude Code auto-loads `CLAUDE.md` on startup. Rule files in
-`claude/rules/` are read on-demand via the router.
+`.claude/rules/` are read on-demand via the router. Nested `CLAUDE.md`
+files auto-load when the agent works in their directory.
 
 ### Option B: Cursor
 
@@ -280,7 +341,7 @@ files into your project:
 
 ```bash
 mkdir my-project && cd my-project && git init
-# Copy: CLAUDE.md, claude/, skills/ into project root
+# Copy: CLAUDE.md, .claude/, skills/ into project root
 ```
 
 ### Both tools, same files
@@ -325,12 +386,13 @@ Agent:   "Generator session complete. Ready for your evaluation."
 ```
 You:     [/evaluate]
 
-Agent:   [Reads plan + diff + reference docs, runs tests]
-Agent:   [Writes Evaluation.md]
-Agent:   "Evaluation complete. Review Evaluation.md."
+Agent:   [Runs the four audits: execution, consistency, simplicity,
+          context]
+Agent:   [Writes Evaluation.md with a verdict + prioritized fixes]
+Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
 ```
 
-**You sign off.** Run the checklist. If satisfied, delete Plan.md and
+**You sign off.** Act on the verdict. If satisfied, delete Plan.md and
 Evaluation.md.
 
 ### Modifying
@@ -338,7 +400,8 @@ Evaluation.md.
 ```
 You:     [/modify] Add batch upload with concurrent PDF processing
 
-Agent:   [Reads Concept.md, Architecture sections, docs/DEVIATIONS.md]
+Agent:   [Reads Concept.md, Architecture sections, nested CLAUDE.md,
+          docs/DEVIATIONS.md]
 Agent:   "Warning: Current pipeline is synchronous. Batch processing
           needs async. Options: ..."
 
@@ -374,22 +437,39 @@ Agent:   [Writes Concept.md, layered Architecture.md (with Environment
           docs/DEVIATIONS.md. No code changes.]
 ```
 
+### Merging Two Projects
+
+```
+You:     [/merge] Combine agent-v1/ and agent-v2/ into one project
+
+Agent:   [Reverse-engineers Architecture-v1.md and Architecture-v2.md
+          FIRST, writes Merge-Analysis.md (features, overlaps,
+          conflicts), then asks which features/implementations win]
+
+You:     proceed to spec
+
+Agent:   [Writes unified Concept.md + Architecture.md, skills for the
+          target conventions, Plan.md sequencing the integration with
+          regression coverage]
+
+You:     start execution
+```
+
 ### Evaluating
 
 ```
 You:     [/evaluate]
 
-Agent:   [Reads Plan.md, Architecture Overview, docs/DEVIATIONS.md,
-          git diff from planner commit. Runs the test suite.]
-Agent:   [Writes Evaluation.md with test results, architecture
-          compliance, code-quality checks, manual verification
-          checklist, deviations.]
-Agent:   "Evaluation complete. Review Evaluation.md."
+Agent:   [Audit 1: runs the test suite + app. Audit 2: Concept ↔
+          Architecture ↔ docs ↔ code consistency. Audit 3: simplicity
+          /redundancy. Audit 4: context sufficiency.]
+Agent:   [Writes Evaluation.md with a verdict + prioritized fix list.]
+Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
 ```
 
 ## Key Concepts
 
-### Task Tickets (v6.0)
+### Task Tickets
 
 ```markdown
 ### Phase 2, Step 3: Build Extraction Pipeline
@@ -414,6 +494,7 @@ Agent:   "Evaluation complete. Review Evaluation.md."
 **Architecture:** Overview, Data Models
 **Skills to Load:** @skills/fastapi-backend/SKILL.md
 **Reference Docs:** @docs/api-contract.md (Section: Documents)
+**Process Logging:** Expensive
 **Boundary:** src/pipeline/, tests/test_extractor.py
 **Run Command:** uv run pytest tests/test_extractor.py -v
 ```
@@ -432,7 +513,7 @@ The Planner does NOT place halt flags. You place them after reviewing
 Plan.md, wherever you want the Generator to pause. The Generator
 commits and stops on hitting one.
 
-### Bespoke Skills
+### Bespoke Skills & Nested CLAUDE.md
 
 Planner-generated, project-specific files with:
 - Canonical file structure
@@ -440,15 +521,18 @@ Planner-generated, project-specific files with:
 - DO / DO NOT rules (binary, no judgment)
 - Error handling contracts, testing conventions, exact commands
 
+Nested `CLAUDE.md` files complement skills: they hold durable,
+module-specific *rules* that auto-load by location (no code, no data).
+
 ### The Evaluation Model
 
 **Layer 1 — TDD (automated):** Tests before code. Catches regressions.
 
 **Layer 2 — Manual Verification:** Each ticket lists what to inspect.
 
-**Layer 3 — Evaluator (optional, `[/evaluate]`):** Aggregates manual
-verification into a step-by-step checklist, runs tests, flags
-architecture and reference-doc drift.
+**Layer 3 — Auditor (optional, `[/evaluate]`):** Independently runs the
+output, cross-checks it against Concept/Architecture/docs, audits
+simplicity and context sufficiency, and issues a verdict.
 
 **Layer 4 — You:** Sign off. The full loop isn't done until you say so.
 
@@ -457,7 +541,8 @@ architecture and reference-doc drift.
 | Concern | Claude Code | Cursor |
 |---|---|---|
 | Router loading | `CLAUDE.md` auto-loaded on startup | `CLAUDE.md` auto-loaded as workspace rule |
-| Rule files | `claude/rules/*.md` read on-demand | Read on-demand when referenced |
+| Rule files | `.claude/rules/*.md` read on-demand | Read on-demand when referenced |
+| Nested CLAUDE.md | Auto-loaded for the active directory | Auto-loaded for the active directory |
 | Skill files | Read via `Read` tool when instructed | Read via `Read` tool when instructed |
 | `@` references | Plain text (agent resolves) | File references (IDE resolves) |
 | Mode commands | Typed in chat | Typed in chat |
@@ -477,18 +562,22 @@ architecture and reference-doc drift.
 | 5.3 | Phase-based authority. Unified Planner/Generator pipeline. User as Evaluator. |
 | 5.5 | Session-based development. Git as checkpoint system. Concept.md restored. STATE.md eliminated. Plan/Triage ephemeral. User-placed `[Halt here]` only. `[/migrate]` mode. 3-retry logic. |
 | 5.6 | Dual-tool compatibility: Claude Code + Cursor. `CLAUDE.md` as unified router. |
-| **6.0** | **Layered Architecture.md with selective loading. Environment audit baked into Planner. New Evaluator session via `[/evaluate]`. Reference docs in `docs/` with `DEVIATIONS.md` for tracked spec drift.** |
+| 6.0 | Layered Architecture.md with selective loading. Environment audit baked into Planner. Evaluator session via `[/evaluate]`. Reference docs in `docs/` with `DEVIATIONS.md`. |
+| **6.2** | **Renamed to Concept-Driven Development (formerly Vibe Coding). `.claude/rules/` convention. Always-on principles (Simplicity, Surgical, Think). Nested `CLAUDE.md`. `[/merge]` Architecture-first mode. Evaluator redefined as independent Auditor. Opt-in process logging for expensive pipelines.** |
 
 ## Tips
 
 - **Start small.** First project should be buildable in a day.
 - **Keep the Architecture Overview tight.** It's the only section
   always loaded — anything that drifts here, drifts everywhere.
+- **Keep nested `CLAUDE.md` to rules, not data.** API dumps and code
+  the agent can read itself belong elsewhere.
 - **Drop your contracts into `docs/` early.** API specs, design
   systems, SDK manuals. Reference them from tickets.
-- **Use `[/evaluate]` when you're not the domain expert.** The
-  checklist makes you a better evaluator without making you a
-  specialist.
+- **Use `[/evaluate]` when you're not the domain expert** or after a
+  merge. The Auditor's verdict makes you a better evaluator.
+- **Flag expensive pipelines** with `Process Logging: Expensive` so a
+  failure leaves a debuggable trail instead of a costly re-run.
 - **Review the environment audit.** Catching missing tools at the
   Planner stage saves a Generator stop later.
 - **Read git logs.** `git log --oneline` is the progress trail.
