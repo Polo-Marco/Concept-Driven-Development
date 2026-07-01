@@ -1,7 +1,7 @@
 ---
 name: mode-build
-description: The Architect persona for 0-to-1 creation. Planner Session designs from scratch. Generator Session executes task tickets.
-version: 6.2
+description: The Architect persona for 0-to-1 creation. Planner Session designs from scratch and writes the README. Generator Session executes task tickets.
+version: 7.0
 ---
 
 # Mode: Build (The Architect)
@@ -98,28 +98,47 @@ Use the layered structure. Each section is independently loadable:
   complements skills/Architecture; see the root `CLAUDE.md` "Nested
   CLAUDE.md" section. Keep it short.
 
-**Step 4: Write Plan.md**
+**Step 4: Write README.md**
+- Write a user-facing README: what the project is (one paragraph),
+  prerequisites, install steps, how to run the app/pipeline, how to run
+  tests, and basic usage. This is what the user reads to test and use
+  the project correctly — keep it separate from Concept (vision) and
+  Architecture (design).
+- Run/launch commands in the README capture output for debugging:
+  `<launch cmd> 2>&1 | tee logs/latest.log` (see
+  `.claude/rules/run-logging.md`).
+
+**Step 5: Write Plan.md**
 - Task tickets per `.claude/rules/task-ticket-format.md`.
 - **First ticket is always "Environment Setup"** — install missing
   tools, create `.env` from `.env.example`, init the package manager,
-  verify `--version` checks. Boundary covers config files only.
+  add `logs/` to `.gitignore`, verify `--version` checks. Boundary
+  covers config files only.
 - Each ticket includes: Input, Output, Spec, Test Contract, Manual
   Verification, **Architecture** (sections to load), Skills to Load,
   Reference Docs (if applicable), **Process Logging** (`Expensive` for
-  slow/costly pipelines, else omit), Boundary, Run Command.
+  slow/costly pipelines, else omit), Boundary, and a **Run Command**
+  that tees to `logs/latest.log`.
 - Keep each ticket to the minimum scope (Simplicity First) — no
   speculative tickets.
+- Set **Depends On** on every ticket. Where several independent,
+  non-trivial tickets share the same satisfied dependencies and have
+  **disjoint Boundaries** (e.g. an auth module and an extraction
+  pipeline that don't touch each other's files), give them the same
+  **Parallel Group** label so the Generator builds them concurrently
+  (`.claude/rules/parallel-execution.md`). Never group the Environment
+  Setup ticket. Don't group tightly-coupled or single-file work —
+  grouping costs tokens.
 - Do NOT place `[Halt here]` flags — the user places them after review.
 - Final step must be the "Global Test Phase" for the user to run manually.
 
-**Step 5: Update CHANGELOG.md**
-- Append entry describing the plan.
-
-**Step 6: Commit & Stop**
+**Step 6: Commit, Journal & Stop**
 - `git commit` all core files: `plan: [project name] initial architecture and plan`
+  (detailed message — git history is the changelog).
+- Append the Planner record to `journal/` (`.claude/rules/governance.md §6`).
 - STOP: "Planner session complete. Review Concept.md, Architecture.md,
-  Plan.md, skills, and any docs/. Place `[Halt here]` on any ticket
-  where you want the Generator to pause. When ready, type
+  README.md, Plan.md, skills, and any docs/. Place `[Halt here]` on any
+  ticket where you want the Generator to pause. When ready, type
   `start execution`."
 
 ---

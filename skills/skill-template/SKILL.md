@@ -2,10 +2,10 @@
 name: skill-template
 description: Standard for bespoke execution skills. The Planner reads this during Spec Phase to write skills the Generator can follow mechanically.
 author: framework
-version: 6.2
+version: 7.0
 ---
 
-# Skill Template Standard (v6.2)
+# Skill Template Standard (v7.0)
 
 ## Purpose
 

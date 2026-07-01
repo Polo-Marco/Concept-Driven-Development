@@ -1,7 +1,7 @@
 ---
 name: mode-merge
-description: The Integration Architect persona for combining two or more existing projects into one unified codebase. Architecture-first — reverse-engineers each source independently before planning the merge. Drives a Planner -> Generator pipeline.
-version: 6.2
+description: The Integration Architect persona for combining two or more existing projects into one unified codebase. Architecture-first — reverse-engineers each source independently before planning the merge. Writes a unified README. Drives a Planner -> Generator pipeline.
+version: 7.0
 ---
 
 # Mode: Merge (The Integration Architect)
@@ -100,27 +100,39 @@ Write `Merge-Analysis.md` (ephemeral, like Plan.md):
 - Skills describe the TARGET unified conventions (the style chosen in
   Ask Step 4), so the Generator converges both codebases onto one.
 
-**Step 5: Write Plan.md**
+**Step 5: Write the Unified README.md**
+- Write a user-facing README for the merged project: what it is,
+  prerequisites, install, how to run, how to test, basic usage. Put
+  run/launch commands in the `<cmd> 2>&1 | tee logs/latest.log` form
+  (see run-logging.md).
+
+**Step 6: Write Plan.md**
 - Task tickets per `.claude/rules/task-ticket-format.md`.
 - **First ticket is "Environment Setup"** for the unified stack
-  (resolve version conflicts found in the audit).
+  (resolve version conflicts found in the audit; add `logs/` to
+  `.gitignore`).
 - Sequence tickets so the base is established first, then each feature
   is ported/integrated with regression coverage. Each integration
   ticket's Test Contract must prove the merged feature works AND that
-  already-integrated features still pass.
+  already-integrated features still pass. Run Commands tee to
+  `logs/latest.log`.
 - Manual Verification must include cross-source behavior checks.
+- Set **Depends On** per ticket. Independent feature ports with
+  **disjoint Boundaries** (e.g. porting two unrelated modules onto the
+  established base) may share a **Parallel Group** label for concurrent
+  execution (`.claude/rules/parallel-execution.md`). Keep anything that
+  touches shared/base files sequential — merges are regression-sensitive.
 - Do NOT place `[Halt here]` — the user places them after review.
 - Final step: "Global Integration Test Phase" for the user.
 
-**Step 6: Update CHANGELOG.md**
-- Note the merge: which sources, the unified target.
-
-**Step 7: Commit & Stop**
+**Step 7: Commit, Journal & Stop**
 - `git commit`: `plan: merge [sourceA] + [sourceB] -> unified architecture and plan`
+  (detailed message — git history is the changelog).
+- Append the Planner record to `journal/` (`.claude/rules/governance.md §6`).
 - STOP: "Planner (merge) session complete. Review the per-source
   Architecture models, Merge-Analysis.md, the unified Architecture.md,
-  Plan.md, skills, and docs/. Place `[Halt here]` where you want the
-  Generator to pause. Type `start execution` when ready."
+  README.md, Plan.md, skills, and docs/. Place `[Halt here]` where you
+  want the Generator to pause. Type `start execution` when ready."
 
 ---
 

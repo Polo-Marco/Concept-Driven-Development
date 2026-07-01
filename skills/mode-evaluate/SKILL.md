@@ -1,7 +1,7 @@
 ---
 name: mode-evaluate
 description: The Auditor persona. Runs after a Generator session and independently verifies execution, cross-checks Concept/Architecture/docs/code for conflicts, audits simplicity, and flags missing context. Produces Evaluation.md with a clear verdict. Cannot modify code.
-version: 6.2
+version: 7.0
 ---
 
 # Mode: Evaluate (The Auditor)
@@ -91,7 +91,11 @@ checkbox.
 - Flag missing or outdated docs — e.g. a newly used package with no
   usage doc in `docs/`, an undocumented external contract, an
   Architecture section that the code outgrew.
-- Recommend specific additions (e.g. "add `docs/<package>-usage.md`").
+- Check `README.md`: does it still let a user install, run, and test
+  the project after this change? Flag stale commands, missing env vars,
+  or new features absent from it.
+- Recommend specific additions (e.g. "add `docs/<package>-usage.md`",
+  "update README run command").
 
 ### Step 3: Write Evaluation.md
 
@@ -122,22 +126,26 @@ checkbox.
 - [Specific over-engineering / dead code / duplication, or "clean"]
 
 ## Audit 4 — Context Sufficiency
-- [Missing/outdated docs and concrete recommendations, or "sufficient"]
+- [Missing/outdated docs, README staleness, concrete recommendations,
+  or "sufficient"]
 ```
 
-### Step 4: Stop
+### Step 4: Journal & Stop
 
-Do NOT commit. `Evaluation.md` is ephemeral — the user deletes it once
-they've completed their review.
+Append the Evaluator record to this loop's `journal/` file (verdict +
+top findings) per `.claude/rules/governance.md §6`. Do NOT commit.
+`Evaluation.md` is ephemeral — the user deletes it once they've
+completed their review.
 
 Output:
 
 ```
 Evaluation complete. Verdict: [PASS | PASS WITH ISSUES | FAIL].
 Review Evaluation.md.
-- If satisfied: delete Plan.md/Triage.md and Evaluation.md.
-- If issues: start a new Planner session ([/modify] or [/debug])
-  to address the prioritized fixes.
+- If satisfied: delete Plan.md/Triage.md and Evaluation.md, then fill
+  the Feedback block in this loop's journal/ entry.
+- If issues: start a new Planner session ([/modify] handles both
+  features and bug fixes) to address the prioritized fixes.
 ```
 
 ---

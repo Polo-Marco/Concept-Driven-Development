@@ -1,8 +1,9 @@
-# Concept-Driven Development (CDD) 6.2
+# Concept-Driven Development (CDD) 7.0
 
 A structured AI development framework built on a session-based pipeline.
-The Planner designs. The Generator builds. The Evaluator (optional)
-audits. You sign off. Git is the checkpoint system.
+You align. The Planner designs. The Generator builds. The Evaluator
+(optional) audits. You sign off. The Coach (optional) helps you improve.
+Git is the checkpoint system **and the changelog**.
 
 The name says the method: every line of code traces back to an explicit
 **Concept** and **Architecture** agreed *before* building — not invented
@@ -29,94 +30,136 @@ AI coding agents fail in predictable ways:
    before it understands either version — and produces a mess.
 9. **Expensive debugging.** When a slow pipeline (OCR, long agentic
    chains) fails, reproducing the failure to debug it is costly.
+10. **Copy-paste debugging.** You paste terminal walls of text into the
+    agent just to give it the error it should be able to read itself.
+11. **No room to think.** There's no phase to *stop and discuss*
+    direction against the docs before committing to a build.
+12. **Stale usage docs.** No one maintains a README, so testing and
+    using the project correctly is guesswork.
+13. **No process memory.** You can't tell whether your development
+    process is improving except by feel.
+14. **Slow sequential builds.** Independent tickets are generated one at
+    a time even when they could be built concurrently.
 
-This framework addresses all nine with a strict Planner → Generator →
-Evaluator pipeline, structured files as external memory, layered
-Architecture and nested `CLAUDE.md` for selective loading, always-on
-engineering **principles** (simplicity, surgical change), an
-environment audit baked into the Planner, a dedicated `[/merge]` mode
-that models each source *before* merging, opt-in process logging for
-expensive pipelines, and `docs/` + `DEVIATIONS.md` for tracked spec
-drift.
+CDD 7.0 addresses all of these with a strict pipeline, structured files
+as external memory, layered Architecture and nested `CLAUDE.md`,
+always-on engineering **principles**, an environment audit, `docs/` +
+`DEVIATIONS.md` for tracked drift, **run-log capture**, a **discuss
+mode** for direction, **Planner-maintained README**, and a **session
+journal + retro** for improving how you build.
 
 ## How It Works
 
 ### The Session-Based Pipeline
 
 ```
-Planner Session              Generator Session            Evaluator Session
-────────────────             ─────────────────            ──────────────────
-[/build] / [/modify]         start execution              [/evaluate]
-[/debug] / [/migrate]
-[/merge]
+Discuss (opt)      Planner            Generator          Evaluator (opt)    Retro (opt)
+──────────────     ───────────        ─────────────      ───────────────    ──────────
+[/discuss]         [/build]/[/modify] start execution    [/evaluate]        [/retro]
+                   [/migrate]/[/merge]
 
-Ask: interrogate user        Read Architecture Overview   Independently audit:
-Env audit                    Read ticket → load only       run code/tests,
-Spec: write core files        the sections it lists        check Concept/docs,
-      write Plan/Triage      TDD loop per ticket           simplicity, context
-      log deviations         Commit after each ticket     Write Evaluation.md
-Git commit all                                             with a verdict
-STOP                         STOP when done               STOP (no commit)
+Align on docs      Ask: interrogate   Read Overview      Independently       Read journal/
+Edit Concept/docs  Env audit          Load ticket        audit: run code,    Find patterns
+(with your OK)     Spec: core files   sections only      check docs,         Recommend
+No plan, no code   + README, skills   TDD loop/ticket    simplicity, README  framework fixes
+                   Plan/Triage        Runs → logs/       Write Evaluation    Write retro
+                   Commit + journal   Commit + journal    + journal          summary
+STOP               STOP               STOP               STOP (no commit)    (no code)
 
-     ↓                            ↓                            ↓
-User reviews plan           User runs tests            User acts on verdict
-User places [Halt here]     User can run [/evaluate]   User deletes Plan +
-  (optional)                                              Evaluation
+  ↓                    ↓                   ↓                  ↓                  ↓
+Docs aligned      Review plan        Run tests          Act on verdict     Improve the
+                  Place [Halt here]  Run [/evaluate]    Fill journal         framework
+                                                        feedback
 ```
 
+**Discuss Session (optional)** is a thinking partner. It reads the
+docs, debates direction with you, and — only with your confirmation —
+edits `Concept.md` and `docs/`. It writes no plan and no code.
+
 **Planner Session** has full authority over core files. It designs,
-plans, audits the environment, and produces everything the Generator
-needs.
+plans, audits the environment, writes/updates the **README**, and
+produces everything the Generator needs.
 
-**Generator Session** has zero authority over core files. It reads
-task tickets and executes them literally. Selective context loading
-keeps it focused on the sections each ticket actually needs.
+**Generator Session** has zero authority over core files. It executes
+task tickets literally, captures each run to `logs/latest.log`, and
+commits per ticket. When the Planner has marked independent tickets with
+a **Parallel Group**, the Generator builds them concurrently
+(fan-out/fan-in) instead of one at a time.
 
-**Evaluator Session** is optional and independent. It cannot modify
-code — it runs the output, cross-checks it against the Concept,
-Architecture, and docs, audits for redundancy and missing context, and
-writes `Evaluation.md` with a clear verdict. Useful when working in
-unfamiliar domains or after a merge.
+**Evaluator Session** is optional and independent. It runs the output,
+cross-checks Concept/Architecture/docs/**README**/code, audits for
+redundancy and missing context, and writes `Evaluation.md`.
 
-**You are the final Evaluator.** You sign off when the work is done.
+**You are the final Evaluator.** You sign off, and you fill the
+**Feedback** block in the session journal.
+
+**Retro Session (optional)** is your coach. It reads `journal/` across
+loops, finds patterns in what worked and what didn't, and recommends
+concrete framework/skill/habit changes.
+
+### Git Is the Changelog
+
+There is **no `CHANGELOG.md`** in 7.0. Git history *is* the changelog —
+every session can read it, and commit messages carry the weight, so
+they must be detailed:
+
+```
+git log --oneline                 # progress trail
+git log -p <file>                 # how a file evolved
+git diff <planner-commit>..HEAD   # what a cycle produced
+```
 
 ### Recovery via Git
 
 Git commits at each ticket give you clean recovery points:
 
-- **Generator fails?** `git reset` to the Planner commit, switch
-  to a better model, `start execution` again.
-- **Plan was wrong?** `git reset` to the Planner commit, start a
-  new Planner session, refine the plan.
-- **Partial success?** Keep what worked, start a new Planner session
-  to address what didn't.
+- **Generator fails?** `git reset` to the Planner commit, switch model,
+  `start execution` again.
+- **Plan was wrong?** `git reset` to the Planner commit, start a new
+  Planner session, refine.
+- **Partial success?** Keep what worked, plan the rest anew.
 
-### The Six Modes
+### The Seven Modes
 
 | Command | Persona | Purpose |
 |---|---|---|
+| `[/discuss]` | The Thinking Partner | Align on direction; edit docs/Concept. No code. |
 | `[/build]` | The Architect | 0-to-1 creation from scratch |
-| `[/modify]` | The Refactoring Engineer | Feature additions, refactoring |
-| `[/debug]` | The QA Lead | Root-cause analysis, bug fixing |
+| `[/modify]` | The Refactoring Engineer | **Features, refactors, AND bug fixes** |
 | `[/migrate]` | Migration Specialist | Bring an existing codebase under the framework |
-| `[/merge]` | Integration Architect | Combine two+ existing projects, Architecture-first |
+| `[/merge]` | Integration Architect | Combine two+ projects, Architecture-first |
 | `[/evaluate]` | The Auditor | Independently audit a completed Generator session |
+| `[/retro]` | The Coach | Review the journal; improve the framework/your habits |
 
-Planner modes (`build` / `modify` / `debug` / `merge`) drive the
-Planner → Generator pipeline. `[/migrate]` is Planner-only.
-`[/evaluate]` runs after the Generator and is optional.
+`[/debug]` is gone — `[/modify]` now handles bug fixes via a
+bug-investigation sub-flow (Triage + hypotheses + Tier-1/Tier-2 tests).
+
+### Which Mode? (decision guide)
+
+```
+Nothing exists yet (no Concept.md)? .................... [/build]
+Existing non-CDD code to adopt? ....................... [/migrate]
+Combining two+ existing projects? ..................... [/merge]
+Want to think / redirect before changing anything? ... [/discuss]
+Adding a feature or refactoring? ..................... [/modify]  (feature flow)
+Something is broken / wrong output / a stack trace? .. [/modify]  (bug sub-flow)
+Generator finished; want an independent audit? ....... [/evaluate]
+Want to improve how you build, from logged facts? .... [/retro]
+```
+
+**Your typical life:** one `[/build]` to go 0→1, then repeated
+`[/modify]` as you keep building features and fixing bugs on top. Reach
+for `[/discuss]` when a new paper or idea makes you want to redirect,
+and `[/retro]` every few loops to tune the process.
 
 ### Always-On Principles
 
 Three engineering principles apply in every session
 (`.claude/rules/principles.md`):
 
-- **Simplicity First** — minimum code that satisfies the ticket; no
-  speculative features or abstractions.
-- **Surgical Changes** — touch only what the ticket requires; match
-  existing style; don't refactor what isn't broken.
-- **Think Before Coding** — state assumptions and surface trade-offs
-  before building (the "concept-driven" half of the pipeline).
+- **Simplicity First** — minimum code that satisfies the ticket.
+- **Surgical Changes** — touch only what the ticket requires.
+- **Think Before Coding** — state assumptions and trade-offs first.
 
 ### Phase-Based Authority
 
@@ -126,14 +169,19 @@ Authority binds to the session type, not the model:
 |---|---|---|---|
 | Concept.md | Read / Write | Read only | Read only |
 | Architecture.md | Read / Write | Read only (selective) | Read only |
+| README.md | Read / Write | Read only | Read only |
 | Plan.md / Triage.md | Read / Write | Read only (mark `[x]`) | Read only |
-| CHANGELOG.md | Read / Write | Append only | Read only |
 | skills/ | Read / Write / Create | Read only | Read only |
 | `**/CLAUDE.md` (nested) | Read / Write / Create | Read only | Read only |
 | docs/*.md | Read only | Read only | Read only |
 | docs/DEVIATIONS.md | Read / Append | Read only | Read only |
 | Evaluation.md | — | — | Read / Write |
+| journal/*.md | Append | Append | Append |
 | src/, tests/ | — | Read / Write (within Boundary) | Read only |
+
+**Discuss** may edit `Concept.md` + `docs/` (with your confirmation),
+nothing else. **Retro** may write only `journal/`. Full matrix in
+`.claude/rules/phase-authority.md`.
 
 ## Core Files
 
@@ -141,72 +189,98 @@ Authority binds to the session type, not the model:
 |---|---|---|
 | `Concept.md` | Persistent | Vision — why it exists, scope, principles |
 | `Architecture.md` | Persistent (layered) | System design source of truth |
-| `CHANGELOG.md` | Persistent | What changed, when |
+| `README.md` | Persistent | User-facing: install, run, test, use |
 | `Plan.md` | **Ephemeral** | Task tickets — deleted after the loop |
 | `Triage.md` | **Ephemeral** | Bug hypotheses — deleted after the loop |
 | `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** | `[/merge]` per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** | Evaluator verdict — deleted after sign-off |
+| `journal/*.md` | Persistent | Per-loop session records + your feedback (Tier 1) |
+| `journal/traces/*.jsonl` | Persistent, gitignored | Full raw transcripts (Tier 2, Claude Code hook) |
 | `skills/` | Persistent | Execution patterns, rules, conventions |
 | `**/CLAUDE.md` (nested) | Persistent | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | User-maintained | External reference docs (immutable to agents) |
+| `docs/inbox.md` | Discuss-appendable | Raw idea capture, promoted via `[/discuss]` |
 | `docs/DEVIATIONS.md` | Planner-appendable | Tracked departures from reference docs |
+| `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr |
 
-## What's New in 6.2
+Git history replaces `CHANGELOG.md`.
 
-### 1. Renamed: Concept-Driven Development
+## What's New in 7.0
 
-The framework's method *is* concept-driven — design from an explicit
-Concept and Architecture before writing code. The name now matches.
-Rules live under the conventional `.claude/rules/` directory (dotted,
-matching Claude Code's convention).
+### 1. Run-log capture ("check the latest run log")
+Every Run Command tees to `logs/latest.log` via
+`<cmd> 2>&1 | tee logs/latest.log`. When something breaks, say
+**"check the latest run log and fix it"** — the agent reads the log,
+finds the error, and routes the fix through `[/modify]`. No more pasting
+terminal walls of text. See `.claude/rules/run-logging.md`.
 
-### 2. Always-on engineering principles
+### 2. `[/discuss]` mode — a phase to think
+A thinking-partner session that reads `Concept.md`/`Architecture.md`/
+`docs/`, debates direction, and (with your confirmation) edits
+`Concept.md` and `docs/`. It's the only agent session allowed to edit
+`docs/`, and it promotes raw notes from `docs/inbox.md` into durable
+docs. Writes no plan, no code.
 
-`.claude/rules/principles.md` adds **Simplicity First** and **Surgical
-Changes** (with **Think Before Coding** reinforcing the Planner). These
-curb over-engineering and scope creep, and the Generator's self-review
-now checks against them.
+### 3. Debug folded into Modify
+`[/debug]` is removed. `[/modify]` now handles features, refactors, and
+bug fixes. When the request is "X is broken," Modify runs a
+bug-investigation sub-flow (Triage, 1–3 hypotheses, Tier-1 permanent
+tests vs Tier-2 throwaway sandboxes) — debug's machinery, one fewer
+mode to reason about.
 
-### 3. Nested `CLAUDE.md` (layered, location-triggered context)
+### 4. Planner-maintained README
+`README.md` is now a first-class core file. Build/migrate/merge write
+it; modify keeps it accurate when a change affects install/run/test/use;
+the Evaluator's context audit checks it. So you can always test and use
+the project correctly.
 
-Subdirectory `CLAUDE.md` files (e.g. `src/<module>/CLAUDE.md`) hold
-durable, module-specific conventions and auto-load when the agent works
-in that directory. They **complement** the layered `Architecture.md`
-(loaded per-ticket) and bespoke skills — not replace them. Keep them to
-rules, not data.
+### 5. Session Journal + `[/retro]` coach (two tiers)
+Each pipeline loop writes a **Tier-1 curated summary** to `journal/`
+(what was planned, built, evaluated) and you fill a **Feedback** block
+(rating + what went well + any instruction not followed). `[/retro]`
+reads these across loops and recommends concrete improvements — to the
+framework and to your own habits — grounded in logged facts.
 
-### 4. `[/merge]` mode — Architecture-first project merging
+Optionally, a **Tier-2 full raw trace** (every tool call and decision)
+is archived to `journal/traces/*.jsonl` by a Claude Code `SessionEnd`
+hook (`.claude/settings.json`). The curated summary is what `[/retro]`
+reasons over; the raw trace is the forensic drill-down for loops you
+flag "bad". Tier 2 is Claude-Code-only (Cursor has no transcript path);
+Tier 1 works in both tools. Traces are gitignored (large + sensitive);
+summaries stay in git.
 
-A dedicated Planner mode for combining two or more existing projects.
-It is forbidden from designing the union until it has reverse-engineered
-an Architecture model of **every** source and written a
-`Merge-Analysis.md` conflict map. This fixes the "blind merge" failure.
+### 6. Git history is the changelog
+`CHANGELOG.md` is gone. Git history is the changelog; every session
+knows to read it, and commit messages are required to be detailed.
 
-### 5. Redefined Evaluator — independent Auditor
+### 7. Parallel Generator (fan-out / fan-in)
+Sequential generation is slow when a plan has several independent
+tickets. In 7.0 the **Planner decides** what can run in parallel — at
+plan-time, not the Generator at runtime — because judging cross-ticket
+dependencies is an architectural call. It declares this with two ticket
+fields:
 
-`[/evaluate]` is no longer a checklist that restates TDD. The Auditor
-runs four independent audits and emits a verdict:
-1. **Execution** — actually runs tests (and the app where feasible);
-   trusts no prior claim of success.
-2. **Document/Concept consistency** — cross-checks Concept ↔
-   Architecture ↔ docs ↔ code; flags untracked deviations.
-3. **Simplicity / redundancy** — audits against the principles.
-4. **Context sufficiency** — flags missing/outdated documentation
-   (e.g. a new package with no usage doc).
+- **`Depends On:`** — which tickets must finish first.
+- **`Parallel Group:`** — a label; tickets sharing it run concurrently.
 
-### 6. Opt-in process logging for expensive pipelines
+A group is only valid when its members have **pairwise-disjoint
+Boundaries** (no shared files → no write races) and **no member depends
+on another**. The Generator then runs **fan-out / fan-in**: it dispatches
+one worker per ticket (Claude Code subagent / Cursor parallel agent) to
+implement + test in parallel, then on the main thread runs the full
+regression suite once and commits each ticket sequentially. Workers
+never commit (no git races); regression always runs at the join.
 
-Tickets can set **Process Logging: Expensive**. The Generator then emits
-structured stage logs (stage, input summary, timing, success/failure)
-so slow/costly pipelines (OCR, long agentic chains) are debuggable
-without expensive re-runs. Logging only — no caching, no bespoke
-framework, and never applied to cheap functions.
+It's **opt-in**: plans with no `Parallel Group:` labels run fully
+sequentially, exactly as before. See
+`.claude/rules/parallel-execution.md`.
 
-### Carried over from 6.0
-
-- **Layered Architecture.md** with selective loading.
-- **Environment audit** baked into the Planner.
-- **Reference docs** in `docs/` with `DEVIATIONS.md` for tracked drift.
+### Carried over
+- Layered `Architecture.md` with selective loading.
+- Environment audit baked into the Planner.
+- Reference docs in `docs/` with `DEVIATIONS.md` for tracked drift.
+- Nested `CLAUDE.md`, always-on principles, `[/merge]` architecture-first,
+  the independent Auditor, opt-in process logging for expensive pipelines.
 
 ## Layered Architecture.md (selective loading)
 
@@ -224,247 +298,176 @@ sections each ticket lists in its `**Architecture:**` field:
 ## Infrastructure
 ```
 
-Tickets declare what they need:
-
-```
-**Architecture:** Overview, API Surface, Data Models
-```
-
+Tickets declare what they need: `**Architecture:** Overview, API Surface`.
 Use `Full` to load the entire document.
 
 ## Reference Docs with Deviation Tracking
 
-A `docs/` directory holds external specs the user wants the agents to
-respect — API contracts, design systems, SDK manuals. Originals are
-immutable to agents.
+A `docs/` directory holds external specs the agents must respect — API
+contracts, design systems, SDK manuals. Originals are immutable to
+agents (only you, and `[/discuss]` with your confirmation, edit them).
 
 ```
 docs/
 ├── api-contract.md
 ├── design-system.md
-├── development-manual.md
-└── DEVIATIONS.md         ← Planner-appendable
+├── inbox.md             ← raw idea capture (promoted via [/discuss])
+└── DEVIATIONS.md        ← Planner-appendable
 ```
 
-Tickets opt in:
-
-```
-**Reference Docs:** @docs/api-contract.md (Section: Authentication)
-```
-
-When the Planner makes a decision that conflicts with a reference
-doc, it appends to `docs/DEVIATIONS.md` in the same session — the
-Generator then knows which parts of the spec are current. The
-Auditor flags any code that contradicts a reference doc without
-a logged deviation.
-
-`DEVIATIONS.md` format:
-
-```markdown
-## api-contract.md
-
-### Section: Authentication — JWT lifetime
-**Original spec:** 24-hour token TTL
-**Current implementation:** 1-hour TTL with refresh token
-**Reason:** Security review required short-lived access tokens
-**Decided:** 2026-05-03
-```
+Tickets opt in: `**Reference Docs:** @docs/api-contract.md (Section: Auth)`.
+When a Planner decision conflicts with a reference doc, it appends to
+`docs/DEVIATIONS.md` in the same session. The Auditor flags any code
+that contradicts a reference doc without a logged deviation.
 
 ## File Structure
 
 ```
 your-project/
 ├── CLAUDE.md                       ← Router (auto-loaded by Claude Code & Cursor)
-├── .claude/rules/
-│   ├── principles.md               ← Simplicity, Surgical change, Think-first
-│   ├── governance.md               ← Git, security, process logging, TDD, lifecycle
-│   ├── phase-authority.md          ← Authority matrix, boundary rules
-│   ├── generator-protocol.md       ← Selective context load, retry, halt
-│   └── task-ticket-format.md       ← Ticket format with Architecture: + Reference Docs:
+├── .claude/
+│   ├── settings.json               ← SessionEnd hook: archive full trace (new in 7.0)
+│   ├── hooks/archive_transcript.py ← Copies transcript → journal/traces/ (new in 7.0)
+│   └── rules/
+│       ├── principles.md           ← Simplicity, Surgical change, Think-first
+│       ├── governance.md           ← Git-as-changelog, security, logging, TDD, journal
+│       ├── run-logging.md          ← logs/latest.log capture (new in 7.0)
+│       ├── phase-authority.md      ← Authority matrix (Planner/Gen/Eval/Discuss/Retro)
+│       ├── generator-protocol.md   ← Selective context load, retry, halt
+│       ├── parallel-execution.md   ← Fan-out/fan-in parallel Generator (new in 7.0)
+│       └── task-ticket-format.md   ← Ticket format (+ Depends On / Parallel Group)
 ├── skills/
 │   ├── skill-template/SKILL.md     ← How to write skills
+│   ├── mode-discuss/SKILL.md       ← The Thinking Partner (new in 7.0)
 │   ├── mode-build/SKILL.md         ← The Architect
-│   ├── mode-modify/SKILL.md        ← The Refactoring Engineer
-│   ├── mode-debug/SKILL.md         ← The QA Lead
+│   ├── mode-modify/SKILL.md        ← Refactoring Engineer (+ bug sub-flow)
 │   ├── mode-migrate/SKILL.md       ← Migration Specialist
-│   ├── mode-merge/SKILL.md         ← Integration Architect (new in 6.2)
-│   └── mode-evaluate/SKILL.md      ← The Auditor
+│   ├── mode-merge/SKILL.md         ← Integration Architect
+│   ├── mode-evaluate/SKILL.md      ← The Auditor
+│   └── mode-retro/SKILL.md         ← The Coach (new in 7.0)
 ├── src/
-│   └── <module>/CLAUDE.md          ← Optional nested module rules (new in 6.2)
+│   └── <module>/CLAUDE.md          ← Optional nested module rules
 ├── docs/                           ← User-maintained reference docs
 │   ├── api-contract.md
-│   ├── design-system.md
+│   ├── inbox.md
 │   └── DEVIATIONS.md
+├── journal/                        ← Session records + feedback (new in 7.0)
+│   ├── 20260701-142230-modify.md   ← Tier 1: curated summary (in git)
+│   └── traces/                     ← Tier 2: full raw transcripts (gitignored)
+├── logs/                           ← Run output (gitignored, new in 7.0)
+│   └── latest.log
 ├── Concept.md                      ← Vision (persistent)
 ├── Architecture.md                 ← Layered design (persistent)
+├── README.md                       ← User-facing usage (Planner-maintained)
 ├── Plan.md                         ← Work order (ephemeral)
-├── Evaluation.md                   ← Auditor output (ephemeral)
-├── CHANGELOG.md                    ← History (persistent)
-└── README.md
+└── Evaluation.md                   ← Auditor output (ephemeral)
 ```
 
 ## Setup
 
 ### Prerequisites
-
 - **Claude Code** or **Cursor** (or both)
 - Claude Pro, Max, Teams, or Enterprise account
 - Git initialized in your project
 
-### Option A: Claude Code
-
-Install Claude Code if you haven't:
+### Install (both tools, same files)
 
 ```bash
-# macOS / Linux
+# Claude Code — macOS / Linux
 curl -fsSL https://claude.ai/install.sh | bash
+# Windows (PowerShell): irm https://claude.ai/install.ps1 | iex
 
-# Windows (PowerShell)
-irm https://claude.ai/install.ps1 | iex
-```
-
-Add the framework to your project:
-
-```bash
 mkdir my-project && cd my-project && git init
 # Copy: CLAUDE.md, .claude/, skills/ into project root
+printf 'logs/\njournal/traces/\n' >> .gitignore
 ```
 
-Claude Code auto-loads `CLAUDE.md` on startup. Rule files in
-`.claude/rules/` are read on-demand via the router. Nested `CLAUDE.md`
-files auto-load when the agent works in their directory.
+Copying `.claude/` brings the optional `SessionEnd` hook
+(`.claude/settings.json` + `.claude/hooks/archive_transcript.py`) that
+archives full session transcripts to `journal/traces/` — Claude Code
+will ask you to approve the hook on first run. Delete
+`.claude/settings.json` if you don't want it (e.g. Cursor-only).
 
-### Option B: Cursor
-
-Cursor auto-loads `CLAUDE.md` as a workspace rule. Copy the same
-files into your project:
-
-```bash
-mkdir my-project && cd my-project && git init
-# Copy: CLAUDE.md, .claude/, skills/ into project root
-```
-
-### Both tools, same files
-
-`CLAUDE.md` is the single entry point — the router for both Claude
-Code and Cursor. No duplication. Switch tools mid-project freely;
-git keeps everything in sync.
+`CLAUDE.md` is the single entry point — the router for both Claude Code
+and Cursor. Rule files in `.claude/rules/` are read on-demand. Nested
+`CLAUDE.md` files auto-load when the agent works in their directory.
+Switch tools mid-project freely; git keeps everything in sync.
 
 ## Usage
 
-### Building a New Project
-
-**Planner session:**
+### Discussing direction (before you build)
 
 ```
-You:     [/build] A FastAPI app that uploads PDFs, extracts text,
-         and summarizes them with an LLM. React frontend.
+You:     [/discuss] A new paper suggests we chunk PDFs semantically
+         instead of by page. Does that fit our Concept?
 
-Agent:   [Writes Concept.md, asks questions about stack and edge cases]
+Agent:   [Reads Concept.md, Architecture Overview, docs/. Weighs
+          trade-offs against current design, quotes the relevant docs.]
+Agent:   "Proposal: add this to Concept.md §Scope and a note in
+          docs/extraction.md. Confirm?"
 
+You:     yes
+
+Agent:   [Edits Concept.md + docs, commits `docs: semantic chunking
+          direction`. Recommends [/modify] when you're ready to build.]
+```
+
+### Building a new project
+
+```
+You:     [/build] A FastAPI app that uploads PDFs, extracts text, and
+         summarizes them with an LLM. React frontend.
+Agent:   [Writes Concept.md, asks about stack and edge cases]
 You:     proceed to spec
-
-Agent:   [Runs environment audit: python ✓, uv ✓, node missing]
-Agent:   [Writes layered Architecture.md, skills, Plan.md whose
-          first ticket is "Environment Setup", CHANGELOG.md]
+Agent:   [Env audit; writes Architecture.md, README.md, skills,
+          Plan.md (first ticket "Environment Setup", adds logs/ to
+          .gitignore); commits + journals]
 Agent:   "Planner session complete. Review the files. Place [Halt here]
           if needed. Type start execution when ready."
-```
 
-**Generator session:**
-
-```
 You:     start execution
-
-Agent:   [Reads Architecture Overview only, then per-ticket sections]
-Agent:   [Executes tickets, commits after each]
+Agent:   [Executes tickets; runs tee to logs/latest.log; commits per
+          ticket; journals]
 Agent:   "Generator session complete. Ready for your evaluation."
 ```
 
-**Optional Evaluator session:**
+### Modifying — features AND bugs
 
 ```
-You:     [/evaluate]
-
-Agent:   [Runs the four audits: execution, consistency, simplicity,
-          context]
-Agent:   [Writes Evaluation.md with a verdict + prioritized fixes]
-Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
-```
-
-**You sign off.** Act on the verdict. If satisfied, delete Plan.md and
-Evaluation.md.
-
-### Modifying
-
-```
+# Feature
 You:     [/modify] Add batch upload with concurrent PDF processing
-
-Agent:   [Reads Concept.md, Architecture sections, nested CLAUDE.md,
-          docs/DEVIATIONS.md]
-Agent:   "Warning: Current pipeline is synchronous. Batch processing
-          needs async. Options: ..."
-
+Agent:   "Warning: current pipeline is synchronous. Options: ..."
 You:     proceed to spec
+Agent:   [Updates Architecture + Overview + README surgically, writes
+          fresh Plan.md with regression tests]
 
-Agent:   [Audits new deps, updates Architecture surgically + Overview,
-          writes fresh Plan.md]
-```
-
-### Debugging
-
-```
-You:     [/debug] Extraction returns empty text for scanned PDFs
-
-Agent:   [Creates Triage.md with hypotheses, lists Architecture sections
-          and reference docs each hypothesis touches]
-
+# Bug (same mode — bug sub-flow)
+You:     [/modify] Extraction returns empty text for scanned PDFs
+Agent:   [Creates Triage.md with 1–3 hypotheses, Tier-1/Tier-2 tests,
+          Architecture sections per hypothesis]
 You:     start execution
+
+# Bug from a failing run
+You:     check the latest run log and fix it
+Agent:   [Reads logs/latest.log, identifies the error, opens a
+          [/modify] bug sub-flow to fix it]
 ```
 
-### Migrating an Existing Codebase
-
-```
-You:     [/migrate]
-
-Agent:   [Reads codebase, runs environment audit, asks about vision
-          and reference docs]
-
-You:     proceed to spec
-
-Agent:   [Writes Concept.md, layered Architecture.md (with Environment
-          section), skills matching existing patterns. Sets up empty
-          docs/DEVIATIONS.md. No code changes.]
-```
-
-### Merging Two Projects
-
-```
-You:     [/merge] Combine agent-v1/ and agent-v2/ into one project
-
-Agent:   [Reverse-engineers Architecture-v1.md and Architecture-v2.md
-          FIRST, writes Merge-Analysis.md (features, overlaps,
-          conflicts), then asks which features/implementations win]
-
-You:     proceed to spec
-
-Agent:   [Writes unified Concept.md + Architecture.md, skills for the
-          target conventions, Plan.md sequencing the integration with
-          regression coverage]
-
-You:     start execution
-```
-
-### Evaluating
+### Evaluating, signing off, and improving
 
 ```
 You:     [/evaluate]
-
-Agent:   [Audit 1: runs the test suite + app. Audit 2: Concept ↔
-          Architecture ↔ docs ↔ code consistency. Audit 3: simplicity
-          /redundancy. Audit 4: context sufficiency.]
-Agent:   [Writes Evaluation.md with a verdict + prioritized fix list.]
+Agent:   [Runs tests + app, checks Concept/Arch/docs/README consistency,
+          simplicity, context; writes Evaluation.md + journal]
 Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
+
+You:     [act on fixes; delete Plan.md + Evaluation.md; fill the
+          Feedback block in journal/]
+
+You:     [/retro]
+Agent:   [Reads journal/ across loops] "3 of the last 5 modify loops
+          flagged Boundary overreach. Recommend tightening the Boundary
+          rule; and you tend to skip [Halt here] on large plans."
 ```
 
 ## Key Concepts
@@ -489,63 +492,62 @@ Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
 **Manual Verification:**
 - Upload multi-page PDF; confirm all pages extracted
 - Upload scanned PDF; confirm OCR fallback works
-- Upload 0-byte file; confirm clean error, no crash
 
 **Architecture:** Overview, Data Models
 **Skills to Load:** @skills/fastapi-backend/SKILL.md
 **Reference Docs:** @docs/api-contract.md (Section: Documents)
 **Process Logging:** Expensive
+**Depends On:** Phase 1 (Environment Setup)
+**Parallel Group:** A
 **Boundary:** src/pipeline/, tests/test_extractor.py
-**Run Command:** uv run pytest tests/test_extractor.py -v
+**Run Command:** uv run pytest tests/test_extractor.py -v 2>&1 | tee logs/latest.log
 ```
 
-### Generator Retry Logic
+`Depends On` + `Parallel Group` let the Generator build independent
+tickets concurrently. Here, any other Group-A ticket that also depends
+only on Phase 1 and has a **disjoint Boundary** (e.g. `src/auth/`) runs
+at the same time as this one.
 
-When a ticket's tests fail after implementation:
-1. Attempt to fix (try 1).
-2. If still failing, attempt again (try 2).
-3. If still failing, final attempt (try 3).
-4. If still failing: commit progress with a WIP message and stop.
+### Generator Retry Logic
+1. Attempt to fix (try 1). 2. Try again (try 2). 3. Final attempt (try
+3). 4. Still failing → commit progress with a WIP message and stop.
 
 ### `[Halt here]` Flags
-
 The Planner does NOT place halt flags. You place them after reviewing
-Plan.md, wherever you want the Generator to pause. The Generator
-commits and stops on hitting one.
-
-### Bespoke Skills & Nested CLAUDE.md
-
-Planner-generated, project-specific files with:
-- Canonical file structure
-- Copy-paste code patterns with your actual types
-- DO / DO NOT rules (binary, no judgment)
-- Error handling contracts, testing conventions, exact commands
-
-Nested `CLAUDE.md` files complement skills: they hold durable,
-module-specific *rules* that auto-load by location (no code, no data).
+the work order, wherever you want the Generator to pause.
 
 ### The Evaluation Model
+- **Layer 1 — TDD (automated).** Tests before code.
+- **Layer 2 — Manual Verification.** Each ticket lists what to inspect.
+- **Layer 3 — Auditor (optional, `[/evaluate]`).** Independent run +
+  consistency + simplicity + context/README audits, with a verdict.
+- **Layer 4 — You.** Sign off, then log feedback in `journal/`.
 
-**Layer 1 — TDD (automated):** Tests before code. Catches regressions.
+## Syncing Your Docs — use git, not Drive sync
 
-**Layer 2 — Manual Verification:** Each ticket lists what to inspect.
+Docs that drive development should live **in the repo (e.g. GitLab)**,
+not in Google Drive with rsync into a VM. Reasons: versioned and
+diffable, one auth (SSH key/token), headless `git pull` on any
+machine/VM, docs that change *atomically* with the code they describe,
+and the agent reads them natively. Drive sync on headless Linux servers
+is exactly the auth/rsync pain to avoid.
 
-**Layer 3 — Auditor (optional, `[/evaluate]`):** Independently runs the
-output, cross-checks it against Concept/Architecture/docs, audits
-simplicity and context sufficiency, and issues a verdict.
+Recommended workflow:
+- Keep `Concept.md`, `Architecture.md`, `README.md`, and `docs/` in the
+  repo. Push to GitLab. On any machine: `git clone` / `git pull`.
+- Capture away-from-repo ideas (a new paper, an aha moment) in
+  `docs/inbox.md` (or a notes app as scratchpad), then **promote** them
+  into `Concept.md`/`docs/` during a `[/discuss]` session.
+- Source of truth for anything that touches development = git. Drive/
+  Notion at most a scratchpad.
 
-**Layer 4 — You:** Sign off. The full loop isn't done until you say so.
+## Roadmap (planned, not yet in 7.0)
 
-## Claude Code vs Cursor
-
-| Concern | Claude Code | Cursor |
-|---|---|---|
-| Router loading | `CLAUDE.md` auto-loaded on startup | `CLAUDE.md` auto-loaded as workspace rule |
-| Rule files | `.claude/rules/*.md` read on-demand | Read on-demand when referenced |
-| Nested CLAUDE.md | Auto-loaded for the active directory | Auto-loaded for the active directory |
-| Skill files | Read via `Read` tool when instructed | Read via `Read` tool when instructed |
-| `@` references | Plain text (agent resolves) | File references (IDE resolves) |
-| Mode commands | Typed in chat | Typed in chat |
+- **Federated subsystems.** For big projects with loosely-coupled parts
+  (annotation, preprocessing), one monorepo where each subsystem has its
+  own `Concept.md`/`Architecture.md`/`skills/`, and modes scope to the
+  active subsystem (`[/modify] @annotation ...`) so other subsystems'
+  docs don't distract the agent.
 
 ## Version History
 
@@ -554,35 +556,31 @@ simplicity and context sufficiency, and issues a verdict.
 | 1.0–3.0 | Prompt-in, code-out. Context collapse. |
 | 3.5 | Decoupled design from implementation. |
 | 4.0 | 3-Phase Pipeline. Git, TDD, CHANGELOG. |
-| 4.1 | Dynamic skill creation. |
-| 4.2 | Programmable `[Halt here]` for context-aware chunking. |
-| 5.0 | Strategy Pattern: personas via mode commands. |
-| 5.1 | Two-Tier Bug Classification. |
-| 5.2 | STATE.md, task tickets with Boundary, Blocked protocol. |
-| 5.3 | Phase-based authority. Unified Planner/Generator pipeline. User as Evaluator. |
-| 5.5 | Session-based development. Git as checkpoint system. Concept.md restored. STATE.md eliminated. Plan/Triage ephemeral. User-placed `[Halt here]` only. `[/migrate]` mode. 3-retry logic. |
-| 5.6 | Dual-tool compatibility: Claude Code + Cursor. `CLAUDE.md` as unified router. |
-| 6.0 | Layered Architecture.md with selective loading. Environment audit baked into Planner. Evaluator session via `[/evaluate]`. Reference docs in `docs/` with `DEVIATIONS.md`. |
-| **6.2** | **Renamed to Concept-Driven Development (formerly Vibe Coding). `.claude/rules/` convention. Always-on principles (Simplicity, Surgical, Think). Nested `CLAUDE.md`. `[/merge]` Architecture-first mode. Evaluator redefined as independent Auditor. Opt-in process logging for expensive pipelines.** |
+| 4.1–4.2 | Dynamic skills. Programmable `[Halt here]`. |
+| 5.0–5.3 | Personas via mode commands. Phase-based authority. |
+| 5.5–5.6 | Session-based dev. Git checkpoints. Dual-tool (Claude Code + Cursor). |
+| 6.0 | Layered Architecture. Environment audit. `[/evaluate]`. Reference docs + DEVIATIONS. |
+| 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[/merge]`. Independent Auditor. Process logging. |
+| **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[/discuss]` mode. `[/debug]` folded into `[/modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[/retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
 
 ## Tips
 
-- **Start small.** First project should be buildable in a day.
-- **Keep the Architecture Overview tight.** It's the only section
-  always loaded — anything that drifts here, drifts everywhere.
-- **Keep nested `CLAUDE.md` to rules, not data.** API dumps and code
-  the agent can read itself belong elsewhere.
-- **Drop your contracts into `docs/` early.** API specs, design
-  systems, SDK manuals. Reference them from tickets.
-- **Use `[/evaluate]` when you're not the domain expert** or after a
-  merge. The Auditor's verdict makes you a better evaluator.
-- **Flag expensive pipelines** with `Process Logging: Expensive` so a
-  failure leaves a debuggable trail instead of a costly re-run.
-- **Review the environment audit.** Catching missing tools at the
-  Planner stage saves a Generator stop later.
-- **Read git logs.** `git log --oneline` is the progress trail.
-- **Switch tools freely.** Planner in Cursor, Generator in Claude
-  Code, or vice versa. Files are tool-agnostic.
+- **Discuss before big pivots.** A `[/discuss]` that prevents a bad
+  build is cheaper than the build.
+- **Say "check the latest run log."** Let the agent read the error
+  instead of pasting it.
+- **Fill the journal feedback.** `[/retro]` is only as good as the
+  honest ratings you log — especially "instruction not followed."
+- **Approve the SessionEnd hook** (Claude Code) if you want full raw
+  traces to dissect bad loops; otherwise Tier-1 summaries alone still
+  power `[/retro]`.
+- **Keep the Architecture Overview tight.** It's the only always-loaded
+  section.
+- **Keep nested `CLAUDE.md` to rules, not data.**
+- **Drop contracts into `docs/` early**, and idea scraps into
+  `docs/inbox.md`.
+- **Write detailed commits** — they're your changelog now.
+- **Switch tools freely.** Files are tool-agnostic.
 
 ## License
 

@@ -35,7 +35,23 @@ Load context in this order:
 `Concept.md` is NOT loaded by the Generator. The Architecture Overview
 provides sufficient project context for execution.
 
-## Step 3: Execute Tickets Sequentially
+## Step 3: Execute Tickets
+
+Default execution is **sequential** — process tickets in order, one at a
+time, per the steps below.
+
+**Parallel groups (opt-in):** If the work order uses `Parallel Group:`
+labels, follow `.claude/rules/parallel-execution.md`. In short: when you
+reach a group whose `Depends On:` are all committed, re-verify the two
+invariants on the main thread (pairwise-disjoint Boundaries; no
+intra-group dependency), fan out one worker per ticket, then fan in —
+run the full regression suite once and commit each ticket sequentially
+on the main thread. Workers never commit. If a plan has no
+`Parallel Group:` labels, ignore this and run sequentially.
+
+The per-ticket steps below (3a–3f) apply to both modes — in a group they
+run inside each worker (3a–3d) and on the main thread at fan-in
+(3c retry, 3d self-review, 3e commit, 3f halt).
 
 For each ticket, in order:
 
@@ -48,7 +64,10 @@ For each ticket, in order:
 - Write failing tests from the **Test Contract**. Run → confirm fail.
 - Write application logic from **Spec** and loaded Skill patterns.
 - Run tests → confirm pass.
-- Run the **Run Command** for domain-wide test coverage.
+- Run the **Run Command** for domain-wide test coverage. Run Commands
+  capture output to `logs/latest.log` via `2>&1 | tee logs/latest.log`
+  (see `.claude/rules/run-logging.md`), so a failure leaves a
+  readable trail.
 
 ### 3c. Retry on Failure
 - If tests fail after implementation, attempt to fix. **3 attempts max.**
@@ -90,6 +109,10 @@ For each ticket, in order:
 ## Step 4: Session Complete
 
 When all tickets are done (or the session stops):
+
+- Append the Generator record to this loop's `journal/` file (tickets
+  executed, commit SHAs, any stops/retries, notable run-log findings)
+  per `.claude/rules/governance.md §6`.
 
 - If all tickets completed:
   ```

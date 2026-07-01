@@ -30,8 +30,10 @@ The Generator executes these tickets mechanically.
 **Skills to Load:** @skills/[relevant-skill]/SKILL.md
 **Reference Docs:** @docs/[file].md (Section: [Name])   ← optional
 **Process Logging:** [Expensive | none]   ← optional, default none
+**Depends On:** [Ticket IDs that must complete first, or "none"]
+**Parallel Group:** [Label, e.g. A | omit for sequential]   ← optional
 **Boundary:** [Exact directories/files the Generator may touch]
-**Run Command:** [Exact command to run tests for this step]
+**Run Command:** [Exact command] 2>&1 | tee logs/latest.log
 ```
 
 ## Field Definitions
@@ -69,11 +71,30 @@ jobs). The Generator then emits structured stage logs per
 `.claude/rules/governance.md` §3. Default `none` — do NOT set it on
 short, cheap functions (over-engineering).
 
+**Depends On:** Ticket IDs (Phase/Step) that must be committed before
+this ticket can start. Use `none` for the first ticket. Everything
+depends (directly or transitively) on the Environment Setup ticket.
+This is the dependency graph the Generator uses to know what is ready.
+
+**Parallel Group:** Optional. A label (e.g. `A`, `B`). Tickets sharing a
+label are dispatched concurrently by the Generator
+(`.claude/rules/parallel-execution.md`). A group is valid only if its
+members have **pairwise-disjoint Boundaries** and **no member depends on
+another member**. Omit the field for sequential execution (the default).
+The Environment Setup ticket is NEVER grouped — everything depends on
+it. Only group genuinely independent, non-trivial tickets (Simplicity
+First; grouping costs tokens).
+
 **Boundary:** Every file the Generator may touch. Anything outside
 triggers a session stop. If a directory in the Boundary has a
-subdirectory `CLAUDE.md`, its conventions bind the ticket.
+subdirectory `CLAUDE.md`, its conventions bind the ticket. Within a
+Parallel Group, Boundaries MUST be pairwise disjoint — this is what
+makes concurrent execution race-free.
 
-**Run Command:** Exact shell command. Copy-pasteable.
+**Run Command:** Exact shell command, copy-pasteable, piped through
+`2>&1 | tee logs/latest.log` so the run's output is captured for
+later diagnosis (see `.claude/rules/run-logging.md`). Example:
+`uv run pytest tests/test_extractor.py -v 2>&1 | tee logs/latest.log`.
 
 ## Planner Self-Check
 
@@ -90,6 +111,12 @@ Before ending the Planner session, verify for each ticket:
   set to `Expensive`?
 - If a Reference Doc applies, is it listed (and any deviation logged
   in `docs/DEVIATIONS.md`)?
+- Is **Depends On** correct — does it list every ticket whose output
+  this one consumes?
+- For every **Parallel Group**: are the members' Boundaries pairwise
+  disjoint, and does no member depend on another member? Is the
+  Environment Setup ticket kept out of all groups? Is grouping actually
+  worth it (multiple independent, non-trivial tickets)?
 
 Every gap becomes a potential Generator hallucination.
 

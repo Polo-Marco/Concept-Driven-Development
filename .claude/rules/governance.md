@@ -7,13 +7,24 @@ Think Before Coding), which are equally always-on.
 
 ## 1. Version Control (Git)
 
+**Git history is the changelog.** There is no `CHANGELOG.md`. The full
+project history lives in git and any session may read it
+(`git log --oneline`, `git log -p <file>`,
+`git diff <planner-commit>..HEAD`). Because history replaces a curated
+changelog, commit messages carry that weight and MUST be detailed.
+
 ### Commit Conventions
-- Semantic prefixes: `plan:`, `feat:`, `fix:`, `refactor:`, `migrate:`.
+- Semantic prefixes: `plan:`, `feat:`, `fix:`, `refactor:`, `migrate:`,
+  `docs:`.
+- **Discuss Session:** optionally one `docs:` commit for confirmed
+  doc/Concept edits. No code.
 - **Planner Session:** one commit at session end covering all core files.
 - **Generator Session:** one commit per completed ticket.
 - **Evaluator Session:** does NOT commit. `Evaluation.md` is ephemeral.
-- Commit messages must be detailed and informative — they serve as the
-  project's progress log. Include what was built, which files changed,
+- **Retro Session:** does NOT commit code. May commit its `journal/`
+  summary.
+- Commit messages must be detailed and informative — they ARE the
+  project's changelog. Include what was built, which files changed,
   and any notable decisions.
 
 ### Commit Message Format
@@ -56,6 +67,12 @@ framework. Apply it ONLY to pipelines the Planner explicitly flags as
 expensive/long-running. Short, cheap functions do not get this
 treatment.
 
+**Run Logging is separate.** Capturing the stdout/stderr of executed
+commands to `logs/latest.log` (so a failing run can be diagnosed
+without pasting a terminal wall of text) is governed by
+`.claude/rules/run-logging.md`. It applies to every run, not just
+expensive pipelines.
+
 ## 4. Test-Driven Development
 
 - Write tests before application logic.
@@ -71,17 +88,88 @@ treatment.
 |---|---|---|
 | `Concept.md` | Persistent, evolving | Vision, scope, principles |
 | `Architecture.md` | Persistent, evolving (layered) | System design source of truth |
-| `CHANGELOG.md` | Persistent, append-only | What changed, when |
+| `README.md` | Persistent, evolving | User-facing: install, run, test, use |
 | `Plan.md` | **Ephemeral** — deleted after full loop | Task tickets |
 | `Triage.md` | **Ephemeral** — deleted after full loop | Bug hypotheses |
 | `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[/merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** — deleted after user signs off | Evaluator verdict + audits |
+| `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[/retro]`) |
+| `journal/traces/*.jsonl` | Persistent, gitignored | Full raw session transcripts (Tier 2, Claude Code hook) |
 | `skills/` | Persistent, evolving | Execution patterns and rules |
 | `**/CLAUDE.md` (nested) | Persistent, evolving | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | Persistent, user-maintained | External reference docs (immutable to agents) |
 | `docs/DEVIATIONS.md` | Persistent, planner-appendable | Tracked departures from reference docs |
+| `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted into Concept/docs via `[/discuss]` |
+| `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr (see run-logging.md) |
+
+There is no `CHANGELOG.md` — git history is the changelog (see §1).
 
 Only one of Plan.md or Triage.md exists at a time. When the full loop
 (Planner + Generator + optional Evaluator + user evaluation) completes
 successfully, the user deletes the work order file and any
 `Evaluation.md`. They served their purpose.
+
+## 6. Session Journal (development-process tracking)
+
+The `journal/` directory records the *development process itself* — not
+the code — so the user can later re-evaluate how a project was built and
+improve the framework (via `[/retro]`). It has two tiers:
+
+**Tier 1 — curated summary (`journal/*.md`, primary).**
+A short, agent-written record per loop. This is what `[/retro]` reasons
+over. It is NOT a full trace — it captures decisions, not every tool
+call.
+
+- **One file per pipeline loop:** `journal/YYYYMMDD-HHMMSS-<mode>.md`
+  (e.g. `journal/20260701-142230-modify.md`).
+- **Each session appends its own record** to the current loop's file:
+  the Planner appends what it planned and why; the Generator appends
+  what it built, commits (SHAs), and any stops/retries; the Evaluator
+  appends its verdict.
+- **The user fills the `## Feedback` block** at loop end: a rating
+  (good / ok / bad), what went well, and — critically — any
+  *instruction that was not followed*.
+- Keep records short and factual. This is a log, not an essay.
+
+**Tier 2 — full raw trace (`journal/traces/*.jsonl`, optional, Claude
+Code only).**
+The complete session transcript — every tool call, input, output, and
+decision — captured automatically by the `SessionEnd` hook in
+`.claude/settings.json` (script: `.claude/hooks/archive_transcript.py`).
+Use it to dissect a loop you flagged "bad"; `[/retro]` drills into it on
+demand. Cursor has no equivalent, so Tier 2 is Claude-Code-only; Tier 1
+works in both tools.
+
+- Traces can be large and may contain sensitive context, so
+  `journal/traces/` is **gitignored** — the curated `journal/*.md`
+  summaries stay in git, the raw traces stay local.
+- The agent does NOT write Tier-2 files; the hook does. Never
+  hand-reconstruct a trace into `journal/traces/`.
+
+Suggested per-loop skeleton:
+
+```markdown
+# Session Journal — <mode> — <date>
+
+## Request
+[What the user asked for]
+
+## Planner
+[Key decisions, files written, open questions]
+
+## Generator
+[Tickets executed, commits (SHAs), stops/retries, run-log notes]
+
+## Evaluator
+[Verdict + top findings, or "skipped"]
+
+## Feedback (filled by user)
+- Rating: [good | ok | bad]
+- What went well:
+- Instruction(s) not followed:
+- Notes:
+
+## Full trace
+[journal/traces/<timestamp>-<session>.jsonl — auto-archived by the
+SessionEnd hook, Claude Code only. "none" if running under Cursor.]
+```
