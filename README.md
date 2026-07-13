@@ -541,6 +541,16 @@ Recommended workflow:
 - Source of truth for anything that touches development = git. Drive/
   Notion at most a scratchpad.
 
+## Improving the Framework (this repo)
+
+The framework repo is itself a CDD project: retro summaries and
+personal feedback from real projects are copied into `journal/`,
+`[/retro] all` surfaces cross-project patterns, and a Maintainer
+session applies accepted recommendations, bumps the version, and tags
+a release. Deployed projects upgrade by diffing tags
+(`git diff v7.0..v7.1 -- CLAUDE.md .claude/ skills/`) and re-copying.
+Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
+
 ## Roadmap (planned, not yet in 7.0)
 
 - **Federated subsystems.** For big projects with loosely-coupled parts

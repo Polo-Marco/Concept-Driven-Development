@@ -8,6 +8,13 @@ appropriate Mode Skill.
 by both tools. The framework rules in `.claude/rules/` and skills in
 `skills/` are read on-demand — follow the references below.
 
+## Framework-Repo Maintenance
+
+If `MAINTENANCE.md` exists at the project root, this repo is the CDD
+framework source itself — not a deployed project. Read `MAINTENANCE.md`
+before acting: it defines the feedback→upgrade loop and grants
+Maintainer authority that supersedes the phase-authority matrix below.
+
 ## Core Principles (always apply)
 
 Before anything else, honor `.claude/rules/principles.md`:
