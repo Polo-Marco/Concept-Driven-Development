@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 7.0
+# Concept-Driven Development (CDD) 8.0
 
 A structured AI development framework built on a session-based pipeline.
 You align. The Planner designs. The Generator builds. The Evaluator
@@ -119,20 +119,19 @@ Git commits at each ticket give you clean recovery points:
   Planner session, refine.
 - **Partial success?** Keep what worked, plan the rest anew.
 
-### The Seven Modes
+### The Three Commands (v8.0)
 
 | Command | Persona | Purpose |
 |---|---|---|
-| `[/discuss]` | The Thinking Partner | Align on direction; edit docs/Concept. No code. |
-| `[/build]` | The Architect | 0-to-1 creation from scratch |
-| `[/modify]` | The Refactoring Engineer | **Features, refactors, AND bug fixes** |
-| `[/migrate]` | Migration Specialist | Bring an existing codebase under the framework |
-| `[/merge]` | Integration Architect | Combine two+ projects, Architecture-first |
-| `[/evaluate]` | The Auditor | Independently audit a completed Generator session |
-| `[/retro]` | The Coach | Review the journal; improve the framework/your habits |
+| `[/discuss]` | The Thinking Partner | Think. Align direction; edit docs/Concept. No code. |
+| `[/loop]` | The Goal Setter | Do. Measurable goal in → driver-orchestrated Plan/Generate/Monitor/Evaluate → answer out. |
+| `[/retro]` | The Coach | Improve. Review journals; tune framework + habits. |
 
-`[/debug]` is gone — `[/modify]` now handles bug fixes via a
-bug-investigation sub-flow (Triage + hypotheses + Tier-1/Tier-2 tests).
+Build/modify/migrate/merge are now **goal types** inside `[/loop]`;
+`[/evaluate]` is the loop's Evaluator agent; `start execution` is
+issued by the driver. The 7.0 mode skills remain in `skills/` and can
+still be invoked manually as an escape hatch — the driver calls the
+same skills you would.
 
 ### Which Mode? (decision guide)
 
@@ -327,8 +326,12 @@ your-project/
 ├── CLAUDE.md                       ← Router (auto-loaded by Claude Code & Cursor)
 ├── .claude/
 │   ├── settings.json               ← SessionEnd hook: archive full trace (new in 7.0)
+│   ├── agents/                     ← cdd-planner/generator/evaluator/monitor (new in 8.0)
+│   ├── driver/loop.py              ← deterministic loop driver (new in 8.0)
 │   ├── hooks/archive_transcript.py ← Copies transcript → journal/traces/ (new in 7.0)
+│   ├── hooks/enforce_authority.py  ← PreToolUse authority enforcement (new in 8.0)
 │   └── rules/
+│       ├── loop-protocol.md        ← the [/loop] pipeline (new in 8.0)
 │       ├── principles.md           ← Simplicity, Surgical change, Think-first
 │       ├── governance.md           ← Git-as-changelog, security, logging, TDD, journal
 │       ├── run-logging.md          ← logs/latest.log capture (new in 7.0)
@@ -572,6 +575,7 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 | 6.0 | Layered Architecture. Environment audit. `[/evaluate]`. Reference docs + DEVIATIONS. |
 | 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[/merge]`. Independent Auditor. Process logging. |
 | **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[/discuss]` mode. `[/debug]` folded into `[/modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[/retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
+| **8.0** | **Loop orchestration: 3-command surface (`[/discuss]`/`[/loop]`/`[/retro]`); deterministic driver (`.claude/driver/loop.py`); hook-ENFORCED phase authority (PreToolUse deny); Goal.md/goal.json contracts; experiment tickets + trial ledger + Monitor agent; Evaluator contract review pre-gate; JSON machine state; control-tower remote control (phone). Design: docs/loop-orchestration-design.md.** |
 
 ## Tips
 

@@ -1,2 +1,5 @@
 logs/
 journal/traces/
+loop-state.json
+events.jsonl
+approvals/
