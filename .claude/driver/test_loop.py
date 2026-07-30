@@ -1866,6 +1866,64 @@ class TestObservability(DriverCase):
         self.assertIn("last event 0m ago", out)
 
 
+class TestDriverArtifactsStayOutOfCommits(DriverCase):
+    """v8.1.5: every `feat(loop):` commit carried the driver's own
+    bookkeeping.
+
+    Toy run 4 (2026-07-30, ~/cdd-toy4-loop): commit adb77cf "feat(loop):
+    Phase 1, Step 2 CLI" staged events.jsonl, loop-state.json and two
+    journal/traces/*.jsonl alongside src/wordfreq/cli.py. governance.md
+    section 5 lists all three as ephemeral and GITIGNORED, but nothing
+    ever ensured the entries existed -- run-logging.md section 1 makes
+    the Planner ensure `logs/`, and these had no owner at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+
+    def test_entries_are_created_when_there_is_no_gitignore(self):
+        loop.ensure_gitignore()
+        body = (self.tmp / ".gitignore").read_text()
+        for p in loop.DRIVER_IGNORED:
+            self.assertIn(p, body)
+
+    def test_existing_entries_are_kept_and_never_duplicated(self):
+        (self.tmp / ".gitignore").write_text("logs/\nevents.jsonl\n")
+        loop.ensure_gitignore()
+        lines = [l.strip() for l in
+                 (self.tmp / ".gitignore").read_text().splitlines()]
+        self.assertIn("logs/", lines)
+        self.assertEqual(lines.count("events.jsonl"), 1)
+        self.assertIn("loop-state.json", lines)
+
+    def test_it_is_idempotent(self):
+        loop.ensure_gitignore()
+        first = (self.tmp / ".gitignore").read_text()
+        loop.ensure_gitignore()
+        self.assertEqual(first, (self.tmp / ".gitignore").read_text())
+
+    def test_a_feature_commit_does_not_carry_loop_bookkeeping(self):
+        """The defect as observed, end to end."""
+        loop.ensure_gitignore()
+        loop.save(loop.STATE, {"phase": "iterate"})
+        loop.event("iteration", detail="Phase 1, Step 2")
+        trace = self.tmp / "journal" / "traces" / "s.jsonl"
+        trace.parent.mkdir(parents=True)
+        trace.write_text('{"raw": "transcript"}\n')
+        src = self.tmp / "src" / "cli.py"
+        src.parent.mkdir(parents=True)
+        src.write_text("print('hi')\n")
+
+        self.assertTrue(loop.git_commit("feat(loop): Phase 1, Step 2"))
+        staged = loop.sh("git show --stat --name-only HEAD").stdout
+        self.assertIn("src/cli.py", staged)
+        for p in ("events.jsonl", "loop-state.json", "journal/traces"):
+            self.assertNotIn(p, staged)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])

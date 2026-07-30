@@ -124,6 +124,43 @@ def git_commit(message: str) -> str:
     return sh("git rev-parse --short HEAD").stdout.strip()
 
 
+# governance.md section 5 declares these the driver's OWN ephemeral
+# files, and declares them gitignored. Everything else the loop writes
+# (Plan.md's [x], Evaluation.md, verdict.json, ledger.jsonl) is evidence
+# a reviewer wants attached to the commit it explains, so it is left
+# tracked on purpose.
+DRIVER_IGNORED = ("loop-state.json", "events.jsonl", "journal/traces/")
+
+
+def ensure_gitignore() -> None:
+    """Keep the driver's own bookkeeping out of the feature commits.
+
+    v8.1.5. `git_commit()` stages the whole tree deliberately -- it
+    cannot know which of the Generator's files belong to the ticket --
+    so .gitignore is the only place these can be excluded, and nothing
+    was ensuring the entries existed. Toy run 4 (2026-07-30) put
+    loop-state.json, events.jsonl and 1.2 MB of journal/traces into
+    three `feat(loop):` commits, and its own final provenance audit is
+    what caught it. run-logging.md section 1 already makes the Planner
+    ensure `logs/` is ignored; these three had no owner.
+
+    Fixed here rather than by narrowing `git add -A`, because the list
+    is fixed and rule-bound (loop-protocol.md section 6) and because a
+    project whose .gitignore says what governance.md says is correct
+    for every tool that reads it -- `git status`, the user, the
+    Evaluator -- not only for the driver's own commits.
+    """
+    gi = ROOT / ".gitignore"
+    have = gi.read_text().splitlines() if gi.exists() else []
+    seen = {l.strip().rstrip("/") for l in have}
+    missing = [p for p in DRIVER_IGNORED if p.rstrip("/") not in seen]
+    if not missing:
+        return
+    lines = have + ["", "# CDD loop driver, ephemeral (governance.md §5)"]
+    gi.write_text("\n".join(lines + missing).lstrip("\n") + "\n")
+    event("gitignore_updated", detail=", ".join(missing))
+
+
 def die(msg: str) -> None:
     """Abort loudly. Never degrade to a partial loop silently."""
     print(f"\n!! LOOP NOT STARTED\n{msg}\n", file=sys.stderr)
@@ -1186,6 +1223,7 @@ def main() -> None:
 
     require_isolation(cfg, allow_here)
     preflight(cfg)
+    ensure_gitignore()
 
     st = load(STATE, {"phase": "plan", "iteration": 0, "replans": 0,
                       "spent_usd": 0.0, "gpu_hours": 0.0,
