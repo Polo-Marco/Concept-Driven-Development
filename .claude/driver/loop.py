@@ -879,6 +879,16 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             event("ticket_done", detail=f"{tid} @ {sha}")
         elif verdict == "REPLAN":
             st["replans"] = st.get("replans", 0) + 1
+            # v8.1.5: say so. Every other consequential transition emits
+            # -- retry, trial_killed, regression, ticket_done, escalate,
+            # goal_reached -- but the most expensive one the driver makes
+            # (discard the plan, buy a fresh Planner AND a second
+            # contract review) left only an approval_request whose gate
+            # string happened to read "replan". phase_status() renders
+            # events, so a replan was invisible to the one person paying
+            # for it (first experiment run, 2026-07-30).
+            event("replan", detail=str(v.get("reason", "")),
+                  n=st["replans"], ticket=tid)
             git_commit(f"wip(loop): {tid} before replan "
                        f"#{st['replans']} -- {v.get('reason', '')}")
             st["phase"] = "plan"

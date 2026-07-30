@@ -1986,6 +1986,51 @@ class TestTrialLogPerAttempt(DriverCase):
                              "path it truncates for the trial")
 
 
+class TestReplanIsAnEvent(DriverCase):
+    """v8.1.5: a REPLAN left no trace in the event feed.
+
+    First experiment toy run (2026-07-30). The loop replanned once, and
+    `events.jsonl` recorded a second `approval_request` whose gate string
+    happened to read "replan" -- nothing else. `retry`, `trial_killed`,
+    `regression`, `ticket_done`, `escalate` and `goal_reached` all emit;
+    the single most expensive transition the driver makes, throwing away
+    a plan and buying a whole fresh Planner plus a second contract
+    review, did not. `phase_status()` renders events, so a user watching
+    the feed could not see that a replan had happened at all.
+    """
+
+    def test_a_replan_emits_an_event_naming_its_reason(self):
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        (self.tmp / "Evaluation.md").write_text("# findings")
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        loop.wait_approval = lambda st, name, detail: None
+        seen = [0]
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "evaluator":
+                if "contract review" in prompt:
+                    v = "OK"                  # the replan's re-gate
+                else:
+                    seen[0] += 1
+                    v = "REPLAN" if seen[0] == 1 else "PASS"
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": v,
+                     "reason": "approach exhausted: lr=0.5 ruled out"}))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+
+        replans = [e for e in self.events() if e["event"] == "replan"]
+        self.assertTrue(replans, "a REPLAN must be visible in the feed")
+        self.assertIn("exhausted", replans[0]["detail"])
+        self.assertEqual(replans[0].get("n"), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])
