@@ -160,7 +160,13 @@ class FakeClock:
 
 class DriverCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="cdd-test-"))
+        # .resolve() restores the invariant loop.py:44 gives ROOT in
+        # production. git reports worktree paths as realpaths, so an
+        # unresolved root makes find_loop() compare /var/... against
+        # /private/var/... on macOS -- a harness bug that reads as a
+        # driver bug. Resolving in find_loop() instead would still need
+        # the test to resolve, so it is two changes for none of the gain.
+        self.tmp = Path(tempfile.mkdtemp(prefix="cdd-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self._real_time = loop.time
         self.addCleanup(lambda: setattr(loop, "time", self._real_time))
