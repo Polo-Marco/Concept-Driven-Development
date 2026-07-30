@@ -51,6 +51,8 @@ What it covers, and which v8.0 defect each case pins down:
                       and a pending gate instead of raw JSON
   auth gate           an unauthenticated `claude` CLI aborts gate 1
                       instead of failing as "contract review twice"
+  find_loop           status/approve resolve the worktree that holds
+                      the loop, so they work from the primary tree too
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -1340,6 +1342,46 @@ class TestAuthGate(DriverCase):
         # themselves are still the real gate.
         self.stub_auth("some new human-readable output")
         loop.require_cli()
+
+
+class TestFindLoop(DriverCase):
+    """`start` runs in the primary tree, the loop runs in a worktree.
+    status/approve typed where you ran start must still find it."""
+
+    def setUp(self):
+        super().setUp()
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        (self.tmp / "a.txt").write_text("1")
+        loop.sh("git add -A")
+        loop.sh("git commit -q -m base")
+        self.wt = self.tmp.parent / (self.tmp.name + "-loop")
+        self.addCleanup(shutil.rmtree, self.wt, ignore_errors=True)
+
+    def add_worktree(self, with_state=True):
+        loop.sh(f"git worktree add -q {self.wt} -b loop/x")
+        if with_state:
+            (self.wt / "loop-state.json").write_text('{"phase": "gate"}')
+
+    def test_uses_this_tree_when_it_has_the_state(self):
+        loop.save(loop.STATE, {"phase": "iterate"})
+        self.assertEqual(loop.find_loop(), self.tmp)
+
+    def test_finds_the_loop_in_a_sibling_worktree(self):
+        self.add_worktree()
+        self.assertEqual(loop.find_loop(), self.wt)
+
+    def test_falls_back_to_here_when_no_loop_exists_anywhere(self):
+        self.add_worktree(with_state=False)
+        self.assertEqual(loop.find_loop(), self.tmp)
+
+    def test_rebind_moves_every_path(self):
+        loop.rebind(self.wt)
+        self.addCleanup(use_root, self.tmp)
+        self.assertEqual(loop.STATE, self.wt / "loop-state.json")
+        self.assertEqual(loop.APPROVALS, self.wt / "approvals")
+        self.assertEqual(loop.GOAL, self.wt / "goal.json")
 
 
 if __name__ == "__main__":

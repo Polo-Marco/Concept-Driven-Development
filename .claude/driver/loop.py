@@ -793,6 +793,42 @@ def phase_final(cfg: dict, st: dict) -> None:
     save(STATE, st)
 
 
+# ---------- where the loop actually lives ------------------------------
+
+def rebind(root: Path) -> None:
+    """Point the module's paths at `root`."""
+    global ROOT, GOAL, STATE, LEDGER, EVENTS, VERDICT, APPROVALS
+    ROOT, GOAL = root, root / "goal.json"
+    STATE, LEDGER = root / "loop-state.json", root / "ledger.jsonl"
+    EVENTS, VERDICT = root / "events.jsonl", root / "verdict.json"
+    APPROVALS = root / "approvals"
+
+
+def find_loop() -> Path:
+    """Resolve which tree holds the running loop, for status/approve.
+
+    v8.1.2c: `start` runs in the PRIMARY tree but the loop runs in a
+    worktree, so `status` and `approve` typed where you just ran `start`
+    found no state. status said "Nothing has run in this tree yet" while
+    a driver was running ten metres away, and approve would have written
+    its flag into a tree nobody was watching -- a silent no-op, which is
+    the failure mode this release keeps deleting. Resolve it rather than
+    expecting the user to track which tree they are in.
+    """
+    if STATE.exists():
+        return ROOT
+    lines = sh("git worktree list --porcelain").stdout.splitlines()
+    found = [Path(ln.split(" ", 1)[1]) for ln in lines
+             if ln.startswith("worktree ")]
+    found = [w for w in found
+             if w != ROOT and (w / "loop-state.json").exists()]
+    if len(found) > 1:
+        die("More than one worktree has a loop running:\n  "
+            + "\n  ".join(str(w) for w in found)
+            + "\n\n  cd into the one you mean.")
+    return found[0] if found else ROOT
+
+
 # ---------- start: worktree + tmux + go --------------------------------
 
 def phase_start(cfg: dict, allow_here: bool) -> None:
@@ -884,8 +920,10 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
           f"  worktree  {target}\n"
           f"  log       {target}/logs/driver.log\n"
           f"  watch     tmux attach -t {name}   (detach: Ctrl-b d)\n"
+          f"  plan      {target}/Plan.md\n"
           f"  status    python3 .claude/driver/loop.py status\n"
           f"  approve   python3 .claude/driver/loop.py approve\n"
+          f"            (both work from here or from the worktree)\n"
           + (f"\n  !! {gap}\n" if gap else ""))
 
 
@@ -962,6 +1000,12 @@ def main() -> None:
     argv = sys.argv[1:]
     allow_here = "--here" in argv
     args = [a for a in argv if not a.startswith("-")]
+
+    if args and args[0] in ("status", "approve"):
+        elsewhere = find_loop()
+        if elsewhere != ROOT:
+            print(f"(the loop is in {elsewhere})")
+            rebind(elsewhere)
 
     if args and args[0] == "status":
         if "--json" in argv:
