@@ -552,7 +552,8 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
 
 # ---------- trials (experiment goals) ----------------------------------
 
-def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
+def run_trial(tid: str, body: str, st: dict, cfg: dict,
+              attempt: int = 1) -> bool:
     """Launch the trial command; poll with Monitor; True if it SUCCEEDED.
 
     Returns False whenever the trial did not run to completion, so the
@@ -577,7 +578,15 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
     if not trial_cmd:
         return True                       # build ticket: no trial phase
     interval = 60 * int(cfg.get("monitor", {}).get("interval_min", 10))
-    log = ROOT / "logs" / f"trial-{st['iteration']}.log"
+    # v8.1.5: one log per ATTEMPT. This was keyed on the iteration and
+    # opened "w", but run_trial runs once per attempt -- so the relaunch
+    # that a RETRY buys truncated the log of the failure that bought it.
+    # Seen live on the first experiment run (2026-07-30): attempt 1 died
+    # on a `nan_loss` the Monitor classified INTERVENE, and attempt 2
+    # overwrote the evidence within three minutes. Appending instead
+    # would be worse -- the Monitor judges the TAIL, so a relaunch would
+    # inherit the previous attempt's crash lines.
+    log = ROOT / "logs" / f"trial-{st['iteration']}-{attempt}.log"
     log.parent.mkdir(exist_ok=True)
     trial_start = time.time()             # v8.1: never reset by polling
     last_poll = trial_start
@@ -762,9 +771,13 @@ def phase_iterate(cfg: dict, st: dict) -> None:
 
         verdict, v = "ESCALATE", {"reason": "no attempt completed"}
         for attempt in range(1, 4):                       # RETRY <= 3
+            # v8.1.5: `ticket-`, not `trial-`. The driver used to hand
+            # the Generator the very path run_trial reopens "w" for the
+            # trial, so on an experiment ticket the Generator's own run
+            # output was destroyed by the trial that followed it.
             rep = claude(st, "generator",
                          f"Execute this ticket per your instructions:\n\n"
-                         f"{body}\n\nTicket log: logs/trial-"
+                         f"{body}\n\nTicket log: logs/ticket-"
                          f"{st['iteration']}.log", field(body, "Boundary"))
             if "STATUS: stopped" in rep:
                 # v8.1.4: still the last 400 characters -- the reason is
@@ -778,7 +791,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 event("escalate",
                       detail=f"{tid} generator stopped: " + tail.strip())
                 return
-            trial_ok = run_trial(tid, body, st, cfg)
+            trial_ok = run_trial(tid, body, st, cfg, attempt)
 
             # ---- deterministic criteria gate (free; every iteration) --
             _, crit = check_criteria(cfg)

@@ -1924,6 +1924,68 @@ class TestDriverArtifactsStayOutOfCommits(DriverCase):
             self.assertNotIn(p, staged)
 
 
+class TestTrialLogPerAttempt(DriverCase):
+    """v8.1.5: a RETRY destroyed the evidence that caused it.
+
+    Observed live, first experiment toy run (2026-07-30). The trial log
+    was named `logs/trial-<iteration>.log` and opened "w", but run_trial
+    is called once per ATTEMPT, not per iteration. Attempt 1 died on a
+    `nan_loss` the Monitor classified INTERVENE; attempt 2 relaunched
+    and truncated the log to 9 lines. The only surviving record of why
+    the loop retried was the ledger's one-line reason -- the log tail
+    the Monitor actually judged was gone.
+
+    Appending would be worse, not better: the Monitor reads the tail,
+    so a relaunch would inherit the previous attempt's failure lines and
+    could classify a healthy run as crashing. One file per attempt.
+    """
+
+    def setUp(self):
+        super().setUp()
+        loop.time = FakeClock(step=0.0)     # never reaches a poll
+        loop.claude = lambda *a, **k: '{"status": "HEALTHY"}'
+
+    def test_each_attempt_writes_its_own_log(self):
+        cfg = self.write_goal()
+        st = {"iteration": 1}
+        loop.run_trial("T", "**Trial:** echo first attempt\n"
+                            "**Monitor Profile:** none", st, cfg, 1)
+        loop.run_trial("T", "**Trial:** echo second attempt\n"
+                            "**Monitor Profile:** none", st, cfg, 2)
+        logs = sorted(p.name for p in (self.tmp / "logs").glob("trial-*"))
+        self.assertEqual(logs, ["trial-1-1.log", "trial-1-2.log"])
+        self.assertIn("first attempt",
+                      (self.tmp / "logs" / "trial-1-1.log").read_text())
+
+    def test_the_generator_is_not_handed_a_path_the_driver_truncates(self):
+        """The latent half: phase_iterate told the Generator to tee its
+        ticket output to the same `logs/trial-<iteration>.log` the trial
+        then reopened "w"."""
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        self.results({"metrics": {"acc": 0.5}})
+        prompts = []
+
+        def fake(_st, role, prompt, *a, **k):
+            prompts.append((role, prompt))
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "done"
+        loop.claude = fake
+        loop.git_commit = lambda msg: "abc1234"
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        gen = [p for r, p in prompts if r == "generator"]
+        self.assertTrue(gen)
+        for p in gen:
+            self.assertNotIn("logs/trial-", p,
+                             "the driver handed the Generator a log "
+                             "path it truncates for the trial")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])
