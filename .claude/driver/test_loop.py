@@ -2031,6 +2031,63 @@ class TestReplanIsAnEvent(DriverCase):
         self.assertEqual(replans[0].get("n"), 1)
 
 
+class TestKillReachesTheTrial(DriverCase):
+    """v8.1.5: `trial_killed` was a claim the driver could not back up.
+
+    First experiment toy run (2026-07-30), reconstructed from the event
+    timestamps. The trial started ~15:03:59; the Monitor classified
+    INTERVENE and the driver logged `trial_killed` at 15:05:10. The
+    trial log then went on to gain `step 20/40` and `FATAL: loss
+    diverged to nan` -- lines the harness prints at trial_start+100s,
+    i.e. ~15:05:39, twenty-nine seconds AFTER the driver said it had
+    killed the run.
+
+    Cause: `Popen(cmd, shell=True)` makes the shell the direct child,
+    and the Planner's Trial field is `train.py && report.py`, which no
+    shell can optimise into an exec. `proc.kill()` therefore reaped the
+    shell and orphaned the trainer. In the toy that was harmless -- the
+    injected fault aborted it 30s later. On a real experiment goal the
+    driver would report a kill, launch the RETRY's trial, and leave two
+    trials on one GPU with the "dead" one still holding its memory.
+
+    Same family as the trial exit code and the unchecked git_commit:
+    assuming an external process did what we asked because nobody
+    looked.
+    """
+
+    def test_intervene_kills_the_process_behind_the_shell(self):
+        import time as real_time
+
+        class Clock(FakeClock):
+            def sleep(self, _sec):
+                real_time.sleep(0.8)      # let the child really start
+                self.t += self.step
+
+        loop.time = Clock(step=60)        # first sleep reaches the poll
+        loop.claude = lambda *a, **k: json.dumps(
+            {"status": "INTERVENE", "signature": "nan_loss",
+             "evidence": "loss=nan"})
+        pid_file = self.tmp / "child.pid"
+        # `true &&` forces a real shell: a bare single command is exec'd
+        # by sh, which would hide the defect entirely.
+        body = ("**Trial:** true && python3 -c \""
+                "import os, time, pathlib; "
+                f"pathlib.Path(r'{pid_file}').write_text(str(os.getpid()));"
+                " time.sleep(30)\"\n**Monitor Profile:** none")
+        cfg = self.write_goal(monitor={"interval_min": 1})
+
+        self.assertFalse(loop.run_trial("T", body, {"iteration": 1}, cfg))
+        self.assertTrue(pid_file.exists(), "the child never started -- "
+                        "the test proves nothing")
+        pid = int(pid_file.read_text())
+        real_time.sleep(0.3)
+        with self.assertRaises(
+                OSError,
+                msg=f"pid {pid} survived the kill: the driver reaped the "
+                    f"shell and orphaned the trial"):
+            os.kill(pid, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])

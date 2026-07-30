@@ -35,6 +35,7 @@ import operator
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import textwrap
@@ -552,6 +553,33 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
 
 # ---------- trials (experiment goals) ----------------------------------
 
+def kill_trial(proc) -> None:
+    """Kill the trial's whole process GROUP, not just the shell.
+
+    v8.1.5. Trials run under `shell=True`, so `proc` is the shell and
+    the trainer is its child -- and a Trial field like `train.py &&
+    report.py` is exactly the shape no shell can collapse into an exec.
+    `proc.kill()` therefore reaped the shell and left the trial running:
+    the first experiment run (2026-07-30) logged `trial_killed` at
+    15:05:10 and the trial log kept growing until ~15:05:39. The driver
+    then starts the RETRY's trial, so a real experiment ends with two
+    trials on one GPU and one of them believed dead.
+
+    `start_new_session=True` at launch puts the trial in its own process
+    group so this cannot signal the driver, and `wait()` makes the death
+    observed rather than merely requested.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        proc.kill()                    # already gone, or no group: best effort
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        event("trial_kill_failed", detail=f"pid {proc.pid} outlived "
+              f"SIGKILL -- check for an orphaned trial before retrying")
+
+
 def run_trial(tid: str, body: str, st: dict, cfg: dict,
               attempt: int = 1) -> bool:
     """Launch the trial command; poll with Monitor; True if it SUCCEEDED.
@@ -601,8 +629,12 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
         save(STATE, st)
 
     with log.open("w") as lf:
+        # start_new_session: the trial gets its own process group, so
+        # kill_trial() can signal the whole group without ever reaching
+        # the driver itself.
         proc = subprocess.Popen(trial_cmd, shell=True, cwd=ROOT,
-                                stdout=lf, stderr=subprocess.STDOUT)
+                                stdout=lf, stderr=subprocess.STDOUT,
+                                start_new_session=True)
         interventions = 0
         while proc.poll() is None:
             time.sleep(min(interval, 60))
@@ -614,7 +646,7 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
             bill()
             if budget_exceeded(st, cfg) in ("max_gpu_hours",
                                             "max_wall_hours"):
-                proc.kill()
+                kill_trial(proc)
                 event("escalate", detail="budget exhausted during trial")
                 return False
             tail = "\n".join(log.read_text(errors="ignore")
@@ -630,14 +662,14 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
             event("monitor", detail=status.get("status"),
                   signature=status.get("signature"))
             if status["status"] == "KILL_ESCALATE":
-                proc.kill()
+                kill_trial(proc)
                 bill()
                 event("escalate", detail="monitor: "
                       + status.get("evidence", ""))
                 return False
             if status["status"] == "INTERVENE":
                 interventions += 1
-                proc.kill()
+                kill_trial(proc)
                 bill()
                 st["last_intervention"] = status
                 save(STATE, st)
