@@ -128,7 +128,13 @@ cat > goal.json <<'EOF'
 }
 EOF
 
-printf 'logs/\napprovals/\n__pycache__/\n*.pyc\n.venv/\n' > .gitignore
+# journal/traces/ is Tier-2 raw transcripts: large, possibly sensitive,
+# and gitignored by governance.md §6. The toy omitted it and committed
+# 1.2 MB of session traces across run 4's three commits -- found by that
+# run's own final provenance audit, which is the check that is supposed
+# to catch exactly this.
+printf 'logs/\napprovals/\njournal/traces/\n__pycache__/\n*.pyc\n.venv/\n' \
+  > .gitignore
 mkdir -p logs results
 
 git init -q .

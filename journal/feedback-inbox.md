@@ -16,13 +16,76 @@ Entry format:
 
 ---
 
+## 2026-07-30 — toy loop runs 2–4: the first COMPLETED loop
+
+Four runs in one afternoon, $14.74 total ($1.55 / $2.24 / $2.62 / $8.34). Run 4 finished: `goal_reached`,
+three tickets built and committed by the driver, 13 passing tests,
+`results/metrics.json = {"tests_passed": 13, "cli_ok": 1}` verified by
+hand afterwards. The pipeline works end to end. What the three failed
+runs cost us was worth more than the successful one.
+
+**Fixed along the way** (all shipped, all with regression tests):
+
+1. **Markdown Boundary matched nothing** (run 1) — see the entry below.
+   Verified live in run 4: three Generator sessions, zero denials.
+2. **A `##` ticket heading parsed as zero tickets** (runs 2 and 3). The
+   sonnet Planner wrote `## Phase 1, Step 1:` in both runs; `TICKET` was
+   pinned to `### `. Tolerance now spans `#{2,4}` — and the done-marker
+   had to learn the same, or a parsed ticket could never be marked and
+   would re-run to the iteration cap.
+3. **"Unparseable" read as "finished"** (run 2). `phase_iterate` computed
+   `todo` off `tickets()` and could not tell the two apart, so a plan it
+   could not read produced `all_tickets_done` with nothing built. Only
+   the deterministic criteria gate stopped that from reading as success.
+4. **A revision nobody reviewed** (run 3). Contract review was
+   `for _ in range(2): review; revise` — it bought a Planner revision
+   after the last review and escalated without looking at it. The
+   discarded revision had fixed the flagged defect; the loop was one
+   review away from the gate, and the escalation described a plan that
+   was no longer on disk. Reviews are now revisions + 1.
+5. **Nothing told the Planner to BUILD what the criteria READ** (run 3).
+   Both REVISE rounds were spent on this, with the Evaluator
+   re-deriving the rule each time by reading `loop.py` line by line.
+   Now a Producibility self-check in `cdd-planner.md` +
+   `task-ticket-format.md`.
+6. **The toy could not finish under its own budget** (run 4). Advertised
+   "~$1-2", capped `max_usd` at 5, escalated at $5.69 with one ticket to
+   go. Re-budgeted from measurement ($12).
+7. **The toy committed 1.2 MB of `journal/traces/`** (run 4), contrary to
+   governance.md §6 — its `.gitignore` never excluded them.
+
+**Patterns worth a retro's attention:**
+
+- Items 1, 2 and 5 are one failure mode: **a value crosses from a model
+  to a parser, and the parser is stricter than what the model writes.**
+  Each was invisible until a real run, and each was silent — the loop
+  reported something other than "I could not read this."
+- Items 3 and 4 are the other: **the driver could not distinguish two
+  states and picked the optimistic one.** Unparseable vs finished;
+  reviewed vs merely paid for. Both defaulted toward "proceed".
+- Three of the seven were found by the loop's own machinery, not by me:
+  the criteria gate caught 3, the contract review caught 5, and run 4's
+  final provenance audit caught 7. The Evaluator also detected an
+  out-of-band `goal.json` budget edit made between the escalation and
+  the resume, verified the criteria block was byte-identical, and
+  reasoned from PROTECTED_ALWAYS about who could have made it. The
+  expensive checks are earning their cost.
+- What no automated check caught: item 4 (I found it by comparing file
+  mtimes) and item 6. Both are about the driver's own economics, which
+  nothing audits.
+
+**Still unexercised after four runs:** REPLAN, RETRY, the Monitor,
+trials, and the `[Halt here]`-free escalation path from a Generator
+stop. A `build` goal never touches them. The next smoke test should be
+an `experiment` goal.
+
 ## 2026-07-30 — first end-to-end toy loop (`.claude/driver/toy_project.sh`, build goal, $1.55)
 
 The loop's first real run. It reached the Generator and escalated on
 ticket 1. Everything *around* the failure worked — the hook denied, the
 Generator stopped and reported rather than improvising, the driver
-escalated instead of burning retries. Three code defects (all fixed in
-8.1.3) and two interface defects (NOT fixed — logged for a decision).
+escalated instead of burning retries. Three code defects (fixed in 8.1.3) and
+two interface defects (fixed in 8.1.4, after run 3 re-confirmed both).
 
 1. **A markdown Boundary matched nothing → silent global write ban.** (fixed)
    - What happened: the Planner wrote ``**Boundary:** `src/wordfreq/counter.py`, ...``
@@ -61,7 +124,7 @@ escalated instead of burning retries. Three code defects (all fixed in
    its own idea of a ticket. Where a model writes a field that code then
    parses, the test fixture should be copied from real Planner output.
 
-4. **The human gate does not say where `Plan.md` is.** (NOT fixed)
+4. **The human gate does not say where `Plan.md` is.** (fixed in 8.1.4)
    - What happened: `== HUMAN GATE [plan] ==` says "Review it, then
      approve". The loop runs in a worktree, so `Plan.md` is not in the tree
      where the user typed `start`. Only `toy_project.sh`'s echo prints the
@@ -69,7 +132,7 @@ escalated instead of burning retries. Three code defects (all fixed in
    - Framework angle: `loop.py` `wait_approval()`.
    - Severity: recurring
 
-5. **`phase_status()` truncates the one event that requires action.** (NOT fixed)
+5. **`phase_status()` truncates the one event that requires action.** (fixed in 8.1.4)
    - What happened: every event detail is cut to 54 characters, including
      `escalate`. The escalation reason is `rep[-400:]` of the Generator's
      report, so the user sees a 54-character window starting mid-word —
