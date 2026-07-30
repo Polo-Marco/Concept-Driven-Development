@@ -72,6 +72,9 @@ What it covers, and which v8.0 defect each case pins down:
                       from phase_plan before a contract review is paid
                       for, and again in phase_iterate, instead of
                       reporting all_tickets_done with nothing built
+  human-facing output the gate prints the absolute path to Plan.md, and
+                      an escalate reason prints in full instead of a
+                      54-character window starting mid-word
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -1375,6 +1378,76 @@ class TestUnparseablePlan(DriverCase):
             loop.phase_plan(cfg, {"phase": "plan", "spent_usd": 0.0})
         self.assertTrue(any(e["event"] == "escalate"
                             for e in self.events()))
+
+
+class TestHumanFacingOutput(DriverCase):
+    """journal/feedback-inbox.md 2026-07-30, items 4 and 5: a message
+    that exists to make a human act was formatted as a log line."""
+
+    def test_the_gate_prints_where_the_plan_is(self):
+        """The loop runs in a worktree, so Plan.md is NOT in the tree
+        where the user typed `start`. The banner said "Review it, then
+        approve" and never said where."""
+        (self.tmp / "Plan.md").write_text(PLAN)
+        flag = self.tmp / "approvals" / "plan.approved"
+        flag.parent.mkdir(exist_ok=True)
+        loop.time = types.SimpleNamespace(
+            sleep=lambda _s: flag.touch(), time=lambda: 1_000_000.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.wait_approval({}, "plan", "Plan.md ready.")
+        self.assertIn(str(self.tmp / "Plan.md"), buf.getvalue(),
+                      "print the absolute path -- a relative one is "
+                      "wrong from the tree the human is standing in")
+
+    def test_an_escalation_is_not_truncated_in_status(self):
+        long = ("generator stopped: " + "x" * 300 + " END")
+        loop.save(loop.STATE, {"phase": "iterate", "iteration": 1,
+                               "started_epoch": loop.time.time()})
+        loop.event("escalate", detail=long)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status({})
+        out = buf.getvalue()
+        self.assertIn("END", out, "the reason ends mid-word otherwise")
+        self.assertIn("generator stopped", out)
+
+    def test_a_stop_report_is_cut_at_a_word_boundary(self):
+        """Printing the detail in full exposed where it was cut: the
+        driver stores rep[-400:], which opened mid-word."""
+        (self.tmp / "Plan.md").write_text(PLAN)
+        report = ("prologue " * 80) + "boundary denial explained. " \
+                 "STATUS: stopped"
+        loop.claude = lambda *a, **k: report
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        esc = [e for e in self.events() if e["event"] == "escalate"][0]
+        said = esc["detail"].split("generator stopped: ", 1)[1]
+        self.assertTrue(said.startswith("prologue"),
+                        f"starts mid-word: {said[:30]!r}")
+        self.assertIn("boundary denial explained", said)
+
+    def test_a_short_report_is_not_clipped_at_all(self):
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.claude = lambda *a, **k: "needs a decision. STATUS: stopped"
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        esc = [e for e in self.events() if e["event"] == "escalate"][0]
+        self.assertIn("needs a decision.", esc["detail"])
+
+    def test_routine_events_stay_one_line(self):
+        loop.save(loop.STATE, {"phase": "iterate", "iteration": 1,
+                               "started_epoch": loop.time.time()})
+        loop.event("criterion", detail="ok   " + "y" * 300)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status({})
+        self.assertNotIn("y" * 100, buf.getvalue(),
+                         "a scannable log line stays truncated")
 
 
 class TestGitCommitIsChecked(DriverCase):

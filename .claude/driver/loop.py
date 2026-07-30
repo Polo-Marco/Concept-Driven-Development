@@ -37,6 +37,7 @@ import re
 import shlex
 import subprocess
 import sys
+import textwrap
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -493,10 +494,15 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
     save(STATE, st)
     event("approval_request", gate=name, detail=detail)
     gap = notify_gap()
+    # v8.1.4: print WHERE. The loop runs in a worktree, so Plan.md is not
+    # in the tree the user typed `start` in, and this banner -- whose one
+    # job is to make a human act -- used to name no path at all
+    # (journal/feedback-inbox.md 2026-07-30 item 4).
     print(f"\n== HUMAN GATE [{name}] ==\n{detail}\n"
-          f"Approve via: control-tower session / phone (writes "
-          f"{flag.relative_to(ROOT)}), or:\n"
-          f"  python3 .claude/driver/loop.py approve\n"
+          f"  read     {ROOT / 'Plan.md'}\n"
+          f"  approve  python3 .claude/driver/loop.py approve\n"
+          f"           (from any tree of this repo; or write "
+          f"{flag} from the control tower)\n"
           + (f"!! {gap}\n" if gap else ""))
     while not flag.exists():
         time.sleep(2)          # v8.1.2: 15s made a phone approve feel
@@ -705,8 +711,16 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                          f"{body}\n\nTicket log: logs/trial-"
                          f"{st['iteration']}.log", field(body, "Boundary"))
             if "STATUS: stopped" in rep:
-                event("escalate", detail=f"{tid} generator stopped: "
-                      + rep[-400:])
+                # v8.1.4: still the last 400 characters -- the reason is
+                # at the end of a stop report -- but cut at a word
+                # boundary. The raw slice opened mid-word ("generator
+                # stopped: t those literal bac"), which reads as
+                # corruption in the one event that requires a human.
+                tail = rep[-400:]
+                if len(rep) > 400:
+                    tail = tail.split(" ", 1)[-1]
+                event("escalate",
+                      detail=f"{tid} generator stopped: " + tail.strip())
                 return
             trial_ok = run_trial(tid, body, st, cfg)
 
@@ -987,6 +1001,11 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
 
 # ---------- status: for a human ----------------------------------------
 
+# Events whose whole purpose is to make a human do something. These are
+# never truncated in `status` (v8.1.4).
+ACTIONABLE = ("escalate", "approval_request")
+
+
 def phase_status(cfg: dict) -> None:
     """What is happening, in the order a human asks it.
 
@@ -1055,9 +1074,20 @@ def phase_status(cfg: dict) -> None:
     if EVENTS.exists():
         recent = [json.loads(x) for x in
                   EVENTS.read_text().splitlines()[-8:] if x.strip()]
-        out += ["", "recent"] + [
-            f"  {e['ts'][11:19]}  {e['event']:<20} "
-            f"{str(e.get('detail', ''))[:54]}" for e in recent]
+        out += ["", "recent"]
+        for e in recent:
+            head = f"  {e['ts'][11:19]}  {e['event']:<20} "
+            d = str(e.get("detail", ""))
+            # v8.1.4: the events that exist to make a human act print in
+            # full. An escalate detail is the last 400 chars of the
+            # session's stop report; truncating it to 54 gave the user a
+            # window starting mid-word -- "generator stopped: t those
+            # literal bac" -- for the one line that needed acting on
+            # (journal/feedback-inbox.md 2026-07-30 item 5). Everything
+            # else stays one scannable line.
+            out.append(head + (textwrap.fill(
+                d, width=96, subsequent_indent=" " * len(head))
+                if e["event"] in ACTIONABLE else d[:54]))
     print("\n".join(out))
 
 
