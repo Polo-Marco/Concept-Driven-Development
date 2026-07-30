@@ -392,6 +392,12 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
            "--append-system-prompt", sys_prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions"]  # hook = enforcement layer
+    # v8.1.2c: the only thing worse than a slow phase is a phase you
+    # cannot see. Nothing was emitted between loop_start and the human
+    # gate, so `status` looked identical whether the Planner was
+    # thinking or the driver was dead. One line per session is the
+    # cheapest heartbeat there is.
+    event("session", detail=f"{role} ({model}) started")
     r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
                        capture_output=True, timeout=timeout)
     try:
@@ -596,6 +602,10 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
            f"{ev.read_text()}\nReason: {replan_reason}\n" if replan_reason
            else ""))
     claude(st, "planner", prompt)
+    plan = ROOT / "Plan.md"
+    event("planned", detail=(
+        f"{sum(1 for _ in tickets(plan.read_text()))} tickets"
+        if plan.exists() else "NO Plan.md was written"))
     st["phase"] = "contract_review"
     save(STATE, st)
 
@@ -613,6 +623,7 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
         # gate whenever the Evaluator crashed or wrote bad JSON.
         v = load(VERDICT, {}).get("verdict")
         if v == "OK":
+            event("contract_ok", detail="plan matches the goal contract")
             st["phase"] = "gate"
             save(STATE, st)
             return
@@ -947,6 +958,20 @@ def phase_status(cfg: dict) -> None:
            + (f"   ticket {st['current_ticket']}"
               if st.get("current_ticket") else ""),
            f"started   {st.get('started', '?')}  (elapsed {hours:.1f}h)"]
+
+    # "is it working, or is it dead" is the first question anyone asks,
+    # and until v8.1.2c nothing answered it: a thinking phase and a
+    # crashed driver rendered identically.
+    name = ("cdd-" + slug(cfg))[:28].rstrip("-") if cfg.get("goal") else ""
+    alive = bool(name) and sh(
+        f"tmux has-session -t {shlex.quote(name)}").returncode == 0
+    idle = ((time.time() - EVENTS.stat().st_mtime) / 60
+            if EVENTS.exists() else None)
+    out.append(
+        "driver    "
+        + (f"running (tmux {name})" if alive
+           else "no tmux session -- finished, or run in the foreground")
+        + (f"  ·  last event {idle:.0f}m ago" if idle is not None else ""))
 
     plan = ROOT / "Plan.md"
     if plan.exists():

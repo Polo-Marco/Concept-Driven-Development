@@ -53,6 +53,9 @@ What it covers, and which v8.0 defect each case pins down:
                       instead of failing as "contract review twice"
   find_loop           status/approve resolve the worktree that holds
                       the loop, so they work from the primary tree too
+  observability       one heartbeat event per model session, a ticket
+                      count after planning, and a driver-alive line in
+                      status (8.1: loop_start to human gate was silent)
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -1382,6 +1385,62 @@ class TestFindLoop(DriverCase):
         self.assertEqual(loop.STATE, self.wt / "loop-state.json")
         self.assertEqual(loop.APPROVALS, self.wt / "approvals")
         self.assertEqual(loop.GOAL, self.wt / "goal.json")
+
+
+class TestObservability(DriverCase):
+    """A silent phase and a dead driver used to render identically."""
+
+    def test_every_session_leaves_a_heartbeat(self):
+        self.write_goal()
+        real = loop.subprocess
+        loop.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(
+                stdout=json.dumps({"total_cost_usd": 0.5,
+                                   "result": "ok"})),
+            Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        loop.claude({}, "planner", "p")
+        starts = [e for e in self.events() if e["event"] == "session"]
+        self.assertEqual(len(starts), 1)
+        self.assertIn("planner", starts[0]["detail"])
+
+    def test_planner_reports_how_many_tickets_it_wrote(self):
+        cfg = self.write_goal()
+        loop.claude = lambda *a, **k: (
+            (self.tmp / "Plan.md").write_text(PLAN) or "")
+        loop.phase_plan(cfg, {})
+        planned = [e for e in self.events() if e["event"] == "planned"]
+        self.assertEqual(planned[0]["detail"], "2 tickets")
+
+    def test_a_planner_that_wrote_nothing_says_so(self):
+        cfg = self.write_goal()
+        loop.claude = lambda *a, **k: ""
+        loop.phase_plan(cfg, {})
+        planned = [e for e in self.events() if e["event"] == "planned"]
+        self.assertIn("NO Plan.md", planned[0]["detail"])
+
+    def test_status_reports_a_dead_driver(self):
+        cfg = self.write_goal()
+        loop.sh = lambda cmd, **k: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="")     # no tmux session
+        loop.save(loop.STATE, {"phase": "contract_review"})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status(cfg)
+        self.assertIn("no tmux session", buf.getvalue())
+
+    def test_status_reports_a_live_driver_and_its_idle_time(self):
+        cfg = self.write_goal()
+        loop.sh = lambda cmd, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")     # session is up
+        loop.save(loop.STATE, {"phase": "iterate"})
+        loop.event("loop_start", detail="x")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status(cfg)
+        out = buf.getvalue()
+        self.assertIn("running (tmux cdd-test-goal)", out)
+        self.assertIn("last event 0m ago", out)
 
 
 if __name__ == "__main__":
