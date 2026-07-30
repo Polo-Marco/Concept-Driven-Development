@@ -1,0 +1,719 @@
+#!/usr/bin/env python3
+"""CDD 8.1 loop driver — deterministic orchestrator (reference impl).
+
+Design: docs/loop-orchestration-design.md. The driver is deliberately
+dumb: it spawns fresh headless Claude sessions per phase, parses their
+JSON artifacts, branches on verdicts, enforces budgets, and owns all
+long-running processes and git commits. LLM intelligence lives inside
+the sessions; control flow lives here, where it is auditable.
+
+v8.1 adds four deterministic gates, on the principle that anything
+rule-bound must never be handed to a probabilistic model:
+
+  * machinery()      -- the loop's own parts are installed and wired
+  * validate_goal()  -- the goal contract is well-formed
+  * preflight()      -- environment preconditions, before any model call
+  * check_criteria() -- goal.json criteria, read straight off disk
+
+Usage:
+    python3 .claude/driver/loop.py            # start or resume a loop
+    python3 .claude/driver/loop.py status     # print loop state
+    python3 .claude/driver/loop.py approve    # approve the plan gate
+    python3 .claude/driver/loop.py check      # run gates only, then exit
+    python3 .claude/driver/loop.py --here     # allow the primary worktree
+
+Requires: goal.json (written by the [/loop] Ask phase), Claude Code
+CLI on PATH, git. Python 3.9+, stdlib only.
+"""
+import json
+import operator
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
+GOAL = ROOT / "goal.json"
+STATE = ROOT / "loop-state.json"
+LEDGER = ROOT / "ledger.jsonl"
+EVENTS = ROOT / "events.jsonl"
+VERDICT = ROOT / "verdict.json"
+APPROVALS = ROOT / "approvals"
+AGENTS = ROOT / ".claude" / "agents"
+SETTINGS = ROOT / ".claude" / "settings.json"
+NOTIFY = ROOT / ".claude" / "driver" / "notify.sh"  # optional plug-in
+
+DEFAULT_MODELS = {"planner": "opus", "generator": "sonnet",
+                  "evaluator": "opus", "monitor": "haiku"}
+
+ROLES = ("planner", "generator", "evaluator", "monitor")
+
+OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le,
+       "<": operator.lt, "==": operator.eq, "!=": operator.ne}
+
+
+# ---------- plumbing --------------------------------------------------
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def load(path: Path, default):
+    """Read JSON. A corrupt file returns `default` -- callers that gate
+    on the result MUST treat `default` as failure (fail-closed)."""
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return default
+
+
+def save(path: Path, obj) -> None:
+    path.write_text(json.dumps(obj, indent=2))
+
+
+def event(kind: str, **kw) -> None:
+    rec = {"ts": now(), "event": kind, **kw}
+    with EVENTS.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+    if NOTIFY.exists():                       # pluggable: ntfy/telegram
+        subprocess.run(["bash", str(NOTIFY), kind, json.dumps(rec)],
+                       check=False)
+    print(f"[{rec['ts']}] {kind}: {kw.get('detail', '')}")
+
+
+def sh(cmd: str, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, shell=True, cwd=ROOT, text=True,
+                          capture_output=True, **kw)
+
+
+def git_commit(message: str) -> str:
+    sh("git add -A")
+    sh(f"git commit -m {shlex.quote(message)}")
+    return sh("git rev-parse --short HEAD").stdout.strip()
+
+
+def die(msg: str) -> None:
+    """Abort loudly. Never degrade to a partial loop silently."""
+    print(f"\n!! LOOP NOT STARTED\n{msg}\n", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------- gate 1: machinery (is the loop actually installed?) -------
+
+def machinery() -> None:
+    """Layer-A preflight: the loop's own parts.
+
+    Motivated by journal/from-ccd-ai-bench-retro-20260715.md -- a project
+    deployed with the v8.0 CLAUDE.md but no .claude/driver silently
+    degraded to a manual 7.0 flow and reported itself as 8.0. A missing
+    part must abort, never degrade.
+    """
+    required = [AGENTS / f"cdd-{r}.md" for r in ROLES] + [
+        ROOT / ".claude" / "hooks" / "enforce_authority.py",
+        ROOT / ".claude" / "rules" / "loop-protocol.md"]
+    missing = [str(f.relative_to(ROOT)) for f in required
+               if not f.exists()]
+    if missing:
+        die("Loop machinery is incomplete -- see v8.0-draft/INSTALL.md.\n"
+            "  missing: " + ", ".join(missing))
+
+    if "enforce_authority.py" not in json.dumps(load(SETTINGS, {})):
+        die("The PreToolUse hook is not wired in .claude/settings.json.\n"
+            "  Without it, phase authority is prose, not enforcement --\n"
+            "  every guarantee in .claude/rules/phase-authority.md is\n"
+            "  honour-system only. Wire it before running unattended.")
+    event("machinery_ok", detail=f"{len(ROLES)} agents + hook wired")
+
+
+# ---------- gate 2: goal contract is well-formed ----------------------
+
+def validate_goal(cfg: dict) -> None:
+    """A loop with no machine-checkable criteria cannot know it is done.
+
+    goal.json is a MACHINE MIRROR of Goal.md, written by the [/loop] Ask
+    phase and audited by the Evaluator's contract review (Faithful?).
+    The driver only checks that it is well-formed -- never what it means.
+    """
+    problems = []
+    crit = cfg.get("criteria")
+    if not isinstance(crit, list) or not crit:
+        problems.append("criteria: must be a non-empty list -- a loop "
+                        "without criteria can only guess when it is done")
+    else:
+        for i, c in enumerate(crit):
+            where = f"criteria[{i}]"
+            if not isinstance(c, dict):
+                problems.append(f"{where}: must be an object")
+                continue
+            for k in ("metric", "op", "value", "source"):
+                if k not in c:
+                    problems.append(f"{where}: missing '{k}'")
+            if c.get("op") not in OPS:
+                problems.append(f"{where}: op {c.get('op')!r} not in "
+                                f"{sorted(OPS)}")
+    if not cfg.get("budgets"):
+        problems.append("budgets: missing -- caps are circuit breakers, "
+                        "not optional. Set them before running "
+                        "unattended.")
+    for c in cfg.get("preflight", []):
+        if not isinstance(c, dict) or "run" not in c or "name" not in c:
+            problems.append(f"preflight entry needs 'name' and 'run': {c}")
+    if problems:
+        die("goal.json is not a usable contract:\n  - "
+            + "\n  - ".join(problems))
+
+
+# ---------- gate 3: preflight (environment preconditions) -------------
+
+def preflight(cfg: dict) -> None:
+    """Layer-B preflight: what THIS goal needs before it can start.
+
+    Each check is a shell command; exit 0 = pass. Runs on every driver
+    start INCLUDING resume (.env goes stale, endpoints go down, Docker
+    daemons die). Fail-closed: any failure aborts before a single model
+    call is spent.
+
+    SECRETS: only the check's name and exit code are logged. A check
+    must not print credentials; the driver deliberately discards its
+    stdout/stderr so a badly written check cannot leak a key into
+    events.jsonl or logs/driver.log (governance.md section 2).
+    """
+    checks = cfg.get("preflight", [])
+    if not checks:
+        event("preflight_none",
+              detail="Goal.md declared no preconditions")
+        return
+    failed = []
+    for c in checks:
+        rc = sh(c["run"]).returncode
+        event("preflight",
+              detail=f"{'ok  ' if rc == 0 else 'FAIL'} {c['name']}")
+        if rc != 0:
+            failed.append(f"{c['name']} (exit {rc}) -- {c['run']}")
+    if failed:
+        die("Preflight failed. Nothing was planned and nothing was "
+            "spent.\n  - " + "\n  - ".join(failed)
+            + "\n\n  Fix the environment, then start the driver again.")
+
+
+# ---------- gate 4: the success criteria themselves -------------------
+
+def check_criteria(cfg: dict):
+    """Read every criterion straight off disk. No model involved.
+
+    Returns (all_ok, results). Fail-closed: a missing source file, an
+    unparseable file, or an absent metric is a FAILURE, never a pass.
+
+    This is necessary but NOT sufficient: it proves the number met the
+    threshold, not that the number was earned. Provenance (was this
+    metric actually produced by the harness, or hand-written?) remains
+    the Evaluator's job. Keep both.
+    """
+    results = []
+    for c in cfg.get("criteria", []):
+        rec = {"metric": c["metric"], "op": c["op"], "value": c["value"],
+               "source": c["source"], "actual": None, "ok": False,
+               "why": ""}
+        src = ROOT / c["source"]
+        if not src.exists():
+            rec["why"] = "source file does not exist"
+            results.append(rec)
+            continue
+        data = load(src, None)
+        if data is None:
+            rec["why"] = "source file is not readable JSON"
+            results.append(rec)
+            continue
+        actual = None
+        if isinstance(data, dict):
+            actual = data.get("metrics", {}).get(c["metric"]) \
+                if isinstance(data.get("metrics"), dict) else None
+            if actual is None:
+                actual = data.get(c["metric"])
+        rec["actual"] = actual
+        if actual is None:
+            rec["why"] = f"metric '{c['metric']}' not in {c['source']}"
+        else:
+            try:
+                rec["ok"] = bool(OPS[c["op"]](actual, c["value"]))
+                if not rec["ok"]:
+                    rec["why"] = "threshold not met"
+            except TypeError:
+                rec["why"] = (f"cannot compare {actual!r} "
+                              f"{c['op']} {c['value']!r}")
+        results.append(rec)
+    return (bool(results) and all(r["ok"] for r in results)), results
+
+
+def criteria_line(r: dict) -> str:
+    return (f"{'ok  ' if r['ok'] else 'FAIL'} {r['metric']} {r['op']} "
+            f"{r['value']} (actual={r['actual']}"
+            + (f"; {r['why']}" if r["why"] else "") + ")")
+
+
+# ---------- isolation --------------------------------------------------
+
+def require_isolation(cfg: dict, allow_here: bool) -> None:
+    """Refuse to drive the primary working tree.
+
+    The driver commits with `git add -A`, so anything loose in the tree
+    joins the loop's history. A linked worktree contains that. This
+    gate DETECTS rather than creates: an untested re-exec inside the
+    process that owns every commit is the wrong place to be clever.
+    """
+    if allow_here or os.environ.get("CDD_ALLOW_PRIMARY"):
+        event("isolation_waived", detail="running in the primary tree")
+        return
+    common = sh("git rev-parse --git-common-dir").stdout.strip()
+    gitdir = sh("git rev-parse --git-dir").stdout.strip()
+    if common and gitdir and common != gitdir:
+        event("isolation_ok", detail="linked worktree")
+        return
+    slug = re.sub(r"[^a-z0-9]+", "-",
+                  cfg.get("goal", "loop").lower())[:40].strip("-") or "loop"
+    die(f"Refusing to run in the primary working tree.\n"
+        f"  The driver commits with `git add -A`; a loop belongs in its\n"
+        f"  own worktree so a runaway cannot touch your main checkout.\n\n"
+        f"  git worktree add ../{ROOT.name}-loop -b loop/{slug}\n"
+        f"  cd ../{ROOT.name}-loop\n"
+        f"  python3 .claude/driver/loop.py 2>&1 | tee logs/driver.log\n\n"
+        f"  Override (not recommended): loop.py --here")
+
+
+# ---------- claude sessions -------------------------------------------
+
+def claude(role: str, prompt: str, boundary: str = "",
+           timeout: int = 7200) -> str:
+    """Spawn one fresh headless session with hook-enforced authority."""
+    cfg = load(GOAL, {})
+    model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
+    sys_prompt = (AGENTS / f"cdd-{role}.md").read_text()
+    env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": boundary}
+    cmd = ["claude", "-p", prompt, "--model", model,
+           "--append-system-prompt", sys_prompt,
+           "--output-format", "json",
+           "--dangerously-skip-permissions"]  # hook = enforcement layer
+    r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
+                       capture_output=True, timeout=timeout)
+    try:
+        out = json.loads(r.stdout)
+        cost = out.get("total_cost_usd", 0.0)
+        st = load(STATE, {})
+        st["spent_usd"] = round(st.get("spent_usd", 0.0) + cost, 4)
+        save(STATE, st)
+        return out.get("result", "")
+    except (json.JSONDecodeError, AttributeError):
+        return r.stdout
+
+
+# ---------- plan parsing (dumb, format-bound) --------------------------
+
+TICKET = re.compile(r"^### (Phase \d+, Step \d+): (.+)$", re.M)
+
+
+def tickets(plan_text: str):
+    """Yield (id, title, body, done) for each ticket, in order."""
+    heads = list(TICKET.finditer(plan_text))
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(plan_text)
+        body = plan_text[m.start():end]
+        done = bool(re.search(r"^- \[x\]", body, re.M)) or \
+            "[x]" in plan_text[max(0, m.start() - 8):m.start()]
+        yield m.group(1), m.group(2), body, done
+
+
+def field(body: str, name: str) -> str:
+    m = re.search(rf"^\*\*{name}:\*\*\s*(.+)$", body, re.M)
+    return m.group(1).strip() if m else ""
+
+
+# ---------- budgets ----------------------------------------------------
+
+def budget_exceeded(st: dict, cfg: dict) -> str:
+    b = cfg.get("budgets", {})
+    if st.get("iteration", 0) >= b.get("max_iterations", 20):
+        return "max_iterations"
+    if st.get("replans", 0) > b.get("max_replans", 3):
+        return "max_replans"
+    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
+    if hours >= b.get("max_wall_hours", 48):
+        return "max_wall_hours"
+    if st.get("gpu_hours", 0.0) >= b.get("max_gpu_hours", 1e9):
+        return "max_gpu_hours"
+    # v8.1: spend was metered since 8.0 but never enforced.
+    if st.get("spent_usd", 0.0) >= b.get("max_usd", 1e9):
+        return "max_usd"
+    return ""
+
+
+# ---------- gates ------------------------------------------------------
+
+def wait_approval(name: str, detail: str) -> None:
+    APPROVALS.mkdir(exist_ok=True)
+    flag = APPROVALS / f"{name}.approved"
+    if flag.exists():
+        flag.unlink()
+    event("approval_request", gate=name, detail=detail)
+    print(f"\n== HUMAN GATE [{name}] ==\n{detail}\n"
+          f"Approve via: control-tower session / phone (writes "
+          f"{flag.relative_to(ROOT)}), or:\n"
+          f"  python3 .claude/driver/loop.py approve\n")
+    while not flag.exists():
+        time.sleep(15)
+    flag.unlink()
+    event("approved", gate=name)
+
+
+# ---------- trials (experiment goals) ----------------------------------
+
+def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
+    """Launch the trial command; poll with Monitor; True if it FINISHED.
+
+    Returns False whenever the trial did not run to completion, so the
+    caller never scores partial metrics. (v8.0 returned True after a
+    crash-class kill and let the Evaluator grade a truncated run.)
+    """
+    trial_cmd = field(body, "Trial")
+    if not trial_cmd:
+        return True                       # build ticket: no trial phase
+    interval = 60 * int(cfg.get("monitor", {}).get("interval_min", 10))
+    log = ROOT / "logs" / f"trial-{st['iteration']}.log"
+    log.parent.mkdir(exist_ok=True)
+    trial_start = time.time()             # v8.1: never reset by polling
+    last_poll = trial_start
+    billed = [0.0]
+
+    def bill() -> None:
+        """Charge elapsed trial wall-clock once, idempotently."""
+        elapsed = (time.time() - trial_start) / 3600
+        delta = max(0.0, elapsed - billed[0])
+        billed[0] = elapsed
+        st["gpu_hours"] = round(st.get("gpu_hours", 0.0) + delta, 3)
+        save(STATE, st)
+
+    with log.open("w") as lf:
+        proc = subprocess.Popen(trial_cmd, shell=True, cwd=ROOT,
+                                stdout=lf, stderr=subprocess.STDOUT)
+        interventions = 0
+        while proc.poll() is None:
+            time.sleep(min(interval, 60))
+            if time.time() - last_poll < interval:
+                continue
+            last_poll = time.time()
+            # v8.1: bill as we go so a cap can trip DURING a long trial,
+            # not only after it ends.
+            bill()
+            if budget_exceeded(st, cfg) in ("max_gpu_hours",
+                                            "max_wall_hours"):
+                proc.kill()
+                event("escalate", detail="budget exhausted during trial")
+                return False
+            tail = "\n".join(log.read_text(errors="ignore")
+                             .splitlines()[-100:])
+            rep = claude("monitor",
+                         f"Monitor Profile:\n"
+                         f"{field(body, 'Monitor Profile')}\n\n"
+                         f"Trial log tail:\n{tail}\n\nClassify per your "
+                         f"instructions. Output ONLY the JSON.")
+            m = re.search(r"\{.*\}", rep, re.S)
+            status = (json.loads(m.group(0)) if m
+                      else {"status": "HEALTHY"})
+            event("monitor", detail=status.get("status"),
+                  signature=status.get("signature"))
+            if status["status"] == "KILL_ESCALATE":
+                proc.kill()
+                bill()
+                event("escalate", detail="monitor: "
+                      + status.get("evidence", ""))
+                return False
+            if status["status"] == "INTERVENE":
+                interventions += 1
+                proc.kill()
+                bill()
+                st["last_intervention"] = status
+                save(STATE, st)
+                if interventions > 2:
+                    event("escalate", detail="repeated interventions")
+                else:
+                    event("trial_killed", detail="crash-class: "
+                          + str(status.get("signature", "")) + " -- RETRY")
+                # v8.1: a killed trial is NOT an evaluable trial.
+                return False
+    bill()
+    return True
+
+
+# ---------- phases ------------------------------------------------------
+
+def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
+    ledger = LEDGER.read_text() if LEDGER.exists() else "(empty)"
+    ev = (ROOT / "Evaluation.md")
+    prompt = (
+        f"Read Goal.md and plan per your instructions and the mode "
+        f"skill for goal type '{cfg.get('type', 'modify')}'.\n"
+        f"Trial ledger so far:\n{ledger}\n"
+        + (f"\nThis is a REPLAN. Latest Evaluation.md:\n"
+           f"{ev.read_text()}\nReason: {replan_reason}\n" if replan_reason
+           else ""))
+    claude("planner", prompt)
+    st["phase"] = "contract_review"
+    save(STATE, st)
+
+
+def phase_contract_review(cfg: dict, st: dict) -> None:
+    for round_ in range(2):
+        if VERDICT.exists():
+            VERDICT.unlink()          # never read a stale verdict
+        claude("evaluator",
+               "Mode 1 -- contract review. Read Plan.md, Goal.md, "
+               "goal.json, and the Architecture Overview. Audit per "
+               "your instructions; write Evaluation.md and verdict.json.")
+        # v8.1: fail-CLOSED. A missing or corrupt verdict from a safety
+        # pre-gate used to default to "OK", which silently passed the
+        # gate whenever the Evaluator crashed or wrote bad JSON.
+        v = load(VERDICT, {}).get("verdict")
+        if v == "OK":
+            st["phase"] = "gate"
+            save(STATE, st)
+            return
+        if v is None:
+            event("contract_review_unreadable",
+                  detail="no usable verdict.json -- treating as REVISE")
+        event("contract_revise", detail=f"round {round_ + 1}")
+        claude("planner", "Contract review returned REVISE. Read "
+               "Evaluation.md and revise Plan.md accordingly.")
+    event("escalate", detail="plan failed contract review twice")
+    sys.exit(1)
+
+
+def phase_iterate(cfg: dict, st: dict) -> None:
+    while True:
+        reason = budget_exceeded(st, cfg)
+        if reason:
+            event("escalate", detail=f"budget exhausted: {reason}")
+            return
+        plan = (ROOT / "Plan.md")
+        todo = [(i, t, b) for i, t, b, done in tickets(plan.read_text())
+                if not done]
+        if not todo:
+            event("all_tickets_done")
+            st["phase"] = "final_eval"
+            save(STATE, st)
+            return
+        tid, title, body = todo[0]
+        st["iteration"] += 1
+        st["current_ticket"] = tid
+        save(STATE, st)
+        event("iteration", detail=f"{tid}: {title}", n=st["iteration"])
+
+        verdict, v = "ESCALATE", {"reason": "no attempt completed"}
+        for attempt in range(1, 4):                       # RETRY <= 3
+            rep = claude("generator",
+                         f"Execute this ticket per your instructions:\n\n"
+                         f"{body}\n\nTicket log: logs/trial-"
+                         f"{st['iteration']}.log", field(body, "Boundary"))
+            if "STATUS: stopped" in rep:
+                event("escalate", detail=f"{tid} generator stopped: "
+                      + rep[-400:])
+                return
+            trial_ok = run_trial(tid, body, st, cfg)
+
+            # ---- deterministic criteria gate (free; every iteration) --
+            _, crit = check_criteria(cfg)
+            prev_green = set(st.get("criteria_green", []))
+            now_green = {r["metric"] for r in crit if r["ok"]}
+            regressed = sorted(prev_green - now_green)
+            st["criteria_green"] = sorted(now_green)
+            save(STATE, st)
+            for r in crit:
+                event("criterion", detail=criteria_line(r))
+
+            if not trial_ok:
+                v = {"verdict": "RETRY",
+                     "reason": "trial did not complete "
+                               "(see events.jsonl / monitor)",
+                     "evidence": [criteria_line(r) for r in crit]}
+            elif regressed:
+                # A criterion that was green went red. No model opinion
+                # required -- that is a regression, full stop.
+                v = {"verdict": "RETRY",
+                     "reason": "criteria regression: "
+                               + ", ".join(regressed),
+                     "evidence": [criteria_line(r) for r in crit
+                                  if r["metric"] in regressed]}
+                event("regression", detail=", ".join(regressed))
+            else:
+                cadence = cfg.get("evaluation_cadence", "per-iteration")
+                if cadence == "final-pass" and len(todo) > 1:
+                    # v8.1: "deferred" no longer means unchecked. The
+                    # deterministic gate above ran, the Generator's own
+                    # TDD ran, and a regression would have blocked here.
+                    v = {"verdict": "PASS",
+                         "reason": "deterministic gate clean; LLM audit "
+                                   "deferred to final pass",
+                         "evidence": [criteria_line(r) for r in crit]}
+                else:
+                    if VERDICT.exists():
+                        VERDICT.unlink()      # no stale verdicts
+                    claude("evaluator",
+                           "Mode 2 -- evaluation. Audit the latest work "
+                           f"for ticket '{tid}' against Plan.md and "
+                           "Goal.md per your instructions. The diff is "
+                           "`git diff HEAD`. You MUST execute, not just "
+                           "read: run the tests and the Run Command and "
+                           "paste their real output as evidence. Write "
+                           "Evaluation.md and verdict.json.")
+                    v = load(VERDICT, {"verdict": "ESCALATE",
+                                       "reason": "missing verdict.json"})
+            LEDGER.open("a").write(json.dumps(
+                {"ts": now(), "iteration": st["iteration"], "ticket": tid,
+                 "attempt": attempt, "verdict": v.get("verdict"),
+                 "reason": v.get("reason"),
+                 "evidence": v.get("evidence", []),
+                 "criteria": crit}) + "\n")
+
+            verdict = v.get("verdict")
+            if verdict == "RETRY" and attempt < 3:
+                event("retry", detail=f"{tid} attempt {attempt}: "
+                      + str(v.get("reason", "")))
+                continue
+            break
+
+        if verdict == "PASS":
+            plan_text = plan.read_text().replace(
+                f"### {tid}:", f"### {tid} [x]:", 1)
+            plan.write_text(plan_text)
+            sha = git_commit(
+                f"feat(loop): {tid} {title}\n\n"
+                f"verdict: PASS -- {v.get('reason', '')}\n"
+                f"evidence: {v.get('evidence', [])}\n"
+                f"iteration {st['iteration']}; see ledger.jsonl")
+            event("ticket_done", detail=f"{tid} @ {sha}")
+        elif verdict == "REPLAN":
+            st["replans"] = st.get("replans", 0) + 1
+            git_commit(f"wip(loop): {tid} before replan "
+                       f"#{st['replans']} -- {v.get('reason', '')}")
+            st["phase"] = "plan"
+            save(STATE, st)
+            phase_plan(cfg, st, v.get("reason", ""))
+            phase_contract_review(cfg, st)
+            wait_approval("replan", f"Replan #{st['replans']}: "
+                          + str(v.get("reason", "")))
+            st["phase"] = "iterate"
+            save(STATE, st)
+        else:                                             # ESCALATE/fail
+            git_commit(f"wip(loop): {tid} stopped -- "
+                       f"{v.get('reason', 'failed after 3 attempts')}")
+            event("escalate", detail=f"{tid}: {v.get('reason', '')}")
+            return
+
+
+def phase_final(cfg: dict, st: dict) -> None:
+    """Deterministic gate first, LLM provenance audit second.
+
+    Order matters: if the numbers are not on disk there is nothing for
+    an Evaluator to have an opinion about, and no reason to pay for one.
+    """
+    ok, crit = check_criteria(cfg)
+    for r in crit:
+        event("criterion", detail=criteria_line(r))
+    if not ok:
+        event("escalate", detail="final criteria gate failed: "
+              + "; ".join(criteria_line(r) for r in crit if not r["ok"]))
+        save(STATE, st)
+        return
+
+    if VERDICT.exists():
+        VERDICT.unlink()
+    claude("evaluator",
+           "Mode 2 -- FINAL evaluation of the whole loop. The "
+           "deterministic criteria gate already PASSED, so do not "
+           "re-check thresholds: audit PROVENANCE instead. Was each "
+           "metric actually produced by the harness it claims, or could "
+           "it have been hand-written? Do harness versions, sample "
+           "counts and configs corroborate it? Any secret leaked into "
+           "results or logs? Anything in the history the plan never "
+           "asked for? Execute to verify. Write Evaluation.md and "
+           "verdict.json.")
+    v = load(VERDICT, {})
+    if v.get("verdict") == "PASS":
+        event("goal_reached", detail=v.get("reason", ""),
+              evidence=v.get("evidence", []))
+        st["phase"] = "done"
+    else:
+        event("escalate", detail="final eval: "
+              + v.get("reason", "no usable verdict.json"))
+    save(STATE, st)
+
+
+# ---------- main --------------------------------------------------------
+
+def main() -> None:
+    argv = sys.argv[1:]
+    allow_here = "--here" in argv
+    args = [a for a in argv if not a.startswith("-")]
+
+    if args and args[0] == "status":
+        print(json.dumps(load(STATE, {}), indent=2))
+        return
+    if args and args[0] == "approve":
+        APPROVALS.mkdir(exist_ok=True)
+        for gate in ("plan", "replan"):
+            (APPROVALS / f"{gate}.approved").touch()
+        return
+
+    cfg = load(GOAL, None)
+    if cfg is None:
+        die("goal.json not found or unreadable -- run the [/loop] Ask "
+            "phase first.")
+
+    # Four deterministic gates, cheapest first. Nothing is planned and
+    # nothing is spent until all four pass.
+    machinery()
+    validate_goal(cfg)
+    require_isolation(cfg, allow_here)
+    preflight(cfg)
+
+    if args and args[0] == "check":
+        ok, crit = check_criteria(cfg)
+        for r in crit:
+            print("  " + criteria_line(r))
+        print(f"\ncriteria gate: {'PASS' if ok else 'FAIL'}")
+        return
+
+    st = load(STATE, {"phase": "plan", "iteration": 0, "replans": 0,
+                      "spent_usd": 0.0, "gpu_hours": 0.0,
+                      "criteria_green": [],
+                      "started_epoch": time.time(), "started": now()})
+    save(STATE, st)
+    event("loop_start" if st["iteration"] == 0 else "loop_resume",
+          detail=cfg.get("goal", ""))
+
+    if st["phase"] == "plan":
+        phase_plan(cfg, st)
+    if st["phase"] == "contract_review":
+        phase_contract_review(cfg, st)
+    if st["phase"] == "gate":
+        wait_approval("plan", "Plan.md ready + contract-reviewed. "
+                      "Review it, then approve.")
+        st["phase"] = "iterate"
+        save(STATE, st)
+    if st["phase"] == "iterate":
+        phase_iterate(cfg, st)
+    if st["phase"] == "final_eval":
+        phase_final(cfg, st)
+    if st["phase"] == "done":
+        event("housekeeping_reminder",
+              detail="fill journal Feedback block; read a sample of the "
+                     "loop's diffs and explain them; delete Plan.md/"
+                     "Evaluation.md/goal artifacts when satisfied")
+
+
+if __name__ == "__main__":
+    main()

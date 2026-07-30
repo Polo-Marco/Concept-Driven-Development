@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.0
+# Concept-Driven Development (CDD) 8.1
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode
@@ -110,9 +110,12 @@ never work around.
    files freeze.
 2. User starts the driver (tmux):
    `python3 .claude/driver/loop.py 2>&1 | tee logs/driver.log`.
-3. Driver: Planner session → Evaluator contract review (≤2 rounds) →
-   waits at the human gate. User reviews Plan.md, places `[Halt here]`,
-   approves (`loop.py approve`, control tower, or phone).
+3. Driver: four deterministic gates (machinery / goal-contract
+   shape / worktree isolation / preflight — nothing is planned or spent
+   until all four pass) → Planner session → Evaluator contract review
+   (≤2 rounds) → waits at the human gate. User reviews Plan.md,
+   approves (`loop.py approve`, control tower, or phone). There are no
+   mid-loop `[Halt here]` pauses in loop mode.
 4. Driver iterates tickets: Generator (bearings + smoke test → TDD) →
    trial launch + Monitor polling → Evaluator → `verdict.json` →
    PASS commit / RETRY ≤3 / REPLAN (re-gated) / ESCALATE. Ledger

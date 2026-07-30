@@ -134,9 +134,26 @@ impossible spec burns GPU budget on a defect no trial can fix.
 # Goal: [one line]
 
 **Type:** build | modify | experiment | migrate | merge
-**Success criteria:**            ← measurable, machine-checkable
-- [e.g. gate-1 eval accuracy ≥ 0.85 on eval set X]
-- [e.g. all tests green + endpoint returns 200]
+
+## Success Criteria            ← measurable, machine-checkable
+
+Predictable shape so the markdown → JSON translation is mechanical
+rather than interpretive. Each states metric, comparison, threshold,
+the file carrying the number, and why it matters (v8.1):
+
+1. **[Name]** — `[metric]` in `[path/to/file.json]` is `[op] [value]`.
+   [Why this is the right bar; what a failure would mean. This prose is
+   what the Evaluator's contract review compares the JSON against.]
+
+## Preflight — what must be true before the loop starts   (v8.1)
+
+The driver runs these before spawning the Planner; any failure aborts
+without spending a model call. One check type: a shell command whose
+exit code decides. A check must print no secrets — the driver discards
+its output and logs only name + exit code (governance §2).
+
+1. **[Name]** — [what it establishes].
+   `check: [shell command, exit 0 = pass]`
 
 **Budgets:**
 - Max iterations: [N]
@@ -155,12 +172,32 @@ impossible spec burns GPU budget on a defect no trial can fix.
 ```
 
 **Machine mirror (`goal.json`).** The `[/loop]` Ask phase writes the
-success criteria, budgets, and cadence into a `goal.json` the driver
-parses and the PreToolUse hook write-protects. Rationale: models are
-measurably less likely to inappropriately edit JSON than Markdown
-(Anthropic feature-list finding, §14) — and the hook makes it
-impossible regardless. `Goal.md` stays the human-readable statement;
-`goal.json` is the contract of record for the driver.
+success criteria, preflight checks, budgets, and cadence into a
+`goal.json` the driver parses and the PreToolUse hook write-protects.
+Rationale: models are measurably less likely to inappropriately edit
+JSON than Markdown (Anthropic feature-list finding, §14) — and the hook
+makes it impossible regardless.
+
+**Direction of authority (v8.1).** `Goal.md` is the SOURCE OF TRUTH and
+`goal.json` is a DERIVED translation of it. Humans read and edit the
+markdown; the Ask phase translates; the driver reads only the JSON. If
+the two disagree, the markdown is right and the JSON is a bug.
+
+This introduces one new failure mode — **derivation drift**. The prose
+says "≥ 0.85 on the full set" and the JSON records
+`{"value": 0.85, "source": "results/gate1.json"}`, with the full-set
+qualifier surviving only in the prose. Because `check_criteria()` gates
+on the JSON, a lossy translation silently redefines "done", and with no
+mid-loop human checkpoint (v8.1 removed `[Halt here]`) nothing catches
+it later. Two controls, both cheap:
+
+1. The Ask phase reads the contract back **by the JSON's semantics**,
+   closing with "nothing else is checked" — which forces out qualifiers
+   that never made it across.
+2. The Evaluator's contract review audits the translation
+   (**Faithful?**) before the human gate. This is maker–checker applied
+   to the translation step: the agent that wrote the JSON is not the
+   agent that approves it.
 
 ## 6. Experiment tickets (new ticket variant)
 

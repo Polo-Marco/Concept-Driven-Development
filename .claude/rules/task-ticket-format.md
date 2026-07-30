@@ -3,6 +3,9 @@
 Each execution step in Plan.md or Triage.md MUST follow this format.
 The Generator executes these tickets mechanically.
 
+Goals of type `experiment` (v8.0 loop) use the experiment-ticket
+variant below.
+
 ## Template
 
 ```markdown
@@ -96,6 +99,27 @@ makes concurrent execution race-free.
 later diagnosis (see `.claude/rules/run-logging.md`). Example:
 `uv run pytest tests/test_extractor.py -v 2>&1 | tee logs/latest.log`.
 
+## Experiment Tickets (v8.0)
+
+For `experiment` goals, tickets REPLACE the Test Contract with:
+
+**Hypothesis:** [what this trial should demonstrate]
+**Trial:** [exact launch command; the DRIVER launches it, not the
+Generator — output goes to logs/trial-<n>.log]
+**Metrics Contract:** [metric names + the exact file/path each is
+written to, e.g. results/gate1.json]
+**Success Threshold:** [metric vs value; must map 1:1 to goal.json
+criteria]
+**Monitor Profile:** [poll interval; known failure signatures, e.g.
+cuda_oom, nan_loss, stall]
+
+All other fields (Boundary, Depends On, Architecture, Skills to Load)
+are unchanged. Spec granularity rule: experiment tickets are detailed
+about OUTCOMES and interfaces, light on implementation path — granular
+technical detail specified upfront cascades errors when wrong.
+Provenance: a launched trial's config is immutable; any parameter
+change = new trial via REPLAN (see .claude/rules/loop-protocol.md).
+
 ## Planner Self-Check
 
 Before ending the Planner session, verify for each ticket:
@@ -117,11 +141,26 @@ Before ending the Planner session, verify for each ticket:
   disjoint, and does no member depend on another member? Is the
   Environment Setup ticket kept out of all groups? Is grouping actually
   worth it (multiple independent, non-trivial tickets)?
+- For each Spec step: can it be executed with only the inputs
+  available at that point? A circular or unsatisfiable step leaves the
+  Generator no legal move but to stop.
+- For experiment tickets: does every Success Threshold map to a
+  goal.json criterion, and does the Metrics Contract name the exact
+  file the driver/Evaluator will read?
 
 Every gap becomes a potential Generator hallucination.
 
-## `[Halt here]` Flags
+## `[Halt here]` Flags (manual mode only)
 
 The Planner does NOT place `[Halt here]` flags. These are placed
 by the user after reviewing Plan.md. When the Generator encounters
 a ticket with `[Halt here]`, it commits current work and stops.
+
+**Loop mode ignores these flags** (v8.1). The driver never reads them —
+it never did — and `[/loop]` no longer asks you to place them. A
+pre-placed pause requires guessing which ticket will need inspection
+before any output exists; loop mode replaces that with event-driven
+stops (deterministic criteria gate, regression guard, budget caps,
+ESCALATE) and declares environment preconditions up front via the
+`Preflight` section of `Goal.md`. The flag remains live for the manual
+`start execution` escape hatch (`generator-protocol.md` §3f).

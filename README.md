@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.0
+# Concept-Driven Development (CDD) 8.1
 
 A structured AI development framework built on a session-based pipeline.
 You align. The Planner designs. The Generator builds. The Evaluator
@@ -515,9 +515,16 @@ at the same time as this one.
 1. Attempt to fix (try 1). 2. Try again (try 2). 3. Final attempt (try
 3). 4. Still failing → commit progress with a WIP message and stop.
 
-### `[Halt here]` Flags
+### `[Halt here]` Flags — manual mode only
 The Planner does NOT place halt flags. You place them after reviewing
 the work order, wherever you want the Generator to pause.
+
+**This applies only to the manual `start execution` escape hatch.**
+Loop mode (`[/loop]`) has no mid-loop halt gate: it would ask you to
+guess, before seeing any output, which ticket you will want to inspect.
+Loop mode has exactly three gates — plan approval, every replan, every
+escalation — all event-driven, plus the deterministic criteria and
+budget gates that stop the loop when something is actually wrong.
 
 ### The Evaluation Model
 - **Layer 1 — TDD (automated).** Tests before code.
@@ -575,6 +582,7 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 | 6.0 | Layered Architecture. Environment audit. `[/evaluate]`. Reference docs + DEVIATIONS. |
 | 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[/merge]`. Independent Auditor. Process logging. |
 | **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[/discuss]` mode. `[/debug]` folded into `[/modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[/retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
+| **8.1** | **Deterministic gates: `check_criteria()` reads `goal.json` criteria straight off disk (fail-closed) as the per-ticket regression guard and the final stop condition; `preflight()` verifies environment preconditions declared in `Goal.md` before any model call; `machinery()` refuses to start when the loop's own parts are missing instead of degrading to a manual relay; `validate_goal()` rejects a contract with no machine-checkable criteria. USD budget enforced; GPU-hours billed against trial start (was reset every Monitor poll); a killed trial no longer gets evaluated; contract review fails closed. Evaluator must execute rather than read, and audits provenance. `Goal.md` is the source of truth with `goal.json` a derived mirror, audited by contract review (Faithful?/Sourced?). Driver refuses the primary working tree. `[Halt here]` removed from loop mode. Motivated by journal/feedback-inbox.md 2026-07-17 + from-ccd-ai-bench-retro-20260715.md.** |
 | **8.0** | **Loop orchestration: 3-command surface (`[/discuss]`/`[/loop]`/`[/retro]`); deterministic driver (`.claude/driver/loop.py`); hook-ENFORCED phase authority (PreToolUse deny); Goal.md/goal.json contracts; experiment tickets + trial ledger + Monitor agent; Evaluator contract review pre-gate; JSON machine state; control-tower remote control (phone). Design: docs/loop-orchestration-design.md.** |
 
 ## Tips

@@ -23,6 +23,10 @@ changelog, commit messages carry that weight and MUST be detailed.
 - **Evaluator Session:** does NOT commit. `Evaluation.md` is ephemeral.
 - **Retro Session:** does NOT commit code. May commit its `journal/`
   summary.
+- **Loop mode (v8.0):** the driver is the only committer.
+  `feat(loop):` per passed ticket (verdict + evidence in the body),
+  `wip(loop):` before a replan or on escalation. Sessions never
+  commit inside a loop.
 - Commit messages must be detailed and informative — they ARE the
   project's changelog. Include what was built, which files changed,
   and any notable decisions.
@@ -93,6 +97,10 @@ expensive pipelines.
 | `Triage.md` | **Ephemeral** — deleted after full loop | Bug hypotheses |
 | `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[/merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** — deleted after user signs off | Evaluator verdict + audits |
+| `Goal.md` + `goal.json` | **Ephemeral** — frozen at loop start, deleted after sign-off | User-owned goal contract (v8.0) |
+| `ledger.jsonl` | **Ephemeral** — summarized into `journal/` at loop end, then deleted | Trial memory for REPLANs (driver-written) |
+| `loop-state.json` / `events.jsonl` | Ephemeral, gitignored | Driver state (crash resume) + event feed |
+| `verdict.json` | **Ephemeral** | Machine verdict (Evaluator → driver) |
 | `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[/retro]`) |
 | `journal/traces/*.jsonl` | Persistent, gitignored | Full raw session transcripts (Tier 2, Claude Code hook) |
 | `skills/` | Persistent, evolving | Execution patterns and rules |

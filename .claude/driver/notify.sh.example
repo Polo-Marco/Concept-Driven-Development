@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# CDD 8.0 optional notification plug-in. Copy to notify.sh to enable.
+# The driver calls: notify.sh <event-kind> <json-record>
+# Default channel is the control-tower session (pull model). This hook
+# adds PUSH — e.g. ntfy.sh (shown) or a Telegram bot. Keep secrets in
+# env, never in this file (governance.md §2). Allowlist your own
+# device on the command topic: an open approve channel is a remote
+# trigger for autonomous code execution.
+
+KIND="$1"
+RECORD="$2"
+
+case "$KIND" in
+  approval_request|escalate|goal_reached)
+    curl -s -H "Title: CDD loop: $KIND" \
+         -d "$RECORD" \
+         "https://ntfy.sh/${CDD_NTFY_TOPIC:?set CDD_NTFY_TOPIC}" \
+         > /dev/null
+    ;;
+  *) ;;  # digests (iteration, monitor, ticket_done) stay pull-only
+esac

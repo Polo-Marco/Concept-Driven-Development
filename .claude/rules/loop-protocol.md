@@ -1,0 +1,142 @@
+# Loop Protocol (v8.1)
+
+The `[/loop]` pipeline: a deterministic driver orchestrates fresh
+Planner / Generator / Evaluator / Monitor sessions until the goal's
+success criteria are verifiably met — or the loop escalates to the
+user. Full rationale: `docs/loop-orchestration-design.md` (framework
+repo) and the tcocrai retro it cites.
+
+## Control principles
+
+1. **The driver is dumb.** `.claude/driver/loop.py` — a deterministic
+   state machine. It spawns sessions, parses JSON artifacts, branches
+   on verdicts, enforces budgets, owns long-running processes, and is
+   the ONLY thing that commits during a loop. The Planner calls nobody.
+2. **Sessions are fresh and short.** Each phase runs headless
+   (`claude -p`) with selective context and a role-specific agent
+   definition (`.claude/agents/cdd-*.md`). Process boundary = session
+   boundary.
+3. **Authority is enforced.** The PreToolUse hook
+   (`.claude/hooks/enforce_authority.py`) denies git writes, boundary
+   breaches, and protected-file edits per role (`CDD_ROLE` /
+   `CDD_BOUNDARY` env). An agent that hits a denial STOPS and reports;
+   working around it is a protocol violation.
+4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
+   agent session may edit them — a loop that can move its own
+   goalposts optimizes the wrong thing. Change of goal = user edits +
+   fresh loop.
+5. **Trial provenance.** A launched trial's config is immutable.
+   Crash-recovery with an identical config may reuse the trial ID; ANY
+   parameter change = new trial ID via REPLAN, recorded in the ledger.
+6. **Anything rule-bound is decided by code, not by a model.** (v8.1)
+   The driver owns four deterministic gates and runs them before it
+   spends anything: `machinery()` (the loop's own parts are installed
+   and the hook is wired), `validate_goal()` (the contract is
+   well-formed and has at least one machine-checkable criterion),
+   `require_isolation()` (not the primary working tree), and
+   `preflight()` (the environment preconditions declared in `Goal.md`).
+   `check_criteria()` then reads every criterion straight off disk. All
+   five fail CLOSED — a missing source file, an unparseable artifact or
+   an absent metric is a failure, never a pass. Rationale: the Ask phase
+   already forces every criterion into metric + op + value + source, so
+   handing the comparison to a probabilistic model adds cost and removes
+   certainty.
+7. **Deterministic is necessary, not sufficient.** `check_criteria()`
+   proves a number met its threshold; it cannot prove the number was
+   earned. Provenance stays with the Evaluator, which must EXECUTE
+   rather than read. Keep both checks — the cheap one being free is not
+   a reason to delete the expensive one.
+
+## The loop
+
+```
+goal.json → [gates: machinery, contract shape, isolation, preflight]
+          → Planner → Evaluator contract review (OK|REVISE, ≤2)
+          → HUMAN GATE (approve once; also after each REPLAN)
+          → per ticket: Generator (bearings + smoke test → TDD/impl)
+                        → driver launches Trial, Monitor polls
+                        → check_criteria() + regression guard (free)
+                        → Evaluator → verdict.json  (cadence-dependent)
+          → final: check_criteria() hard gate, THEN Evaluator provenance
+          → PASS: driver marks [x], commits, next ticket
+            RETRY: same ticket, ≤3 attempts
+            REPLAN: fresh Planner + ledger + Evaluation.md, ≤ budget
+            ESCALATE: stop, notify user
+          → final evaluation of ALL Goal.md criteria → done
+```
+
+**Verdict routing:** metric-based failures → RETRY/REPLAN. Protocol
+failures (boundary breach, worker stop/death, unsatisfiable spec,
+missing artifact, doc contradiction) → ESCALATE immediately. Never
+burn trial budget on a defect no trial can fix.
+
+## Machine-readable artifacts (JSON — agents corrupt JSON less than MD)
+
+| File | Writer | Reader |
+|---|---|---|
+| `goal.json` | `[/loop]` Ask phase (user-confirmed), then frozen | driver, all agents (read-only) |
+| `verdict.json` | Evaluator | driver |
+| `ledger.jsonl` | driver only | Planner (REPLAN memory), Retro |
+| `loop-state.json` | driver only | driver (crash resume), status |
+| `events.jsonl` | driver only | control tower, user |
+
+The trial ledger is the loop's memory: a replanning Planner MUST read
+every record and never re-propose a failed hypothesis/config.
+
+## Monitor
+
+While a trial runs, the driver spawns `cdd-monitor` (cheap model)
+every N minutes with the log tail + Monitor Profile. It classifies —
+`HEALTHY | INTERVENE | KILL_ESCALATE` — and the DRIVER acts: kill +
+RETRY-with-fix for crash-class signatures (max 2 interventions),
+escalate otherwise. The Monitor never edits, never kills, never
+retunes parameters.
+
+## Human gates & remote control
+
+Gates: plan approval (once), every replan, and every ESCALATE — three,
+all event-driven. The driver blocks on `approvals/<gate>.approved` flag
+files.
+
+**No mid-loop `[Halt here]`** (v8.1). The driver never implemented it,
+and asking for it required guessing which ticket would need inspection
+before any output existed. What replaces it: environment preconditions
+are declared up front in `Goal.md`'s `Preflight` section and verified
+deterministically, and the loop stops by event — failed criterion,
+regression, exhausted budget, escalation. Because there is no scheduled
+human checkpoint left, the budget caps and the criteria gate are
+load-bearing, not advisory. Read a sample of the loop's diffs after
+every loop; it is the only remaining guard against a codebase you no
+longer understand.
+
+**Control tower (recommended):** one interactive Claude Code session
+in tmux on the VM with Remote Control enabled. From the phone, message
+it: it reads `events.jsonl` / `loop-state.json` / `ledger.jsonl` to
+answer `status`, and writes the approval flag on your `approve`. When
+it surfaces a decision to you, Remote Control pushes to your phone.
+The tower session is interactive (no `CDD_ROLE`), so the hook does not
+restrict it — it acts only on your instruction.
+
+**Push (optional):** `.claude/driver/notify.sh` — see
+`notify.sh.example` (ntfy/Telegram). Allowlist your device on any
+command topic; keep secrets out of digests (governance.md §2).
+
+## Housekeeping (driver responsibility, not memory)
+
+On `done`: the driver reminds; the user fills the journal Feedback
+block, then deletes `Plan.md`, `Evaluation.md`, `verdict.json`,
+`goal.json`, `Goal.md`, `ledger.jsonl`, `loop-state.json`,
+`events.jsonl`. `ledger.jsonl` content worth keeping is summarized
+into the loop's `journal/` record first. Three retros in a row flagged
+unclosed loops — closing IS part of the loop.
+
+## Scope guards
+
+- Batch = sequential queue of goals; one loop at a time in v8.0.
+- Worktree-per-loop is recommended for experiment goals (runaway
+  containment); merge conflicts always escalate — no auto-resolution.
+- No `[/monitor]` or `[/batch]` commands. A fourth user command must
+  be demanded by a retro, not anticipated.
+- On each new model generation, `[/retro]` stress-tests which loop
+  components are still load-bearing (every component encodes an
+  assumption about what the model can't do; assumptions go stale).
