@@ -514,7 +514,13 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
     was graded as its output. A non-zero exit is a RULE, and rules are
     decided here, not by a model (loop-protocol.md section 6).
     """
-    trial_cmd = field(body, "Trial")
+    # v8.1.3: strip markdown wrapping before this reaches shell=True.
+    # A Planner with the habit that produced the Boundary defect writes
+    # ``**Trial:** `python3 train.py` ``, and backticks are command
+    # substitution: the inner command runs, then its stdout is executed.
+    # Stripped here, not inside field() -- Spec and Monitor Profile are
+    # prose handed to a model, where backticks are legitimate.
+    trial_cmd = field(body, "Trial").strip("` \t\n")
     if not trial_cmd:
         return True                       # build ticket: no trial phase
     interval = 60 * int(cfg.get("monitor", {}).get("interval_min", 10))

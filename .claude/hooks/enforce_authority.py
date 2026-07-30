@@ -161,9 +161,25 @@ def check_write(role: str, rel: str, boundary: list):
 
 
 def boundary_env() -> list:
-    return [b.strip().replace("\\", "/").lower()
-            for b in os.environ.get("CDD_BOUNDARY", "").split(",")
-            if b.strip()]
+    """CDD_BOUNDARY as comparable path prefixes.
+
+    v8.1.3: strip markdown/quote wrapping per entry. The Planner writes
+    the ticket field as markdown -- ``**Boundary:** `src/a.py`,
+    `tests/b.py` `` -- and loop.py passes it through verbatim, so every
+    entry used to arrive backticked and none of the comparisons in
+    in_boundary() could match. A non-empty Boundary that matches nothing
+    is a silent global write ban that reports itself as a Boundary
+    breach; the first real loop (2026-07-30) escalated on ticket 1 with
+    every Write denied. Tolerance belongs here rather than at the
+    dispatch site because this is the sole consumer of the variable and
+    the place that does the matching, so a hand-set env var and the
+    control tower are covered too.
+    """
+    return [e for e in (b.strip().strip("`'\"").strip()
+                        .replace("\\", "/").lower()
+                        for b in os.environ.get("CDD_BOUNDARY",
+                                                "").split(","))
+            if e]
 
 
 def main() -> None:

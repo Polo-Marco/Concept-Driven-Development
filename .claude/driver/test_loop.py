@@ -56,6 +56,14 @@ What it covers, and which v8.0 defect each case pins down:
   observability       one heartbeat event per model session, a ticket
                       count after planning, and a driver-alive line in
                       status (8.1: loop_start to human gate was silent)
+  Boundary parsing    a Boundary written as markdown (the form the
+                      Planner actually emits) still matches real paths,
+                      and the tolerance is not a pass-all (8.1: every
+                      entry kept its backticks, so a non-empty Boundary
+                      matched nothing — a silent global write ban that
+                      escalated the first real loop on ticket 1)
+  Trial quoting       a backticked Trial reaches Popen as a bare
+                      command, not as command substitution
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -66,6 +74,7 @@ import json
 import os
 import shutil
 import contextlib
+import importlib.util
 import io
 import subprocess
 import sys
@@ -79,6 +88,26 @@ sys.path.insert(0, str(HERE))
 HOOK = HERE.parent / "hooks" / "enforce_authority.py"
 
 import loop  # noqa: E402  (import after sys.path juggling)
+
+
+def load_hook():
+    """Import the hook as a module so its parser can be unit-tested.
+
+    v8.1.3: the hook lives outside any package and is named for its
+    executable role, so it cannot be `import`ed. Until now it was only
+    ever exercised end-to-end through subprocess, which proved the
+    verdicts but never the parsing beneath them -- and the 8.1.3 defect
+    lived in the parsing (see TestBoundaryParsing). Loading it here is
+    cheaper than moving or duplicating the file; `main()` stays inert
+    because the module name is not "__main__".
+    """
+    spec = importlib.util.spec_from_file_location("cdd_hook", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+hook = load_hook()
 
 # DriverCase stubs require_cli to keep the suite offline; keep a
 # handle on the real one so TestAuthGate can exercise it.
@@ -829,6 +858,97 @@ class TestHookBashWrites(HookCaller, unittest.TestCase):
                       "python3 -c \"open('Architecture.md','w').write('x')\""),
             self.ALLOW)
 
+
+# ---------- v8.1.3: a markdown Boundary must match real paths ---------
+
+class TestBoundaryParsing(unittest.TestCase):
+    """The 2026-07-30 toy loop escalated on its first ticket: every
+    Write the Generator attempted was denied as a Boundary breach,
+    including the files its own ticket named.
+
+    The Planner writes the field as markdown -- ``**Boundary:**
+    `src/wordfreq/counter.py`, ...`` -- and loop.py passes it through
+    verbatim as CDD_BOUNDARY, so every entry arrived backticked and none
+    of the comparisons in in_boundary() could ever match. A non-empty
+    Boundary that matches nothing is a silent global write ban that
+    reports itself as a breach. 112 green tests missed it because no
+    case ever fed a Boundary that looked like what a Planner writes.
+    """
+
+    def parse(self, value: str) -> list:
+        prev = os.environ.get("CDD_BOUNDARY", "")
+        os.environ["CDD_BOUNDARY"] = value
+        self.addCleanup(os.environ.__setitem__, "CDD_BOUNDARY", prev)
+        return hook.boundary_env()
+
+    def test_backticked_entries_parse_to_bare_paths(self):
+        self.assertEqual(
+            self.parse("`src/wordfreq/counter.py`, `tests/test_cli.py`"),
+            ["src/wordfreq/counter.py", "tests/test_cli.py"])
+
+    def test_quoted_entries_parse_to_bare_paths(self):
+        self.assertEqual(self.parse("\"src/a.py\", 'tests/b.py'"),
+                         ["src/a.py", "tests/b.py"])
+
+    def test_padding_inside_and_outside_the_markup(self):
+        self.assertEqual(self.parse("  ` src/a.py ` ,\n`tests/`  "),
+                         ["src/a.py", "tests/"])
+
+    def test_plain_entries_are_unchanged(self):
+        self.assertEqual(self.parse("src/a.py, tests/"),
+                         ["src/a.py", "tests/"])
+
+    def test_a_backticked_boundary_admits_its_own_files(self):
+        b = self.parse("`src/wordfreq/counter.py`, `tests/test_cli.py`")
+        for f in ("src/wordfreq/counter.py", "tests/test_cli.py"):
+            self.assertIsNone(hook.check_write("generator", f, b), f)
+
+    def test_tolerance_is_not_a_pass_all(self):
+        """The failure mode of a sloppy fix: strip the markup so widely
+        that the Boundary stops constraining anything."""
+        b = self.parse("`src/wordfreq/counter.py`")
+        self.assertIsNotNone(
+            hook.check_write("generator", "src/other/thing.py", b))
+        self.assertIsNotNone(hook.check_write("generator", "src", b))
+
+    def test_core_files_stay_denied_inside_a_wide_boundary(self):
+        b = self.parse("`src/`, `Architecture.md`")
+        self.assertIsNotNone(
+            hook.check_write("generator", "architecture.md", b))
+        self.assertIsNone(hook.check_write("generator", "src/a.py", b))
+
+
+class TestHookMarkdownBoundaryEndToEnd(HookCaller, unittest.TestCase):
+    """The same three verdicts through the real process, on the exact
+    call that escalated the toy loop."""
+
+    MD = "`src/wordfreq/counter.py`, `tests/test_cli.py`"
+
+    def test_the_escalating_write_is_allowed(self):
+        self.assertEqual(
+            self.call("generator", "Write",
+                      {"file_path": "src/wordfreq/counter.py"},
+                      boundary=self.MD), self.ALLOW)
+
+    def test_a_breach_is_still_denied(self):
+        self.assertEqual(
+            self.call("generator", "Write",
+                      {"file_path": "src/other/thing.py"},
+                      boundary=self.MD), self.DENY)
+
+    def test_shell_writes_share_the_parse(self):
+        """bash_write_targets() and Write/Edit both route through
+        check_write, so the fix must reach the shell path too."""
+        self.assertEqual(
+            self.call("generator", "Bash",
+                      {"command": "echo x > src/wordfreq/counter.py"},
+                      boundary=self.MD), self.ALLOW)
+        self.assertEqual(
+            self.call("generator", "Bash",
+                      {"command": "echo x > src/other/thing.py"},
+                      boundary=self.MD), self.DENY)
+
+
 # ---------- v8.1.1: fixes traced to the 2026-07-30 retro ---------------
 
 class TestTrialExitCode(DriverCase):
@@ -868,6 +988,52 @@ class TestTrialExitCode(DriverCase):
         body = "**Trial:** exit 1\n**Monitor Profile:** none"
         self.assertFalse(loop.run_trial("T", body, {"iteration": 3}, cfg))
         self.assertEqual(calls, [], "no Monitor ran on this path")
+
+
+class TestTrialCommandQuoting(DriverCase):
+    """v8.1.3, same seam as TestBoundaryParsing, worse consequence.
+
+    A Planner with the markdown habit writes ``**Trial:** `python3
+    train.py` ``. run_trial hands that to Popen(shell=True), where
+    backticks are command substitution: the inner command runs, then its
+    stdout is executed as a command. It never fired in the toy run only
+    because build tickets have no Trial field."""
+
+    def setUp(self):
+        super().setUp()
+        loop.time = FakeClock(step=0.0)     # never reaches a poll
+        loop.claude = lambda *a, **k: '{"status": "HEALTHY"}'
+
+    def test_backticked_trial_reaches_popen_bare(self):
+        seen = []
+        real = loop.subprocess
+
+        class FakeProc:
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+        loop.subprocess = types.SimpleNamespace(
+            Popen=lambda cmd, **kw: (seen.append(cmd) or FakeProc()),
+            STDOUT=real.STDOUT)
+        body = ("**Trial:** `python3 train.py --lr 0.1`\n"
+                "**Monitor Profile:** none")
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 1},
+                                       self.write_goal()))
+        self.assertEqual(seen, ["python3 train.py --lr 0.1"])
+
+    def test_the_inner_command_output_is_not_executed(self):
+        """The consequence, through a real shell. Unstripped, the
+        substitution runs `echo` and the outer shell then executes what
+        it printed, creating the file. Stripped, the trial merely prints
+        it."""
+        body = ("**Trial:** `echo touch pwned`\n"
+                "**Monitor Profile:** none")
+        loop.run_trial("T", body, {"iteration": 2}, self.write_goal())
+        self.assertFalse((self.tmp / "pwned").exists(),
+                         "the Trial field was evaluated as a command, "
+                         "not run as one")
 
 
 class TestSpendAccounting(DriverCase):
