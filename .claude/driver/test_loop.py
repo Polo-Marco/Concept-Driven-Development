@@ -49,6 +49,8 @@ What it covers, and which v8.0 defect each case pins down:
                       to run a second driver for the same goal
   status              renders ticket progress, criteria, budgets vs caps
                       and a pending gate instead of raw JSON
+  auth gate           an unauthenticated `claude` CLI aborts gate 1
+                      instead of failing as "contract review twice"
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -72,6 +74,10 @@ sys.path.insert(0, str(HERE))
 HOOK = HERE.parent / "hooks" / "enforce_authority.py"
 
 import loop  # noqa: E402  (import after sys.path juggling)
+
+# DriverCase stubs require_cli to keep the suite offline; keep a
+# handle on the real one so TestAuthGate can exercise it.
+REAL_REQUIRE_CLI = loop.require_cli
 
 
 # ---------- harness ----------------------------------------------------
@@ -126,8 +132,12 @@ class DriverCase(unittest.TestCase):
         # v8.1.1: stubs used to leak between tests -- a case that
         # replaced loop.claude left it replaced for every case after it,
         # making the suite order-dependent.
-        for _n in ("claude", "git_commit", "subprocess", "sh"):
+        for _n in ("claude", "git_commit", "subprocess", "sh",
+                   "require_cli"):
             self.addCleanup(setattr, loop, _n, getattr(loop, _n))
+        # the suite is offline by contract; TestAuthGate exercises
+        # the real probe with a stubbed subprocess.
+        loop.require_cli = lambda: None
         use_root(self.tmp)
         install_machinery(self.tmp)
         (self.tmp / "logs").mkdir(exist_ok=True)
@@ -1240,6 +1250,50 @@ class TestStatusView(DriverCase):
         out = self.render({})
         self.assertIn("phase     plan", out)
         self.assertNotIn("WAITING FOR YOU", out)
+
+
+class TestAuthGate(DriverCase):
+    """v8.1: an unauthenticated CLI was invisible. Every session returned
+    a normal envelope reading "Not logged in", so the loop burned four
+    no-op sessions and escalated with "plan failed contract review
+    twice" -- a reason with no relationship to the cause."""
+
+    def setUp(self):
+        super().setUp()
+        loop.require_cli = REAL_REQUIRE_CLI     # DriverCase stubs it out
+
+    def stub_auth(self, stdout, exc=None):
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            if exc:
+                raise exc
+            return types.SimpleNamespace(returncode=0, stdout=stdout,
+                                         stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT,
+            DEVNULL=real.DEVNULL, TimeoutExpired=real.TimeoutExpired)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+
+    def test_dies_when_not_logged_in(self):
+        self.stub_auth('{"loggedIn": false, "authMethod": "none"}')
+        with self.assertRaises(SystemExit):
+            loop.require_cli()
+
+    def test_passes_when_logged_in(self):
+        self.stub_auth('{"loggedIn": true, "authMethod": "oauth"}')
+        loop.require_cli()
+
+    def test_dies_when_the_cli_is_missing(self):
+        self.stub_auth("", exc=FileNotFoundError())
+        with self.assertRaises(SystemExit):
+            loop.require_cli()
+
+    def test_unreadable_answer_does_not_block_a_working_loop(self):
+        # a future format change must not ground the fleet: the sessions
+        # themselves are still the real gate.
+        self.stub_auth("some new human-readable output")
+        loop.require_cli()
 
 
 if __name__ == "__main__":

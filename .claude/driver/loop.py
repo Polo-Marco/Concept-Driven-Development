@@ -131,6 +131,43 @@ def die(msg: str) -> None:
 
 # ---------- gate 1: machinery (is the loop actually installed?) -------
 
+def require_cli() -> None:
+    """The `claude` CLI must exist AND be logged in.
+
+    v8.1.2: this was the loop's most load-bearing external part and the
+    only one nothing checked. An unauthenticated CLI does not error --
+    every session returns a normal JSON envelope whose result is "Not
+    logged in", so the Planner writes no Plan.md, the Evaluator has
+    nothing to review, and the loop escalates with "plan failed contract
+    review twice". Observed 2026-07-30: four no-op sessions, $0 spent,
+    and the actual diagnosis nowhere in the log.
+
+    `claude auth status` is free, so this costs nothing. It dies only on
+    a POSITIVE "not logged in" -- an unparseable answer (a future format
+    change) must not block a working loop, because the sessions
+    themselves remain the real gate.
+    """
+    try:
+        r = subprocess.run(["claude", "auth", "status"],
+                           stdin=subprocess.DEVNULL, text=True,
+                           capture_output=True, timeout=60)
+    except FileNotFoundError:
+        die("The `claude` CLI is not on PATH. The driver spawns every "
+            "phase through it.")
+    except subprocess.TimeoutExpired:
+        return                      # slow, not broken -- do not block
+    try:
+        auth = json.loads(re.search(r"\{.*\}", r.stdout, re.S).group(0))
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        return                      # unreadable -- do not block
+    if auth.get("loggedIn") is False:
+        die("The `claude` CLI is not logged in (`claude auth status` "
+            "says loggedIn: false).\n"
+            "  Every phase would return \"Not logged in\" and the loop "
+            "would escalate with a\n"
+            "  misleading reason. Run `claude auth login` first.")
+
+
 def machinery() -> None:
     """Layer-A preflight: the loop's own parts.
 
@@ -147,6 +184,8 @@ def machinery() -> None:
     if missing:
         die("Loop machinery is incomplete -- see v8.0-draft/INSTALL.md.\n"
             "  missing: " + ", ".join(missing))
+
+    require_cli()
 
     if "enforce_authority.py" not in json.dumps(load(SETTINGS, {})):
         die("The PreToolUse hook is not wired in .claude/settings.json.\n"
@@ -297,6 +336,14 @@ def notify_gap() -> str:
 
 # ---------- isolation --------------------------------------------------
 
+def in_linked_worktree() -> bool:
+    """True when this tree is a linked worktree rather than the primary
+    checkout. Shared by require_isolation, `start` and `check`."""
+    common = sh("git rev-parse --git-common-dir").stdout.strip()
+    gitdir = sh("git rev-parse --git-dir").stdout.strip()
+    return bool(common and gitdir and common != gitdir)
+
+
 def require_isolation(cfg: dict, allow_here: bool) -> None:
     """Refuse to drive the primary working tree.
 
@@ -308,9 +355,7 @@ def require_isolation(cfg: dict, allow_here: bool) -> None:
     if allow_here or os.environ.get("CDD_ALLOW_PRIMARY"):
         event("isolation_waived", detail="running in the primary tree")
         return
-    common = sh("git rev-parse --git-common-dir").stdout.strip()
-    gitdir = sh("git rev-parse --git-dir").stdout.strip()
-    if common and gitdir and common != gitdir:
+    if in_linked_worktree():
         event("isolation_ok", detail="linked worktree")
         return
     die(f"Refusing to run in the primary working tree.\n"
@@ -768,9 +813,7 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
     if allow_here:
         target = ROOT
     else:
-        common = sh("git rev-parse --git-common-dir").stdout.strip()
-        gitdir = sh("git rev-parse --git-dir").stdout.strip()
-        if common and gitdir and common != gitdir:
+        if in_linked_worktree():
             target = ROOT                       # already in a worktree
         else:
             target = ROOT.parent / f"{ROOT.name}-loop"
@@ -940,15 +983,26 @@ def main() -> None:
         phase_start(cfg, allow_here)
         return
 
-    require_isolation(cfg, allow_here)
-    preflight(cfg)
-
+    # v8.1.2: `check` used to run AFTER require_isolation, so it died in
+    # the primary tree -- exactly where you want to run it, before there
+    # is a worktree at all. It spawns nothing, so there is nothing to
+    # contain; isolation is reported rather than enforced.
     if args and args[0] == "check":
+        preflight(cfg)
+        print("  isolation: "
+              + ("linked worktree" if in_linked_worktree()
+                 else "primary tree -- `start` will make a worktree"))
         ok, crit = check_criteria(cfg)
         for r in crit:
             print("  " + criteria_line(r))
         print(f"\ncriteria gate: {'PASS' if ok else 'FAIL'}")
+        gap = notify_gap()
+        if gap:
+            print(f"!! {gap}")
         return
+
+    require_isolation(cfg, allow_here)
+    preflight(cfg)
 
     st = load(STATE, {"phase": "plan", "iteration": 0, "replans": 0,
                       "spent_usd": 0.0, "gpu_hours": 0.0,
