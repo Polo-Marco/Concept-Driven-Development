@@ -6,10 +6,19 @@
 # Defaults: framework = ~/Documents/Claude/Projects/Concept-Driven-Development
 #           target    = ~/cdd-toy
 #
-# Deliberately tiny: two tickets, no network, no GPU, ~$1-2 of model
-# spend at the model tiers pinned below. The point is to exercise the
+# Deliberately tiny: no network, no GPU. The point is to exercise the
 # PLUMBING (gates -> planner -> contract review -> human gate -> generator
 # -> evaluator -> commit -> final audit), not to build anything useful.
+#
+# Cost, measured 2026-07-30 at the tiers pinned below, NOT estimated:
+# the Planner plans this as three tickets and a full run lands near $8 --
+# ~$2.5 to plan and contract-review, then ~$1.5-2 per ticket (generator +
+# per-iteration evaluator), plus the final provenance audit. The budget
+# below is set from that measurement. It used to say "$1-2" and cap
+# max_usd at 5, so the toy escalated on `budget exhausted: max_usd` with
+# one ticket to go -- a smoke test that could not finish under its own
+# budget, and the failure looked like the loop's fault rather than the
+# harness's.
 set -euo pipefail
 
 FW="${1:-$HOME/Documents/Claude/Projects/Concept-Driven-Development}"
@@ -85,7 +94,7 @@ a smoke test of the pipeline cannot fail on someone else's packaging.
 Nothing else is checked.
 
 ## Budgets
-6 iterations, 1 replan, 1 wall-clock hour, $5.
+6 iterations, 1 replan, 2 wall-clock hours, $12.
 
 ## Notes
 This is a smoke test of the pipeline, not a product. Planner and
@@ -106,8 +115,8 @@ cat > goal.json <<'EOF'
   "budgets": {
     "max_iterations": 6,
     "max_replans": 1,
-    "max_wall_hours": 1,
-    "max_usd": 5
+    "max_wall_hours": 2,
+    "max_usd": 12
   },
   "preflight": [
     {"name": "python3 on PATH", "run": "python3 -V"}
