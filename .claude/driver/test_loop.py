@@ -64,6 +64,14 @@ What it covers, and which v8.0 defect each case pins down:
                       escalated the first real loop on ticket 1)
   Trial quoting       a backticked Trial reaches Popen as a bare
                       command, not as command substitution
+  plan parsing        a ticket heading at any level parses, the done
+                      marker keeps that level, and a field stops at the
+                      next heading (8.1.3: pinned to `###`, so a `##`
+                      plan parsed as zero tickets)
+  unparseable plan    "cannot read" is not "finished" — it escalates
+                      from phase_plan before a contract review is paid
+                      for, and again in phase_iterate, instead of
+                      reporting all_tickets_done with nothing built
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -1243,6 +1251,132 @@ class TestTicketMarking(DriverCase):
         self.assertEqual([d for _, _, _, d in got], [True, False])
 
 
+# ---------- v8.1.4: the second toy run -------------------------------
+
+PLAN_H2 = PLAN.replace("### ", "## ")     # what the Planner actually wrote
+
+
+class TestPlanHeadingLevels(DriverCase):
+    """The 2026-07-30 re-test: the Planner wrote its tickets as
+    `## Phase 1, Step 1: ...` and TICKET was pinned to exactly `### `, so
+    the driver parsed ZERO tickets out of a 179-line three-ticket plan --
+    and then read "no tickets" as "all tickets done" (TestUnparseablePlan
+    below). Same class as the 8.1.3 Boundary defect: a model writes
+    markdown in a shape the parser will not accept."""
+
+    def setUp(self):
+        super().setUp()
+        loop.git_commit = lambda msg: "deadbee"
+
+    def test_h2_and_h4_headings_parse(self):
+        for text in (PLAN_H2, PLAN.replace("### ", "#### ")):
+            self.assertEqual([i for i, _, _, _ in loop.tickets(text)],
+                             ["Phase 1, Step 1", "Phase 1, Step 2"])
+
+    def test_a_heading_that_is_not_a_ticket_stays_ignored(self):
+        self.assertEqual(
+            list(loop.tickets("# Plan\n\n## Planner Self-Check\ntext\n")),
+            [])
+
+    def test_the_marker_preserves_the_heading_level(self):
+        """The trap in a naive tolerance fix: the driver marked a done
+        ticket with a hardcoded `### `, so a parsed `##` ticket could
+        never be marked, and phase_iterate would re-run it until the
+        iteration cap."""
+        (self.tmp / "Plan.md").write_text(PLAN_H2)
+        cfg = self.write_goal()
+        self.results({"metrics": {"acc": 0.5}})
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        text = (self.tmp / "Plan.md").read_text()
+        self.assertIn("## Phase 1, Step 1 [x]:", text)
+        self.assertNotIn("### ", text, "the level must not be rewritten")
+        self.assertEqual(st["phase"], "final_eval")
+        self.assertTrue(all(d for _, _, _, d in loop.tickets(text)))
+
+    def test_a_field_stops_at_the_next_heading_of_any_level(self):
+        """field()'s lookahead knew only `###`, so the last field of the
+        last ticket swallowed whatever prose followed the plan. On a
+        **Trial:** field that is a command handed to Popen(shell=True)."""
+        body = ("## Phase 1, Step 1: t\n"
+                "**Trial:** python3 train.py\n\n"
+                "## Planner Self-Check (completed)\n"
+                "- everything verified\n")
+        self.assertEqual(loop.field(body, "Trial"), "python3 train.py")
+
+
+class TestUnparseablePlan(DriverCase):
+    """The load-bearing half. phase_iterate computed `todo` from
+    tickets() and could not tell "finished" from "unreadable", so a plan
+    the driver could not parse produced `all_tickets_done` with nothing
+    built -- $2.24 of planning, zero Generator sessions, and only the
+    criteria gate standing between that and a reported success."""
+
+    NO_TICKETS = "# Plan\n\nJust prose. No tickets the driver can see.\n"
+
+    def test_iterate_escalates_instead_of_claiming_all_done(self):
+        (self.tmp / "Plan.md").write_text(self.NO_TICKETS)
+        cfg = self.write_goal()
+        calls = []
+        loop.claude = lambda _st, role, *a, **k: (calls.append(role) or "")
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("escalate", kinds)
+        self.assertNotIn("all_tickets_done", kinds)
+        self.assertNotEqual(st["phase"], "final_eval",
+                            "an unreadable plan must not reach the "
+                            "final gate as if the work were done")
+        self.assertEqual(calls, [], "nothing may be spent on this path")
+
+    def test_a_genuinely_finished_plan_is_still_all_done(self):
+        """The guard must not break the real terminating case."""
+        done = PLAN
+        for tid in ("Phase 1, Step 1", "Phase 1, Step 2"):
+            done = done.replace(f"### {tid}:", f"### {tid} [x]:")
+        (self.tmp / "Plan.md").write_text(done)
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        self.assertIn("all_tickets_done",
+                      [e["event"] for e in self.events()])
+        self.assertEqual(st["phase"], "final_eval")
+
+    def test_planning_stops_before_paying_for_a_contract_review(self):
+        """The cheapest place to catch it: the Planner has just run, the
+        Evaluator has not. Reaching the human gate with an unreadable
+        plan wasted a review AND the human's time."""
+        cfg = self.write_goal()
+        loop.claude = lambda _st, role, *a, **k: (
+            (self.tmp / "Plan.md").write_text(self.NO_TICKETS) or "")
+        st = {"phase": "plan", "iteration": 0, "spent_usd": 0.0}
+        with self.assertRaises(SystemExit):
+            loop.phase_plan(cfg, st)
+        self.assertNotEqual(st.get("phase"), "contract_review")
+        self.assertTrue(any(e["event"] == "escalate"
+                            for e in self.events()))
+
+    def test_a_missing_plan_escalates_too(self):
+        cfg = self.write_goal()
+        loop.claude = lambda *a, **k: ""
+        with self.assertRaises(SystemExit):
+            loop.phase_plan(cfg, {"phase": "plan", "spent_usd": 0.0})
+        self.assertTrue(any(e["event"] == "escalate"
+                            for e in self.events()))
+
+
 class TestGitCommitIsChecked(DriverCase):
     """v8.1: sh() ignores return codes, so a commit that failed left
     HEAD alone and git_commit returned the PREVIOUS sha -- the driver
@@ -1585,9 +1719,12 @@ class TestObservability(DriverCase):
         self.assertEqual(planned[0]["detail"], "2 tickets")
 
     def test_a_planner_that_wrote_nothing_says_so(self):
+        # v8.1.4: it still SAYS so, and now it also stops -- there is
+        # nothing downstream that can do anything useful with no plan.
         cfg = self.write_goal()
         loop.claude = lambda *a, **k: ""
-        loop.phase_plan(cfg, {})
+        with self.assertRaises(SystemExit):
+            loop.phase_plan(cfg, {})
         planned = [e for e in self.events() if e["event"] == "planned"]
         self.assertIn("NO Plan.md", planned[0]["detail"])
 

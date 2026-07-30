@@ -412,7 +412,12 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
 
 # ---------- plan parsing (dumb, format-bound) --------------------------
 
-TICKET = re.compile(r"^### (Phase \d+, Step \d+)( \[x\])?: (.+)$", re.M)
+# v8.1.4: any heading LEVEL, because a Planner writes `##` as readily as
+# `###` and the level carries no meaning the driver uses. What still
+# makes it a ticket is `Phase N, Step M:` -- that part is the contract.
+# Pinned to exactly `### `, the second toy run parsed zero tickets out of
+# a three-ticket plan. See tickets() for the half that mattered more.
+TICKET = re.compile(r"^#{2,4} (Phase \d+, Step \d+)( \[x\])?: (.+)$", re.M)
 
 
 def tickets(plan_text: str):
@@ -442,8 +447,13 @@ def field(body: str, name: str) -> str:
     physical line and silently dropped the rest, quietly disarming any
     multi-line Monitor Profile. The value now runs to the next
     `**Field:**` or ticket heading.
+
+    v8.1.4: the heading in that lookahead was literally `###`, so a plan
+    written at any other level let the LAST field of the last ticket
+    swallow the prose that followed it -- on a **Trial:** field, that is
+    text appended to a command handed to Popen(shell=True).
     """
-    m = re.search(rf"^\*\*{name}:\*\*[ \t]*(.*?)(?=^\*\*[A-Z]|^###|\Z)",
+    m = re.search(rf"^\*\*{name}:\*\*[ \t]*(.*?)(?=^\*\*[A-Z]|^#{{1,6}} |\Z)",
                   body, re.M | re.S)
     return m.group(1).strip() if m else ""
 
@@ -609,9 +619,22 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
            else ""))
     claude(st, "planner", prompt)
     plan = ROOT / "Plan.md"
-    event("planned", detail=(
-        f"{sum(1 for _ in tickets(plan.read_text()))} tickets"
-        if plan.exists() else "NO Plan.md was written"))
+    n = sum(1 for _ in tickets(plan.read_text())) if plan.exists() else 0
+    event("planned", detail=(f"{n} tickets" if plan.exists()
+                             else "NO Plan.md was written"))
+    # v8.1.4: a plan the driver cannot read is not a plan. This used to
+    # log "0 tickets" and walk on -- paying for a contract review, then
+    # parking a human at the gate, to approve a plan that would execute
+    # nothing. It is rule-bound, so it is decided here and not by a model
+    # (loop-protocol.md section 6): the Evaluator reads Markdown the way
+    # a human does and cannot see that this regex will not match.
+    if not n:
+        event("escalate", detail=(
+            "Plan.md has no ticket the driver can parse -- expected "
+            "headings of the form `### Phase 1, Step 1: Title` (see "
+            ".claude/rules/task-ticket-format.md). Nothing was executed."))
+        save(STATE, st)
+        sys.exit(1)
     st["phase"] = "contract_review"
     save(STATE, st)
 
@@ -650,8 +673,20 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             event("escalate", detail=f"budget exhausted: {reason}")
             return
         plan = (ROOT / "Plan.md")
-        todo = [(i, t, b) for i, t, b, done in tickets(plan.read_text())
-                if not done]
+        all_tickets = list(tickets(plan.read_text()))
+        todo = [(i, t, b) for i, t, b, done in all_tickets if not done]
+        # v8.1.4: "unreadable" and "finished" are not the same state.
+        # todo was computed straight off tickets(), so a plan with no
+        # parseable ticket produced `all_tickets_done` with nothing built
+        # and walked to the final gate as if the work were complete. Only
+        # the deterministic criteria gate stopped that from reading as
+        # success (2026-07-30 toy run, $2.24, zero Generator sessions).
+        if not all_tickets:
+            event("escalate", detail=(
+                "Plan.md has no ticket the driver can parse -- refusing "
+                "to report this as a finished plan. Expected headings of "
+                "the form `### Phase 1, Step 1: Title`."))
+            return
         if not todo:
             event("all_tickets_done")
             st["phase"] = "final_eval"
@@ -738,8 +773,14 @@ def phase_iterate(cfg: dict, st: dict) -> None:
 
         if verdict == "PASS":
             unmarked = plan.read_text()
-            plan.write_text(unmarked.replace(
-                f"### {tid}:", f"### {tid} [x]:", 1))
+            # v8.1.4: mark at whatever level the heading was written at.
+            # This used to be a literal `### ` replace, which is the trap
+            # in tolerating other levels in TICKET: the ticket would parse
+            # but never mark, so phase_iterate would re-run it until the
+            # iteration cap.
+            plan.write_text(re.sub(rf"^(#{{2,4}} {re.escape(tid)}):",
+                                   r"\1 [x]:", unmarked, count=1,
+                                   flags=re.M))
             sha = git_commit(
                 f"feat(loop): {tid} {title}\n\n"
                 f"verdict: PASS -- {v.get('reason', '')}\n"
