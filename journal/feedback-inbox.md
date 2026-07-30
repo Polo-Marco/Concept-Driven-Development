@@ -16,6 +16,149 @@ Entry format:
 
 ---
 
+## 2026-07-30 — the EXPERIMENT path, first end to end (2 runs, $16.95)
+
+Four `build` runs had proved the pipeline and left its whole reason for
+existing untested: a build goal has no `Trial` field, so `run_trial()`
+returns immediately, `cdd-monitor` is never spawned, and no verdict but
+PASS or ESCALATE is ever reached. New harness
+`.claude/driver/toy_experiment.sh` — a declared fault-injection stub, no
+GPU, no network, failure schedule entirely deterministic — forces the
+rest. Run A ($7.66, 32 min) reached `goal_reached` and produced the
+defects below; run B ($9.29, 37 min, 3 iterations, 1 replan) re-ran the
+same harness against the fixed driver and reached `goal_reached` too.
+Both under their caps. The schedule reproduced exactly across both runs,
+which is the point of putting it in a launch counter rather than a seed.
+
+**What the path proved.** Monitor spawned and classified
+(INTERVENE `nan_loss`, then HEALTHY on every clean poll); driver killed
+and RETRIED; a clean baseline missed its threshold and the Evaluator
+returned REPLAN; a fresh Planner read `ledger.jsonl`, named `lr=0.5` as
+ruled out per Protocol #3 and picked a different config; the replan was
+re-gated; `check_criteria()` went green on numbers a trial actually
+wrote (`final_loss=0.1618`). Every ledger row carried its `criteria`
+snapshot. Both contract reviews passed round 1 — the first toy runs to
+manage that, which I read as the 8.1.4 Producibility self-check earning
+its place.
+
+**Five defects.** Four fixed with regression tests, one reported only.
+
+1. **`proc.kill()` killed the shell, not the trial.** (fixed) The
+   driver logged `trial_killed` at 15:05:10; the trial log then gained
+   `step 20/40` and `FATAL` — lines the harness prints at
+   trial_start+100s, i.e. ~15:05:39. Twenty-nine seconds of output from
+   a process reported dead. `shell=True` makes the shell the child, and
+   the Planner's `train.py && report.py` is exactly what no shell can
+   collapse into an exec. Harmless in the toy; on a real goal the driver
+   reports a kill and immediately launches the RETRY's trial, so two
+   trials share one GPU and one of them is believed dead. Now
+   `start_new_session` + `killpg` + `wait()`. Run B: log frozen at
+   step 14 at +12s and +57s, zero surviving processes.
+   Severity: blocking (for any real experiment goal).
+
+2. **A RETRY destroyed the evidence that caused it.** (fixed) The trial
+   log was `trial-<iteration>.log` opened `"w"`, but `run_trial()` runs
+   once per ATTEMPT. Attempt 2 truncated the nan window the Monitor had
+   actually judged. Now one log per attempt. Latent twin, same line: the
+   driver told the Generator to tee to that same path, so on an
+   experiment ticket the trial destroyed the Generator's own output —
+   now `ticket-<iteration>.log`. Severity: recurring.
+
+3. **A REPLAN left no trace in the event feed.** (fixed) Every other
+   consequential transition emits; the most expensive one the driver
+   makes — discard the plan, buy a fresh Planner *and* a second contract
+   review, ~$2.50 of a $7.66 run — produced only an `approval_request`
+   whose gate string happened to read "replan". `phase_status()` renders
+   events, so a replan was invisible to the person paying for it.
+   Severity: recurring.
+
+4. **The driver names a goal type; no skill of that name exists.**
+   (fixed) `phase_plan()` says "the mode skill for goal type
+   'experiment'" and `cdd-planner.md` said `skills/mode-*/SKILL.md`. The
+   run-A Planner's first act was `find . -iname "*mode-experiment*"` —
+   nothing — after which it read `loop.py` in full twice and
+   `enforce_authority.py` in full, re-deriving the driver's contract
+   from source. The plan was good; this is cost and confusion, not
+   corruption. Honest limit: the toy ships no `skills/` at all, so it
+   did NOT reproduce the dangerous shape (siblings present, only this
+   one missing, inviting a substitution). Mapping now stated in
+   `cdd-planner.md`, with a test that every skill it names exists. Run B
+   Planner: "planned from Goal.md + task-ticket-format.md only, per the
+   Planner's documented fallback — no other mode's skill was
+   substituted." Severity: recurring.
+
+5. **`toy_project.sh`'s `.gitignore` gap, generalised.** (fixed before
+   these runs, verified live in both) `loop-state.json`, `events.jsonl`
+   and `journal/traces/` are declared gitignored by governance.md §5 and
+   nothing ensured it, so run 4 swept them into `feat(loop):` commits.
+   The driver now writes those entries itself. Deliberately still
+   tracked: Plan.md's `[x]`, Evaluation.md, verdict.json, ledger.jsonl —
+   ephemeral, but the evidence a reviewer wants attached to the commit
+   they explain.
+
+**Reported, not fixed.** The `results/` directory holding both criteria
+sources gets added to `.gitignore` by the Planner, in every run that has
+made the choice (build run 4, experiment runs A and B). Defensible —
+runtime output — but it means the loop's own evidence never enters git,
+and a provenance audit after the fact has only the working tree. Worth a
+retro's opinion rather than a unilateral fix.
+
+**Do the two recorded patterns hold up?**
+
+*A value crossing from a model to a stricter parser* — yes, and this
+round finally produced the confirmation the 8.1.3 fix had been waiting
+for. Run B's Planner wrote ``**Trial:** `python3 bench/train.py --config
+configs/baseline.json && python3 bench/report.py` `` — backticked, the
+same markdown habit that caused the Boundary defect — and the trial
+launched clean (`toybench 1.0 | config=configs/baseline.json ...`).
+Unstripped, those backticks are command substitution under
+`shell=True`. Five runs to see it in the wild once. Run B also wrote
+`##` headings (8.1.4 tolerance) and a backticked Boundary (8.1.3 fix),
+both fine. Defect 4 is the same pattern one level up: not a value the
+parser rejects, but a NAME the driver hands a model for something that
+does not exist.
+
+*The driver failing to distinguish two states and defaulting to the
+optimistic one* — yes, and defect 1 is its sharpest instance yet.
+"I sent a signal" was recorded as "the process is dead", which is the
+same shape as the unchecked trial exit code (8.1.1) and the unchecked
+`git_commit` (8.1.2). Three instances now, all: **the driver asked an
+external process to do something and wrote down that it had happened,
+without asking.** That is worth promoting from "pattern" to a rule the
+next reviewer applies deliberately — every `subprocess` call in
+`loop.py` should be read with "and who checked?".
+
+**A third pattern, new.** Defects 2 and 3 are both about *the record*,
+not the control flow: a log keyed on the wrong unit, and a transition
+that emitted nothing. Neither changed a single verdict. Both destroyed
+the ability to explain afterwards why the loop did what it did — and the
+loop's whole justification is running unattended, which means the record
+IS the product. Name it: **the loop is only as trustworthy as what it
+can show you afterwards, and nothing tests that.** 149 offline tests
+cover verdicts and gates; almost none assert that an event or an
+artifact a human will need later actually exists. Both defects were
+found by reading the run, not by the suite.
+
+**Economics.** Run A: $7.66, 32 min, 2 iterations, 1 replan, 3 trial
+launches, 7 Monitor sessions. Run B: $9.29, 37 min, 3 iterations (its
+Planner split reporting and trial into separate tickets), 1 replan, 3
+trial launches, 7 Monitor sessions. First cap was $25 — three times
+measured, which is a cap that can never bite; now $15, against a ~$11
+worst case the other budgets allow and a $9.29 observed high. Same
+mistake as run 4's $5 cap, in the opposite direction. Nothing audits the
+driver's own economics, still.
+
+**Plan shape varies a lot between runs of the identical goal.** A gave
+one ticket doing report + baseline trial; B gave three (report, a
+trial-only ticket with an empty Boundary and no Run Command, then the
+replan's new config). Both passed contract review round 1 and both
+reached the goal. B's trial-only ticket is worth noting: the driver
+still spends a full Generator session on a ticket whose declared Output
+is "none", and its `Boundary: none — no files are written...` is prose
+that `boundary_env()` reads as a non-empty list matching nothing. That
+happened to be the intent, but a Boundary that means "no writes" and a
+Boundary that is unparseable are the same string to the hook.
+
 ## 2026-07-30 — toy loop runs 2–4: the first COMPLETED loop
 
 Four runs in one afternoon, $14.74 total ($1.55 / $2.24 / $2.62 / $8.34). Run 4 finished: `goal_reached`,
