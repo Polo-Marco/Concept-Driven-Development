@@ -3,3 +3,6 @@ journal/traces/
 loop-state.json
 events.jsonl
 approvals/
+.DS_Store
+__pycache__/
+*.pyc
