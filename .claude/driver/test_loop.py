@@ -83,6 +83,7 @@ What it covers, and which v8.0 defect each case pins down:
 """
 import json
 import os
+import re
 import shutil
 import contextlib
 import importlib.util
@@ -2086,6 +2087,50 @@ class TestKillReachesTheTrial(DriverCase):
                 msg=f"pid {pid} survived the kill: the driver reaped the "
                     f"shell and orphaned the trial"):
             os.kill(pid, 0)
+
+
+class TestPlannerGoalTypeMapping(unittest.TestCase):
+    """v8.1.5: `phase_plan()` prompts the Planner with a goal TYPE --
+    "the mode skill for goal type 'experiment'" -- and cdd-planner.md
+    told it to load `skills/mode-*/SKILL.md`. Only `mode-loop/SKILL.md`
+    knows that `experiment` maps to `mode-modify`, and that file is the
+    interactive Ask-phase skill, which a headless Planner never reads.
+
+    Observed 2026-07-30, first experiment toy run: the Planner ran
+    `find . -iname "*mode-experiment*"`, got nothing, and compensated by
+    reading loop.py and enforce_authority.py in full to re-derive the
+    driver's contract from source. The mapping is now stated where the
+    Planner actually reads it, and these two cases keep it honest: every
+    goal type the loop accepts is mapped, and every skill the mapping
+    names exists on disk.
+    """
+
+    REPO = HERE.parent.parent
+    PLANNER = REPO / ".claude" / "agents" / "cdd-planner.md"
+    # the goal types [/loop] accepts, per CLAUDE.md and mode-loop/SKILL.md
+    GOAL_TYPES = ("build", "modify", "experiment", "migrate", "merge")
+
+    def mapping(self):
+        rows = re.findall(r"^\| `([a-z]+)` \| (.+?) \|$",
+                          self.PLANNER.read_text(), re.M)
+        return dict(rows)
+
+    def test_every_goal_type_the_loop_accepts_is_mapped(self):
+        table = self.mapping()
+        for t in self.GOAL_TYPES:
+            self.assertIn(t, table,
+                          f"cdd-planner.md maps no mode skill for goal "
+                          f"type {t!r}; the driver names the type and "
+                          f"nothing else tells the Planner what to load")
+
+    def test_every_skill_the_mapping_names_exists(self):
+        named = set(re.findall(r"skills/(mode-[a-z]+)/SKILL\.md",
+                               self.PLANNER.read_text()))
+        self.assertTrue(named, "the mapping names no skill at all")
+        for s in sorted(named):
+            self.assertTrue((self.REPO / "skills" / s / "SKILL.md").exists(),
+                            f"cdd-planner.md points the Planner at "
+                            f"skills/{s}/SKILL.md, which does not exist")
 
 
 if __name__ == "__main__":

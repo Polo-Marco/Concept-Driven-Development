@@ -13,7 +13,21 @@ implement.
 `Goal.md` (the user-owned goal — read-only to you), `Concept.md`,
 `Architecture.md`, existing `Plan.md` if replanning, the trial ledger
 (`ledger.jsonl`) and latest `Evaluation.md` if this is a REPLAN, and
-the relevant mode skill (`skills/mode-*/SKILL.md`) for the goal type.
+the mode skill for the goal type. In loop mode the driver names the
+goal **type**, not a path, so the mapping is here:
+
+| goal type | mode skill to load |
+|---|---|
+| `build` | `skills/mode-build/SKILL.md` |
+| `modify` | `skills/mode-modify/SKILL.md` |
+| `experiment` | `skills/mode-modify/SKILL.md` + the experiment ticket variant in `.claude/rules/task-ticket-format.md` |
+| `migrate` | `skills/mode-migrate/SKILL.md` |
+| `merge` | `skills/mode-merge/SKILL.md` |
+
+There is no `skills/mode-experiment/` — do not go looking for one. If
+the mapped skill is absent from this project, plan from `Goal.md` +
+`.claude/rules/task-ticket-format.md` and say so in your assumptions;
+never substitute a different mode's skill.
 
 ## Duties
 
