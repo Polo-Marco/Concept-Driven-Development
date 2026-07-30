@@ -93,8 +93,28 @@ def sh(cmd: str, **kw) -> subprocess.CompletedProcess:
 
 
 def git_commit(message: str) -> str:
+    """Commit the whole tree. Returns the new short SHA, or "" if
+    nothing was committed.
+
+    v8.1.2: the result used to be unchecked. `sh()` captures output and
+    ignores the return code, so a commit that FAILED -- no git identity
+    configured, a refusing pre-commit hook, a locked index -- left HEAD
+    where it was and this function returned the PREVIOUS sha. The driver
+    then marked the ticket [x], logged ticket_done with a stale sha and
+    moved on, reporting a loop whose work never entered git at all.
+
+    Third instance of the class the trial exit code belongs to: assuming
+    an external process succeeded because nobody asked it.
+    """
+    before = sh("git rev-parse HEAD").stdout.strip()
     sh("git add -A")
-    sh(f"git commit -m {shlex.quote(message)}")
+    r = sh(f"git commit -m {shlex.quote(message)}")
+    after = sh("git rev-parse HEAD").stdout.strip()
+    if not after or after == before:
+        why = (r.stderr.strip() or r.stdout.strip()
+               or "nothing changed").splitlines()[-1]
+        event("commit_failed", detail=why[:200])
+        return ""
     return sh("git rev-parse --short HEAD").stdout.strip()
 
 
@@ -325,18 +345,27 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
 
 # ---------- plan parsing (dumb, format-bound) --------------------------
 
-TICKET = re.compile(r"^### (Phase \d+, Step \d+): (.+)$", re.M)
+TICKET = re.compile(r"^### (Phase \d+, Step \d+)( \[x\])?: (.+)$", re.M)
 
 
 def tickets(plan_text: str):
-    """Yield (id, title, body, done) for each ticket, in order."""
+    """Yield (id, title, body, done) for each ticket, in order.
+
+    v8.1.2: the driver marks a finished ticket by rewriting its heading
+    to `### Phase 1, Step 2 [x]: ...`, which the old pattern could not
+    match -- so a completed ticket vanished from this function entirely
+    and `done` was never True for one. phase_iterate still terminated,
+    because "unparseable" and "done" happen to coincide, but it was
+    right by accident: anything that reads a plan for PROGRESS (a status
+    view, a close-out summary) saw a truncated list, and on a finished
+    plan saw nothing at all. The marker is now part of the grammar.
+    """
     heads = list(TICKET.finditer(plan_text))
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(plan_text)
         body = plan_text[m.start():end]
-        done = bool(re.search(r"^- \[x\]", body, re.M)) or \
-            "[x]" in plan_text[max(0, m.start() - 8):m.start()]
-        yield m.group(1), m.group(2), body, done
+        done = bool(m.group(2)) or bool(re.search(r"^- \[x\]", body, re.M))
+        yield m.group(1), m.group(3), body, done
 
 
 def field(body: str, name: str) -> str:
@@ -391,7 +420,8 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
           f"{flag.relative_to(ROOT)}), or:\n"
           f"  python3 .claude/driver/loop.py approve\n")
     while not flag.exists():
-        time.sleep(15)
+        time.sleep(2)          # v8.1.2: 15s made a phone approve feel
+                               # broken; this is a stat() call
     flag.unlink()
     st["pending_gate"] = None
     save(STATE, st)
@@ -627,14 +657,21 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             break
 
         if verdict == "PASS":
-            plan_text = plan.read_text().replace(
-                f"### {tid}:", f"### {tid} [x]:", 1)
-            plan.write_text(plan_text)
+            unmarked = plan.read_text()
+            plan.write_text(unmarked.replace(
+                f"### {tid}:", f"### {tid} [x]:", 1))
             sha = git_commit(
                 f"feat(loop): {tid} {title}\n\n"
                 f"verdict: PASS -- {v.get('reason', '')}\n"
                 f"evidence: {v.get('evidence', [])}\n"
                 f"iteration {st['iteration']}; see ledger.jsonl")
+            if not sha:
+                # v8.1.2: a PASS whose work never reached git is not a
+                # PASS. Leave the ticket runnable and stop.
+                plan.write_text(unmarked)
+                event("escalate", detail=f"{tid} verdict PASS but nothing "
+                      "was committed -- see commit_failed")
+                return
             event("ticket_done", detail=f"{tid} @ {sha}")
         elif verdict == "REPLAN":
             st["replans"] = st.get("replans", 0) + 1

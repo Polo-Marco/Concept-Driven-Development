@@ -39,6 +39,11 @@ What it covers, and which v8.0 defect each case pins down:
   approve             targets the pending gate and refuses when none is
                       (8.1 touched both flags; an early approve was a
                       silent no-op)
+  ticket marking      the driver's own [x] keeps the heading parseable
+                      (8.1: a finished ticket vanished from tickets())
+  git_commit          a refused or empty commit returns "" instead of
+                      the previous sha, and a PASS that did not land in
+                      git escalates rather than marking the ticket done
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -1004,6 +1009,113 @@ class TestHookPlannerNestedClaudeMd(HookCaller, unittest.TestCase):
             self.call("planner", "Bash",
                       {"command": "echo x > src/eval/api.py"}),
             self.DENY)
+
+
+class TestTicketMarking(DriverCase):
+    """v8.1: the driver's own `[x]` marker made a finished heading
+    unmatchable, so the ticket vanished from tickets() instead of being
+    reported done. phase_iterate still terminated -- but only because
+    "unparseable" and "done" happened to coincide."""
+
+    def test_marked_ticket_is_parsed_and_flagged_done(self):
+        marked = PLAN.replace("### Phase 1, Step 1:",
+                              "### Phase 1, Step 1 [x]:")
+        got = list(loop.tickets(marked))
+        self.assertEqual(len(got), 2)
+        self.assertEqual([d for _, _, _, d in got], [True, False])
+        self.assertEqual(got[0][0], "Phase 1, Step 1")
+        self.assertNotIn("[x]", got[0][1], "the title keeps the marker")
+
+    def test_a_finished_plan_still_lists_every_ticket(self):
+        done = PLAN
+        for tid in ("Phase 1, Step 1", "Phase 1, Step 2"):
+            done = done.replace(f"### {tid}:", f"### {tid} [x]:")
+        got = list(loop.tickets(done))
+        self.assertEqual(len(got), 2, "a completed plan must still parse")
+        self.assertTrue(all(d for _, _, _, d in got))
+
+    def test_round_trips_through_the_driver_s_own_rewrite(self):
+        rewritten = PLAN.replace("### Phase 1, Step 1:",
+                                 "### Phase 1, Step 1 [x]:", 1)
+        todo = [i for i, _, _, d in loop.tickets(rewritten) if not d]
+        self.assertEqual(todo, ["Phase 1, Step 2"])
+
+    def test_body_style_marker_still_honoured(self):
+        body_marked = PLAN.replace("### Phase 1, Step 1: First ticket",
+                                   "### Phase 1, Step 1: First ticket\n"
+                                   "- [x] done by hand")
+        got = list(loop.tickets(body_marked))
+        self.assertEqual([d for _, _, _, d in got], [True, False])
+
+
+class TestGitCommitIsChecked(DriverCase):
+    """v8.1: sh() ignores return codes, so a commit that failed left
+    HEAD alone and git_commit returned the PREVIOUS sha -- the driver
+    marked the ticket done and reported a loop whose work never entered
+    git."""
+
+    def setUp(self):
+        super().setUp()
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        (self.tmp / "a.txt").write_text("1")
+        loop.sh("git add -A")
+        loop.sh("git commit -q -m base")
+
+    def refuse_commits(self):
+        h = self.tmp / ".git" / "hooks" / "pre-commit"
+        h.parent.mkdir(parents=True, exist_ok=True)
+        h.write_text("#!/bin/sh\nexit 1\n")
+        h.chmod(0o755)
+
+    def test_successful_commit_returns_a_new_sha(self):
+        (self.tmp / "a.txt").write_text("2")
+        head = loop.sh("git rev-parse HEAD").stdout.strip()
+        sha = loop.git_commit("feat: change")
+        self.assertTrue(sha)
+        self.assertFalse(head.startswith(sha))
+        self.assertNotIn("commit_failed",
+                         [e["event"] for e in self.events()])
+
+    def test_refused_commit_returns_empty_and_is_reported(self):
+        self.refuse_commits()
+        (self.tmp / "a.txt").write_text("3")
+        self.assertEqual(loop.git_commit("feat: refused"), "")
+        self.assertIn("commit_failed",
+                      [e["event"] for e in self.events()])
+
+    def test_nothing_to_commit_is_not_a_sha(self):
+        self.assertEqual(loop.git_commit("feat: noop"), "")
+
+
+class TestPassRequiresACommit(DriverCase):
+    """A PASS whose work never reached git is not a PASS."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+
+    def test_failed_commit_escalates_and_keeps_the_ticket_runnable(self):
+        cfg = self.write_goal()
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: ""          # commit did not land
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        self.assertNotIn("[x]", (self.tmp / "Plan.md").read_text(),
+                         "an uncommitted ticket must stay runnable")
+        self.assertTrue(any(e["event"] == "escalate"
+                            for e in self.events()))
+        self.assertNotEqual(st.get("phase"), "final_eval")
 
 
 if __name__ == "__main__":
