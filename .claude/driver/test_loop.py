@@ -44,6 +44,11 @@ What it covers, and which v8.0 defect each case pins down:
   git_commit          a refused or empty commit returns "" instead of
                       the previous sha, and a PASS that did not land in
                       git escalates rather than marking the ticket done
+  start               one command makes the worktree, pins
+                      CLAUDE_PROJECT_DIR and launches under tmux; refuses
+                      to run a second driver for the same goal
+  status              renders ticket progress, criteria, budgets vs caps
+                      and a pending gate instead of raw JSON
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -53,6 +58,8 @@ What it covers, and which v8.0 defect each case pins down:
 import json
 import os
 import shutil
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -119,7 +126,7 @@ class DriverCase(unittest.TestCase):
         # v8.1.1: stubs used to leak between tests -- a case that
         # replaced loop.claude left it replaced for every case after it,
         # making the suite order-dependent.
-        for _n in ("claude", "git_commit", "subprocess"):
+        for _n in ("claude", "git_commit", "subprocess", "sh"):
             self.addCleanup(setattr, loop, _n, getattr(loop, _n))
         use_root(self.tmp)
         install_machinery(self.tmp)
@@ -1116,6 +1123,123 @@ class TestPassRequiresACommit(DriverCase):
         self.assertTrue(any(e["event"] == "escalate"
                             for e in self.events()))
         self.assertNotEqual(st.get("phase"), "final_eval")
+
+
+class TestStart(DriverCase):
+    """Stage 0: `loop.py start` replaces six manual steps across two
+    terminals. It SPAWNS rather than re-execs -- require_isolation()
+    refuses to relocate the process that owns every commit, and that
+    judgement stands."""
+
+    def setUp(self):
+        super().setUp()
+        d = self.tmp / ".claude" / "driver"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "loop.py").write_text("#")
+
+    def fake_sh(self, has_session=False):
+        def sh(cmd, **k):
+            rc = 0
+            if "has-session" in cmd:
+                rc = 0 if has_session else 1
+            return types.SimpleNamespace(returncode=rc, stdout="",
+                                         stderr="")
+        loop.sh = sh
+
+    def capture_tmux(self):
+        seen = {}
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            seen["cmd"] = cmd
+            return types.SimpleNamespace(returncode=0, stdout="",
+                                         stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        return seen
+
+    def test_slug_is_branch_safe(self):
+        self.assertEqual(loop.slug({"goal": "Run TMMLU+ & write report"}),
+                         "run-tmmlu-write-report")
+        self.assertEqual(loop.slug({}), "loop")
+        self.assertEqual(loop.slug({"goal": "!!!"}), "loop")
+
+    def test_notify_gap_names_the_missing_push(self):
+        self.assertIn("notify.sh", loop.notify_gap())
+        loop.NOTIFY.parent.mkdir(parents=True, exist_ok=True)
+        loop.NOTIFY.write_text("#")
+        self.assertEqual(loop.notify_gap(), "")
+
+    def test_launches_tmux_with_the_project_dir_pinned(self):
+        self.fake_sh()
+        seen = self.capture_tmux()
+        with contextlib.redirect_stdout(io.StringIO()):
+            loop.phase_start({"goal": "toy goal"}, allow_here=True)
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[:4], ["tmux", "new-session", "-d", "-s"])
+        self.assertEqual(cmd[4], "cdd-toy-goal")
+        # An inherited CLAUDE_PROJECT_DIR would point the child at the
+        # PRIMARY tree, so it is pinned explicitly rather than inferred.
+        self.assertIn(f"CLAUDE_PROJECT_DIR={self.tmp}", cmd[5])
+        self.assertIn("tee logs/driver.log", cmd[5])
+        self.assertIn("--here", cmd[5])
+
+    def test_refuses_a_second_driver_for_the_same_goal(self):
+        self.fake_sh(has_session=True)
+        self.capture_tmux()
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(io.StringIO()):
+                loop.phase_start({"goal": "toy goal"}, allow_here=True)
+
+    def test_refuses_a_target_without_the_machinery(self):
+        (self.tmp / ".claude" / "driver" / "loop.py").unlink()
+        self.fake_sh()
+        self.capture_tmux()
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(io.StringIO()):
+                loop.phase_start({"goal": "toy goal"}, allow_here=True)
+
+
+class TestStatusView(DriverCase):
+    """v8.1 dumped loop-state.json raw, which answers none of the four
+    questions a human actually has: where is it, is it stuck, how much
+    has it burned, does it need me?"""
+
+    def render(self, cfg):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status(cfg)
+        return buf.getvalue()
+
+    def test_empty_tree_says_so_instead_of_printing_braces(self):
+        self.assertIn("Nothing has run", self.render({}))
+
+    def test_shows_progress_criteria_budgets_and_the_pending_gate(self):
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(PLAN.replace(
+            "### Phase 1, Step 1:", "### Phase 1, Step 1 [x]:"))
+        self.results({"metrics": {"acc": 0.5}})
+        loop.save(loop.STATE, {"phase": "iterate", "iteration": 3,
+                               "replans": 0, "spent_usd": 4.0,
+                               "gpu_hours": 0.0, "pending_gate": "replan",
+                               "current_ticket": "Phase 1, Step 2",
+                               "started_epoch": loop.time.time(),
+                               "started": "2026-07-30T00:00:00+00:00"})
+        out = self.render(cfg)
+        self.assertIn("1/2 done", out)
+        self.assertIn("[x] Phase 1, Step 1", out)
+        self.assertIn("[ ] Phase 1, Step 2", out)
+        self.assertIn("ok   acc", out)
+        self.assertIn("3 / 8", out)              # iterations vs cap
+        self.assertIn("$4.00 / $10.00", out)     # spend vs cap
+        self.assertIn("WAITING FOR YOU", out)
+        self.assertIn("replan", out)
+
+    def test_survives_a_state_with_no_plan_and_no_criteria(self):
+        loop.save(loop.STATE, {"phase": "plan"})
+        out = self.render({})
+        self.assertIn("phase     plan", out)
+        self.assertNotIn("WAITING FOR YOU", out)
 
 
 if __name__ == "__main__":

@@ -16,11 +16,16 @@ rule-bound must never be handed to a probabilistic model:
   * check_criteria() -- goal.json criteria, read straight off disk
 
 Usage:
-    python3 .claude/driver/loop.py            # start or resume a loop
-    python3 .claude/driver/loop.py status     # print loop state
+    python3 .claude/driver/loop.py start      # worktree + tmux + go
+    python3 .claude/driver/loop.py status     # what is happening now
     python3 .claude/driver/loop.py approve    # approve the pending gate
     python3 .claude/driver/loop.py check      # run gates only, then exit
+    python3 .claude/driver/loop.py            # run in the foreground
     python3 .claude/driver/loop.py --here     # allow the primary worktree
+
+`start` is the entry point: it creates the loop's worktree, launches the
+driver under tmux and prints where to watch. Running loop.py bare is the
+same driver in the foreground -- what `start` puts inside tmux.
 
 Requires: goal.json (written by the [/loop] Ask phase), Claude Code
 CLI on PATH, git. Python 3.9+, stdlib only.
@@ -277,6 +282,19 @@ def criteria_line(r: dict) -> str:
             + (f"; {r['why']}" if r["why"] else "") + ")")
 
 
+def slug(cfg: dict) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", cfg.get("goal", "loop").lower())
+    return s[:40].strip("-") or "loop"
+
+
+def notify_gap() -> str:
+    """Empty when push is configured; a warning when it is not."""
+    if NOTIFY.exists():
+        return ""
+    return ("no push configured -- copy .claude/driver/notify.sh.example "
+            "to notify.sh, or nothing will tell you a gate opened")
+
+
 # ---------- isolation --------------------------------------------------
 
 def require_isolation(cfg: dict, allow_here: bool) -> None:
@@ -295,14 +313,12 @@ def require_isolation(cfg: dict, allow_here: bool) -> None:
     if common and gitdir and common != gitdir:
         event("isolation_ok", detail="linked worktree")
         return
-    slug = re.sub(r"[^a-z0-9]+", "-",
-                  cfg.get("goal", "loop").lower())[:40].strip("-") or "loop"
     die(f"Refusing to run in the primary working tree.\n"
         f"  The driver commits with `git add -A`; a loop belongs in its\n"
         f"  own worktree so a runaway cannot touch your main checkout.\n\n"
-        f"  git worktree add ../{ROOT.name}-loop -b loop/{slug}\n"
-        f"  cd ../{ROOT.name}-loop\n"
-        f"  python3 .claude/driver/loop.py 2>&1 | tee logs/driver.log\n\n"
+        f"  python3 .claude/driver/loop.py start\n\n"
+        f"  (that creates ../{ROOT.name}-loop on branch "
+        f"loop/{slug(cfg)} and starts the driver there)\n\n"
         f"  Override (not recommended): loop.py --here")
 
 
@@ -415,10 +431,12 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
     st["pending_gate"] = name
     save(STATE, st)
     event("approval_request", gate=name, detail=detail)
+    gap = notify_gap()
     print(f"\n== HUMAN GATE [{name}] ==\n{detail}\n"
           f"Approve via: control-tower session / phone (writes "
           f"{flag.relative_to(ROOT)}), or:\n"
-          f"  python3 .claude/driver/loop.py approve\n")
+          f"  python3 .claude/driver/loop.py approve\n"
+          + (f"!! {gap}\n" if gap else ""))
     while not flag.exists():
         time.sleep(2)          # v8.1.2: 15s made a phone approve feel
                                # broken; this is a stat() call
@@ -730,6 +748,148 @@ def phase_final(cfg: dict, st: dict) -> None:
     save(STATE, st)
 
 
+# ---------- start: worktree + tmux + go --------------------------------
+
+def phase_start(cfg: dict, allow_here: bool) -> None:
+    """Create the loop's worktree, launch the driver under tmux, print
+    one line saying where it went.
+
+    v8.1.2. Starting a loop used to be six manual steps across two
+    terminals -- create the worktree from a command the driver printed
+    and then refused to run, cd, start tmux, remember the `| tee`, and
+    keep a second shell around for `approve`. Every one of them was
+    mechanical, and none of them needed a human.
+
+    Deliberately SPAWNS rather than re-execs. `require_isolation()`
+    refuses to relocate the process that owns every commit, and that
+    judgement stands: this creates the worktree and starts a SEPARATE
+    driver inside it.
+    """
+    if allow_here:
+        target = ROOT
+    else:
+        common = sh("git rev-parse --git-common-dir").stdout.strip()
+        gitdir = sh("git rev-parse --git-dir").stdout.strip()
+        if common and gitdir and common != gitdir:
+            target = ROOT                       # already in a worktree
+        else:
+            target = ROOT.parent / f"{ROOT.name}-loop"
+            branch = f"loop/{slug(cfg)}"
+            if not target.exists():
+                r = sh(f"git worktree add {shlex.quote(str(target))} "
+                       f"-b {shlex.quote(branch)}")
+                if r.returncode != 0:
+                    die("Could not create the loop worktree:\n  "
+                        + (r.stderr.strip() or r.stdout.strip()))
+                event("worktree_created", detail=f"{target} on {branch}")
+            # Goal.md/goal.json are user-owned and typically uncommitted,
+            # so the worktree checkout does not have them yet.
+            for f in ("Goal.md", "goal.json"):
+                src = ROOT / f
+                if src.exists():
+                    (target / f).write_text(src.read_text())
+
+    if not (target / ".claude" / "driver" / "loop.py").exists():
+        die(f"{target} has no .claude/driver/loop.py -- the branch it "
+            f"checked out predates the loop machinery. Commit .claude/ "
+            f"first.")
+    (target / "logs").mkdir(exist_ok=True)
+
+    name = f"cdd-{slug(cfg)}"[:32]
+    if sh(f"tmux has-session -t {shlex.quote(name)}").returncode == 0:
+        die(f"tmux session '{name}' already exists -- a driver for this "
+            f"goal is already running.\n"
+            f"  watch:   tmux attach -t {name}\n"
+            f"  status:  python3 .claude/driver/loop.py status")
+    if sh("command -v tmux").returncode != 0:
+        die("tmux is not installed. Either install it, or run the driver "
+            "in the foreground:\n"
+            f"  cd {target} && python3 .claude/driver/loop.py "
+            "2>&1 | tee logs/driver.log")
+
+    flag = " --here" if allow_here else ""
+    inner = (f"cd {shlex.quote(str(target))} && "
+             f"CLAUDE_PROJECT_DIR={shlex.quote(str(target))} "
+             f"python3 .claude/driver/loop.py{flag} "
+             f"2>&1 | tee logs/driver.log")
+    r = subprocess.run(["tmux", "new-session", "-d", "-s", name, inner],
+                       text=True, capture_output=True)
+    if r.returncode != 0:
+        die("tmux refused to start the driver:\n  "
+            + (r.stderr.strip() or r.stdout.strip()))
+
+    gap = notify_gap()
+    print(f"\nLoop started in tmux session '{name}'.\n"
+          f"  worktree  {target}\n"
+          f"  log       {target}/logs/driver.log\n"
+          f"  watch     tmux attach -t {name}   (detach: Ctrl-b d)\n"
+          f"  status    python3 .claude/driver/loop.py status\n"
+          f"  approve   python3 .claude/driver/loop.py approve\n"
+          + (f"\n  !! {gap}\n" if gap else ""))
+
+
+# ---------- status: for a human ----------------------------------------
+
+def phase_status(cfg: dict) -> None:
+    """What is happening, in the order a human asks it.
+
+    v8.1.2: this used to dump loop-state.json raw, which answers none of
+    the four questions you actually have -- where is it, is it stuck, how
+    much has it burned, does it need me?
+    """
+    st = load(STATE, {})
+    if not st:
+        print("No loop state. Nothing has run in this tree yet.")
+        return
+    b = cfg.get("budgets", {})
+    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
+    out = [f"goal      {cfg.get('goal', '(no goal.json here)')}",
+           f"phase     {st.get('phase', '?')}"
+           + (f"   ticket {st['current_ticket']}"
+              if st.get("current_ticket") else ""),
+           f"started   {st.get('started', '?')}  (elapsed {hours:.1f}h)"]
+
+    plan = ROOT / "Plan.md"
+    if plan.exists():
+        rows = [f"  [{'x' if d else ' '}] {i}  {t}"
+                for i, t, _, d in tickets(plan.read_text())]
+        if rows:
+            done = sum(1 for r in rows if r.startswith("  [x]"))
+            out += ["", f"tickets   {done}/{len(rows)} done"] + rows
+
+    if cfg.get("criteria"):
+        _, crit = check_criteria(cfg)
+        out += ["", "criteria"] + [f"  {criteria_line(r)}" for r in crit]
+
+    def cap(v, k, fmt="{:.0f}"):
+        """`used / limit`, both in the same unit -- the unit lives in
+        `fmt` so an absent limit renders as a bare "-"."""
+        lim = b.get(k)
+        return (fmt.format(v) + " / "
+                + (fmt.format(lim) if lim is not None else "-"))
+    out += ["", "budgets",
+            f"  iterations  {cap(st.get('iteration', 0), 'max_iterations')}",
+            f"  replans     {cap(st.get('replans', 0), 'max_replans')}",
+            f"  spend       {cap(st.get('spent_usd', 0.0), 'max_usd', '${:.2f}')}",
+            f"  wall        {cap(hours, 'max_wall_hours', '{:.1f}h')}",
+            f"  gpu         {cap(st.get('gpu_hours', 0.0), 'max_gpu_hours', '{:.1f}h')}"]
+
+    if st.get("pending_gate"):
+        out += ["", f">> WAITING FOR YOU: gate '{st['pending_gate']}'",
+                "   python3 .claude/driver/loop.py approve"]
+        gap = notify_gap()
+        if gap:
+            out += [f"   !! {gap}"]
+
+    if EVENTS.exists():
+        recent = [json.loads(x) for x in
+                  EVENTS.read_text().splitlines()[-8:] if x.strip()]
+        out += ["", "recent"] + [
+            f"  {e['ts'][11:19]}  {e['event']:<20} "
+            f"{str(e.get('detail', ''))[:54]}" for e in recent]
+    print("\n".join(out))
+
+
 # ---------- main --------------------------------------------------------
 
 def main() -> None:
@@ -743,7 +903,10 @@ def main() -> None:
     args = [a for a in argv if not a.startswith("-")]
 
     if args and args[0] == "status":
-        print(json.dumps(load(STATE, {}), indent=2))
+        if "--json" in argv:
+            print(json.dumps(load(STATE, {}), indent=2))
+        else:
+            phase_status(load(GOAL, {}) or {})
         return
     if args and args[0] == "approve":
         # v8.1.1: used to touch BOTH gate flags. wait_approval() deletes
@@ -770,6 +933,13 @@ def main() -> None:
     # nothing is spent until all four pass.
     machinery()
     validate_goal(cfg)
+
+    # `start` spawns the real driver elsewhere; isolation and preflight
+    # are that process's gates to run, in the tree it will actually use.
+    if args and args[0] == "start":
+        phase_start(cfg, allow_here)
+        return
+
     require_isolation(cfg, allow_here)
     preflight(cfg)
 

@@ -205,20 +205,38 @@ edits, including yours. Changing the goal later = user edits + fresh
 loop. The Evaluator's contract review independently audits your
 translation (**Faithful?**) before the human gate.
 
-### 5. Hand off to the driver
+### 5. Start the driver yourself
+
+Once — and only once — the user has confirmed `Goal.md` + `goal.json`,
+**you run this. Do not hand the user a list of terminal commands.**
 
 ```bash
-# The driver REFUSES to run in the primary working tree — it commits
-# with `git add -A`, so a loop belongs in its own worktree.
-git worktree add ../$(basename $PWD)-loop -b loop/<goal-slug>
-cd ../$(basename $PWD)-loop
-
-# optional: verify the gates without starting the loop
+# optional: verify the gates without spending anything
 python3 .claude/driver/loop.py check
 
-# start (inside tmux so it survives disconnect):
-python3 .claude/driver/loop.py 2>&1 | tee logs/driver.log
+# creates the worktree, copies the frozen goal files into it, launches
+# the driver under tmux, prints where to watch:
+python3 .claude/driver/loop.py start
 ```
+
+`start` exists because every step it replaces was mechanical: the driver
+refuses to run in the primary working tree (it commits with
+`git add -A`), so a loop needs its own worktree — but creating it, cd-ing
+into it, remembering `| tee logs/driver.log`, and keeping a second shell
+around for `approve` never needed a human. Relay `start`'s output to the
+user; it names the tmux session, the log path, and the two commands they
+may want.
+
+Then STAY IN THIS SESSION as the control tower. You are the interface to
+the loop from here on:
+
+- `status` → run `python3 .claude/driver/loop.py status` and relay it.
+- `approve` → **only when the user says so in this conversation** — run
+  `python3 .claude/driver/loop.py approve`. Read `Plan.md` first and tell
+  them what you would flag, so their decision costs seconds rather than
+  minutes. NEVER approve on your own judgement: the plan gate is the only
+  human checkpoint left in the loop, and this session is interactive, so
+  the PreToolUse hook does not restrain you. That restraint is yours.
 
 Tell the user:
 
@@ -226,24 +244,28 @@ Tell the user:
   goal-contract shape, worktree isolation, preflight. Nothing is
   planned or spent until all four pass.
 - Then Planner → Evaluator contract review, then it WAITS at the human
-  gate. Review `Plan.md`, then `python3 .claude/driver/loop.py approve`
-  (or approve from the phone via the control tower).
+  gate. They review `Plan.md` and tell you to approve (or run
+  `python3 .claude/driver/loop.py approve` themselves).
+- **An interactive session cannot wake itself.** Nothing will tell them a
+  gate opened unless push is configured — if `start` warned that
+  `.claude/driver/notify.sh` is missing, say so plainly rather than
+  letting them discover it by watching a silent terminal.
 - **There are exactly three gates** (`loop-protocol.md`): plan approval,
   every replan, every escalation. There are no mid-loop `[Halt here]`
   pauses in loop mode — that flag only applies to the manual
   `start execution` escape hatch. Everything else is event-driven: the
   loop stops when something happens, not when you guessed in advance
   that it might.
-- **Control tower for remote control:** keep THIS session (or a fresh
-  interactive one) alive in tmux with Remote Control enabled. From the
-  phone: ask it for `status` (it reads `loop-state.json` /
-  `events.jsonl` / `ledger.jsonl`) or say `approve` (it touches
-  `approvals/<gate>.approved`). See `.claude/rules/loop-protocol.md`.
+- **To drive it from a phone:** keep this session alive in tmux with
+  Remote Control enabled. They can then message you `status` or
+  `approve` from anywhere. See `.claude/rules/loop-protocol.md`.
 - At the end, read a sample of the loop's diffs and explain them to
   yourself. With no mid-loop checkpoint, this is the only thing
   standing between you and a codebase you no longer understand.
 
-Then STOP. The loop is the driver's; you are done.
+Then stop *acting* and start *waiting*. Execution is the driver's — you
+neither plan nor build — but the user should not need a second terminal
+to talk to their own loop.
 
 ## Hard rules
 
@@ -259,8 +281,17 @@ DO:
 - Read the contract back by the JSON's semantics and close with
   "nothing else is checked".
 - Log the Ask-phase decisions in the loop's `journal/` file.
+- Run `loop.py start` yourself after confirmation, and stay available
+  afterwards as the user's interface to the running loop.
+- Before relaying a gate, read what is waiting and say what you would
+  flag. Making the decision cheap is your job; making it is not.
 
 DO NOT:
+- **Approve any gate the user has not approved in this conversation.**
+  Not "it looks fine", not "they said go ahead earlier", not to save
+  them a round trip. The plan gate is the last human checkpoint in the
+  loop; this session is interactive, so the PreToolUse hook exempts it
+  and nothing but this rule stops you.
 - Plan, spec tickets, or touch `src/` — that's the Planner's session.
 - Hand-author `goal.json` independently of `Goal.md`. It is a
   translation; if they disagree, the markdown is right and the JSON is
