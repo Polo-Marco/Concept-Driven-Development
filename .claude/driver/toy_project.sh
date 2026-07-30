@@ -49,7 +49,8 @@ cat > Architecture.md <<'EOF'
 ## Overview
 One Python package, `src/wordfreq/`, with no third-party dependencies.
 `counter.py` holds the pure logic; `cli.py` is a thin argparse wrapper
-over it. Tests live in `tests/` and run under `python3 -m pytest`.
+over it. Tests live in `tests/` and run under `python3 -m unittest
+discover -s tests` -- stdlib only, so the toy needs nothing installed.
 A small script writes the run's metrics to `results/metrics.json` so the
 loop's success criteria can be checked off disk.
 
@@ -57,6 +58,7 @@ loop's success criteria can be checked off disk.
 - `src/wordfreq/counter.py` — `count_words(text: str) -> dict[str, int]`
 - `src/wordfreq/cli.py` — reads a file path, prints the top N words
 - `scripts/report.py` — runs the suite, writes `results/metrics.json`
+  (counts passing tests via `unittest`, exercises the CLI once)
 
 ## Data
 `results/metrics.json` is a flat object:
@@ -72,7 +74,9 @@ its own results to a file the loop can check.
 
 ## Preflight
 - `python3` is on PATH
-- `pytest` is importable
+
+Nothing else: the toy uses only the standard library, deliberately, so
+a smoke test of the pipeline cannot fail on someone else's packaging.
 
 ## Success criteria
 - `tests_passed >= 3` in `results/metrics.json`
@@ -106,8 +110,7 @@ cat > goal.json <<'EOF'
     "max_usd": 5
   },
   "preflight": [
-    {"name": "python3 on PATH", "run": "python3 -V"},
-    {"name": "pytest importable", "run": "python3 -c 'import pytest'"}
+    {"name": "python3 on PATH", "run": "python3 -V"}
   ],
   "models": {"planner": "sonnet", "generator": "sonnet",
              "evaluator": "sonnet", "monitor": "haiku"},

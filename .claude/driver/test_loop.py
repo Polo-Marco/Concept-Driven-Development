@@ -78,6 +78,7 @@ import loop  # noqa: E402  (import after sys.path juggling)
 # DriverCase stubs require_cli to keep the suite offline; keep a
 # handle on the real one so TestAuthGate can exercise it.
 REAL_REQUIRE_CLI = loop.require_cli
+REAL_SH = loop.sh
 
 
 # ---------- harness ----------------------------------------------------
@@ -1146,12 +1147,21 @@ class TestStart(DriverCase):
         d = self.tmp / ".claude" / "driver"
         d.mkdir(parents=True, exist_ok=True)
         (d / "loop.py").write_text("#")
+        loop.time = FakeClock()                 # skip the liveness wait
 
-    def fake_sh(self, has_session=False):
+    def fake_sh(self, has_session=False, survives=True):
+        seen = {"n": 0}
+
         def sh(cmd, **k):
+            if "tmux" not in cmd:
+                return REAL_SH(cmd, **k)        # preflight etc: for real
             rc = 0
             if "has-session" in cmd:
-                rc = 0 if has_session else 1
+                seen["n"] += 1
+                if seen["n"] == 1:              # pre-launch: free slot?
+                    rc = 0 if has_session else 1
+                else:                           # post-launch: alive?
+                    rc = 0 if survives else 1
             return types.SimpleNamespace(returncode=rc, stdout="",
                                          stderr="")
         loop.sh = sh
@@ -1161,11 +1171,16 @@ class TestStart(DriverCase):
         real = loop.subprocess
 
         def run(cmd, **k):
-            seen["cmd"] = cmd
-            return types.SimpleNamespace(returncode=0, stdout="",
-                                         stderr="")
+            # intercept ONLY the tmux launch; sh() goes through
+            # subprocess.run too, and preflight must really run.
+            if isinstance(cmd, list) and cmd[:1] == ["tmux"]:
+                seen["cmd"] = cmd
+                return types.SimpleNamespace(returncode=0, stdout="",
+                                             stderr="")
+            return real.run(cmd, **k)
         loop.subprocess = types.SimpleNamespace(
-            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT,
+            DEVNULL=real.DEVNULL, TimeoutExpired=real.TimeoutExpired)
         return seen
 
     def test_slug_is_branch_safe(self):
@@ -1193,6 +1208,37 @@ class TestStart(DriverCase):
         self.assertIn(f"CLAUDE_PROJECT_DIR={self.tmp}", cmd[5])
         self.assertIn("tee logs/driver.log", cmd[5])
         self.assertIn("--here", cmd[5])
+
+    def test_preflight_runs_before_anything_is_created(self):
+        """`check` failing and `start` succeeding is a contradiction."""
+        self.fake_sh()
+        seen = self.capture_tmux()
+        cfg = {"goal": "toy goal",
+               "preflight": [{"name": "impossible", "run": "exit 1"}]}
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(io.StringIO()):
+                loop.phase_start(cfg, allow_here=True)
+        self.assertNotIn("cmd", seen, "tmux must not be reached")
+
+    def test_a_driver_that_dies_immediately_is_reported(self):
+        self.fake_sh(survives=False)
+        self.capture_tmux()
+        (self.tmp / "logs").mkdir(exist_ok=True)
+        (self.tmp / "logs" / "driver.log").write_text(
+            "!! LOOP NOT STARTED\nPreflight failed.\n")
+        buf = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(buf):
+                loop.phase_start({"goal": "toy goal"}, allow_here=True)
+
+    def test_session_name_has_no_trailing_hyphen(self):
+        self.fake_sh()
+        seen = self.capture_tmux()
+        with contextlib.redirect_stdout(io.StringIO()):
+            loop.phase_start(
+                {"goal": "wordfreq CLI with tests, end to end"},
+                allow_here=True)
+        self.assertEqual(seen["cmd"][4], "cdd-wordfreq-cli-with-tests")
 
     def test_refuses_a_second_driver_for_the_same_goal(self):
         self.fake_sh(has_session=True)

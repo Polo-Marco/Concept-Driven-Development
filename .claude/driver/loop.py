@@ -810,6 +810,14 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
     judgement stands: this creates the worktree and starts a SEPARATE
     driver inside it.
     """
+    # v8.1.2b: preflight BEFORE creating anything. `start` used to skip
+    # it entirely (it is handled ahead of the gates in main()), so a
+    # failing environment still got a worktree, a branch and a tmux
+    # session, and printed "Loop started" for a driver that was already
+    # dying inside tmux where nobody could see it. Observed on the first
+    # real run: `check` said FAIL, `start` said started.
+    preflight(cfg)
+
     if allow_here:
         target = ROOT
     else:
@@ -838,7 +846,7 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
             f"first.")
     (target / "logs").mkdir(exist_ok=True)
 
-    name = f"cdd-{slug(cfg)}"[:32]
+    name = ("cdd-" + slug(cfg))[:28].rstrip("-")
     if sh(f"tmux has-session -t {shlex.quote(name)}").returncode == 0:
         die(f"tmux session '{name}' already exists -- a driver for this "
             f"goal is already running.\n"
@@ -860,6 +868,16 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
     if r.returncode != 0:
         die("tmux refused to start the driver:\n  "
             + (r.stderr.strip() or r.stdout.strip()))
+
+    # The driver runs its own gates in the worktree and dies loudly if
+    # one fails -- but tmux destroys the session with the process, so
+    # the message would vanish. Wait, then report what really happened.
+    time.sleep(3)
+    if sh(f"tmux has-session -t {shlex.quote(name)}").returncode != 0:
+        log = target / "logs" / "driver.log"
+        tail = "\n  ".join(log.read_text(errors="ignore").splitlines()[-12:]
+                           ) if log.exists() else "(no driver.log)"
+        die(f"The driver exited immediately. Its last output:\n\n  {tail}")
 
     gap = notify_gap()
     print(f"\nLoop started in tmux session '{name}'.\n"
