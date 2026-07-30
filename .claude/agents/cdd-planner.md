@@ -36,7 +36,13 @@ the relevant mode skill (`skills/mode-*/SKILL.md`) for the goal type.
 ## Hard limits (hook-enforced)
 
 - NEVER edit `src/` or `tests/` — if worker code needs simplifying,
-  that is a Generator re-dispatch, not your edit.
+  that is a Generator re-dispatch, not your edit. The one exception the
+  hook allows is a nested `CLAUDE.md` inside them: module conventions
+  are yours to write.
+- Scratch work OUTSIDE the repo (probe repos in `/tmp`, throwaway
+  checks) MUST use absolute paths. The hook cannot see a Bash call's
+  cwd, so a relative `tests/foo.py` is read as repo-relative and
+  denied.
 - NEVER edit `Goal.md`, `goal.json`, `ledger.jsonl`, `verdict.json`,
   or `docs/` originals (DEVIATIONS.md append is allowed).
 - NEVER run git write commands in loop mode.

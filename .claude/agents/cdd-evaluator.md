@@ -120,3 +120,6 @@ Verdict rules:
 - NEVER commit. NEVER make architecture decisions — flag gaps instead.
 - Running code, tests, and reconstructing prior states in /tmp to
   verify claims is REQUIRED — that is your job, not an option.
+- Refer to those out-of-repo files by ABSOLUTE path. The hook cannot
+  see a Bash call's cwd, so a relative `tests/foo.py` is read as
+  repo-relative and denied.

@@ -144,7 +144,13 @@ def check_write(role: str, rel: str, boundary: list):
             return f"'{rel}' is outside your ticket Boundary."
         return None
     if role == "planner":
-        if rel.startswith(("src/", "tests/")):
+        # v8.1.1: a nested CLAUDE.md is Planner Read/Write/CREATE per
+        # phase-authority.md. The blanket src//tests/ denial made the
+        # planned module conventions unreachable and forced them into a
+        # skill file instead -- the hook contradicting the matrix it
+        # exists to enforce.
+        if rel.startswith(("src/", "tests/")) and \
+                rel.rsplit("/", 1)[-1] != "claude.md":
             return ("Planner never edits src/ or tests/ — re-dispatch "
                     "a Generator instead.")
         if rel.startswith("docs/") and not rel.endswith("deviations.md"):

@@ -27,6 +27,18 @@ What it covers, and which v8.0 defect each case pins down:
   machinery           refuse to start when parts are missing or the
                       PreToolUse hook is unwired
   state machine       PASS / RETRY->PASS / regression / final gate
+  trial exit code     a self-inflicted non-zero exit is not a
+                      completed trial (8.1 covered only driver-caused
+                      exits, so a crash was graded as output)
+  spend accounting    spent_usd survives a phase-level save, so max_usd
+                      is a real cap (8.1: claude() saved a private copy
+                      that the next save(STATE, st) wiped)
+  field()             multi-line ticket fields kept whole (8.1: `(.+)$`
+                      dropped every line but the first, silently
+                      disarming a multi-line Monitor Profile)
+  approve             targets the pending gate and refuses when none is
+                      (8.1 touched both flags; an early approve was a
+                      silent no-op)
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -39,6 +51,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -98,6 +111,11 @@ class DriverCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self._real_time = loop.time
         self.addCleanup(lambda: setattr(loop, "time", self._real_time))
+        # v8.1.1: stubs used to leak between tests -- a case that
+        # replaced loop.claude left it replaced for every case after it,
+        # making the suite order-dependent.
+        for _n in ("claude", "git_commit", "subprocess"):
+            self.addCleanup(setattr, loop, _n, getattr(loop, _n))
         use_root(self.tmp)
         install_machinery(self.tmp)
         (self.tmp / "logs").mkdir(exist_ok=True)
@@ -364,7 +382,7 @@ class TestContractReview(DriverCase):
         Evaluator silently passed the safety pre-gate."""
         calls = []
 
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             calls.append(role)
             return ""                      # never writes verdict.json
         loop.claude = fake
@@ -376,7 +394,7 @@ class TestContractReview(DriverCase):
                             for e in self.events()))
 
     def test_corrupt_verdict_is_revise(self):
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             loop.VERDICT.write_text("{broken")
             return ""
         loop.claude = fake
@@ -384,7 +402,7 @@ class TestContractReview(DriverCase):
             loop.phase_contract_review(self.write_goal(), {})
 
     def test_ok_verdict_advances_to_gate(self):
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
             return ""
         loop.claude = fake
@@ -451,7 +469,7 @@ class TestStateMachine(DriverCase):
         cfg = self.write_goal()
         self.results({"metrics": {"acc": 0.5}})
 
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             if role == "evaluator":
                 loop.VERDICT.write_text(json.dumps(
                     {"verdict": "PASS", "reason": "ok",
@@ -474,7 +492,7 @@ class TestStateMachine(DriverCase):
         self.results({"metrics": {"acc": 0.5}})
         state = {"n": 0}
 
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             if role == "generator":
                 state["n"] += 1
                 if state["n"] == 1:
@@ -522,7 +540,7 @@ class TestStateMachine(DriverCase):
     def test_generator_stop_escalates(self):
         cfg = self.write_goal()
         self.results({"metrics": {"acc": 0.5}})
-        loop.claude = lambda role, *a, **k: (
+        loop.claude = lambda _st, role, *a, **k: (
             "STATUS: stopped — needs an architectural decision"
             if role == "generator" else "")
         st = {"phase": "iterate", "iteration": 0, "replans": 0,
@@ -537,7 +555,8 @@ class TestStateMachine(DriverCase):
         cfg = self.write_goal()
         self.results({"metrics": {"acc": 0.0}})
         calls = []
-        loop.claude = lambda role, *a, **k: calls.append(role) or ""
+        loop.claude = lambda _st, role, *a, **k: (calls.append(role)
+                                                 or "")
         st = {}
         loop.phase_final(cfg, st)
         self.assertEqual(calls, [], "no Evaluator call on a failed gate")
@@ -548,7 +567,7 @@ class TestStateMachine(DriverCase):
         self.results({"metrics": {"acc": 0.5}})
         prompts = []
 
-        def fake(role, prompt, *a, **k):
+        def fake(_st, role, prompt, *a, **k):
             prompts.append(prompt)
             loop.VERDICT.write_text(json.dumps(
                 {"verdict": "PASS", "reason": "provenance corroborated"}))
@@ -781,6 +800,210 @@ class TestHookBashWrites(HookCaller, unittest.TestCase):
             self.bash("generator",
                       "python3 -c \"open('Architecture.md','w').write('x')\""),
             self.ALLOW)
+
+# ---------- v8.1.1: fixes traced to the 2026-07-30 retro ---------------
+
+class TestTrialExitCode(DriverCase):
+    """8.1 rewrote run_trial to stop grading incomplete trials, but only
+    covered the exits the DRIVER causes (budget kill, Monitor kill). A
+    trial that died on its own was still reported as completed, so a
+    stale artifact on disk could be graded as its output."""
+
+    def setUp(self):
+        super().setUp()
+        loop.time = FakeClock(step=0.0)     # never reaches a poll
+        loop.claude = lambda *a, **k: '{"status": "HEALTHY"}'
+
+    def test_nonzero_exit_is_not_a_completed_trial(self):
+        st = {"iteration": 1}
+        body = "**Trial:** exit 7\n**Monitor Profile:** none"
+        self.assertFalse(loop.run_trial("T", body, st, self.write_goal()))
+        ev = [e for e in self.events() if e["event"] == "trial_failed"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("exited 7", ev[0]["detail"])
+
+    def test_zero_exit_still_completes(self):
+        st = {"iteration": 2}
+        body = "**Trial:** true\n**Monitor Profile:** none"
+        self.assertTrue(loop.run_trial("T", body, st, self.write_goal()))
+        self.assertFalse(any(e["event"] == "trial_failed"
+                             for e in self.events()))
+
+    def test_crash_faster_than_one_poll_is_still_caught(self):
+        """The loop-1 regression: the trial died at 1m42s against a
+        5-minute poll interval, so no Monitor session ever ran and the
+        exit code was the only thing left that could notice."""
+        calls = []
+        loop.claude = lambda *a, **k: (calls.append(1)
+                                       or '{"status": "HEALTHY"}')
+        cfg = self.write_goal(monitor={"interval_min": 999})
+        body = "**Trial:** exit 1\n**Monitor Profile:** none"
+        self.assertFalse(loop.run_trial("T", body, {"iteration": 3}, cfg))
+        self.assertEqual(calls, [], "no Monitor ran on this path")
+
+
+class TestSpendAccounting(DriverCase):
+    """8.1 enforced max_usd against a number that never accumulated:
+    claude() mutated a privately-loaded copy of the state and the next
+    phase-level save(STATE, st) wiped it."""
+
+    def stub_session(self, cost):
+        real = loop.subprocess
+        loop.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(
+                stdout=json.dumps({"total_cost_usd": cost,
+                                   "result": "ok"})),
+            Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+
+    def test_spend_survives_the_phase_boundary(self):
+        self.stub_session(10.0)
+        cfg = self.write_goal(budgets={"max_usd": 25,
+                                       "max_iterations": 99})
+        st = {"spent_usd": 0.0, "iteration": 0, "replans": 0,
+              "started_epoch": loop.time.time()}
+        for _ in range(2):
+            loop.claude(st, "planner", "p")
+            loop.save(loop.STATE, st)       # what every phase does
+        self.assertEqual(st["spent_usd"], 20.0)
+        self.assertEqual(loop.load(loop.STATE, {})["spent_usd"], 20.0)
+        self.assertEqual(loop.budget_exceeded(st, cfg), "")
+        loop.claude(st, "planner", "p")
+        self.assertEqual(loop.budget_exceeded(st, cfg), "max_usd")
+
+    def test_unparseable_session_output_costs_nothing(self):
+        real = loop.subprocess
+        loop.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: types.SimpleNamespace(stdout="not json"),
+            Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        self.write_goal()
+        st = {"spent_usd": 1.0}
+        self.assertEqual(loop.claude(st, "planner", "p"), "not json")
+        self.assertEqual(st["spent_usd"], 1.0)
+
+
+class TestFieldParsing(DriverCase):
+    """8.1's `(.+)$` under re.M took the first physical line and dropped
+    the rest, so a multi-line Monitor Profile shipped disarmed."""
+
+    BODY = ("### Phase 1, Step 6: Run harness\n\n"
+            "**Input:** configs/eval.yaml\n"
+            "**Monitor Profile:** poll every 5 min\n"
+            "- cuda_oom: \"CUDA out of memory\"\n"
+            "- stall: no new line for 10 min\n"
+            "**Boundary:** src/eval/\n"
+            "**Run Command:** uv run pytest 2>&1 | tee logs/latest.log\n")
+
+    def test_multiline_field_is_kept_whole(self):
+        mp = loop.field(self.BODY, "Monitor Profile")
+        self.assertIn("cuda_oom", mp)
+        self.assertIn("stall", mp)
+
+    def test_multiline_field_stops_at_the_next_field(self):
+        self.assertNotIn("Boundary",
+                         loop.field(self.BODY, "Monitor Profile"))
+
+    def test_single_line_fields_unchanged(self):
+        self.assertEqual(loop.field(self.BODY, "Input"),
+                         "configs/eval.yaml")
+        self.assertEqual(loop.field(self.BODY, "Run Command"),
+                         "uv run pytest 2>&1 | tee logs/latest.log")
+
+    def test_absent_field_is_empty(self):
+        self.assertEqual(loop.field(self.BODY, "Trial"), "")
+
+    def test_field_does_not_bleed_into_the_next_ticket(self):
+        two = self.BODY + "\n### Phase 1, Step 7: Next\n\n**Input:** y\n"
+        self.assertEqual(loop.field(two, "Run Command"),
+                         "uv run pytest 2>&1 | tee logs/latest.log")
+
+
+class TestApproveGate(DriverCase):
+    """8.1 touched BOTH gate flags, and wait_approval() deletes any
+    pre-existing flag on entry -- so approving before the driver reached
+    the gate silently did nothing."""
+
+    def approve(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(HERE / "loop.py"), "approve", *extra],
+            env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.tmp)},
+            capture_output=True, text=True)
+
+    def test_premature_approve_is_refused_loudly(self):
+        loop.save(loop.STATE, {"phase": "plan"})
+        r = self.approve()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("No gate is pending", r.stderr)
+        self.assertFalse((self.tmp / "approvals" / "plan.approved")
+                         .exists())
+
+    def test_approve_targets_only_the_pending_gate(self):
+        loop.save(loop.STATE, {"phase": "gate", "pending_gate": "plan"})
+        self.assertEqual(self.approve().returncode, 0)
+        self.assertTrue((self.tmp / "approvals" / "plan.approved")
+                        .exists())
+        self.assertFalse((self.tmp / "approvals" / "replan.approved")
+                         .exists())
+
+    def test_explicit_gate_name_is_honoured(self):
+        loop.save(loop.STATE, {"phase": "iterate"})
+        self.assertEqual(self.approve("replan").returncode, 0)
+        self.assertTrue((self.tmp / "approvals" / "replan.approved")
+                        .exists())
+
+    def test_pending_gate_is_published_then_cleared(self):
+        flag = self.tmp / "approvals" / "plan.approved"
+        seen = {}
+
+        class Clock(FakeClock):
+            def sleep(self, _sec):
+                seen["gate"] = loop.load(loop.STATE, {}).get("pending_gate")
+                flag.touch()                # unblock the next check
+        loop.time = Clock()
+        st = {}
+        loop.wait_approval(st, "plan", "review it")
+        self.assertEqual(seen["gate"], "plan",
+                         "the waiting gate must be visible on disk")
+        self.assertIsNone(st["pending_gate"])
+        self.assertIsNone(loop.load(loop.STATE, {})["pending_gate"])
+
+
+class TestHookPlannerNestedClaudeMd(HookCaller, unittest.TestCase):
+    """phase-authority.md grants the Planner Read/Write/CREATE on nested
+    CLAUDE.md, but the blanket src//tests/ denial made it unreachable --
+    the hook contradicting the matrix it exists to enforce."""
+
+    def test_planner_may_create_nested_claude_md(self):
+        for f in ("src/eval/adapters/CLAUDE.md", "tests/unit/CLAUDE.md"):
+            self.assertEqual(self.call("planner", "Write",
+                                       {"file_path": f"/repo/{f}"}),
+                             self.ALLOW, f)
+
+    def test_planner_still_denied_real_code(self):
+        for f in ("src/eval/adapters/api.py", "tests/unit/test_api.py",
+                  "src/notclaude.md"):
+            self.assertEqual(self.call("planner", "Write",
+                                       {"file_path": f"/repo/{f}"}),
+                             self.DENY, f)
+
+    def test_exemption_is_planner_only(self):
+        for role in ("generator", "evaluator", "monitor"):
+            self.assertEqual(self.call(role, "Write",
+                                       {"file_path":
+                                        "/repo/src/eval/CLAUDE.md"},
+                                       boundary="src/"),
+                             self.DENY, role)
+
+    def test_exemption_holds_on_the_bash_path_too(self):
+        self.assertEqual(
+            self.call("planner", "Bash",
+                      {"command": "echo x > src/eval/CLAUDE.md"}),
+            self.ALLOW)
+        self.assertEqual(
+            self.call("planner", "Bash",
+                      {"command": "echo x > src/eval/api.py"}),
+            self.DENY)
 
 
 if __name__ == "__main__":

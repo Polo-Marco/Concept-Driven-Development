@@ -18,7 +18,7 @@ rule-bound must never be handed to a probabilistic model:
 Usage:
     python3 .claude/driver/loop.py            # start or resume a loop
     python3 .claude/driver/loop.py status     # print loop state
-    python3 .claude/driver/loop.py approve    # approve the plan gate
+    python3 .claude/driver/loop.py approve    # approve the pending gate
     python3 .claude/driver/loop.py check      # run gates only, then exit
     python3 .claude/driver/loop.py --here     # allow the primary worktree
 
@@ -288,9 +288,21 @@ def require_isolation(cfg: dict, allow_here: bool) -> None:
 
 # ---------- claude sessions -------------------------------------------
 
-def claude(role: str, prompt: str, boundary: str = "",
+def claude(st: dict, role: str, prompt: str, boundary: str = "",
            timeout: int = 7200) -> str:
-    """Spawn one fresh headless session with hook-enforced authority."""
+    """Spawn one fresh headless session with hook-enforced authority.
+
+    Bills the session onto the CALLER'S state dict.
+
+    v8.1.1: this used to `load(STATE)` a private copy, add the cost and
+    save it. Every phase function then saved the dict `main()` loaded at
+    startup, wiping that write -- so `spent_usd` was reset toward zero
+    at each phase boundary and `max_usd` was compared against a number
+    that never accumulated (metered since 8.0, enforced in 8.1, correct
+    in neither). The fix is ONE in-memory dict rather than a smarter
+    merge: with a single writer, `save(STATE, st)` from anywhere is
+    consistent and no field needs special monotonic semantics.
+    """
     cfg = load(GOAL, {})
     model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
     sys_prompt = (AGENTS / f"cdd-{role}.md").read_text()
@@ -303,13 +315,12 @@ def claude(role: str, prompt: str, boundary: str = "",
                        capture_output=True, timeout=timeout)
     try:
         out = json.loads(r.stdout)
-        cost = out.get("total_cost_usd", 0.0)
-        st = load(STATE, {})
-        st["spent_usd"] = round(st.get("spent_usd", 0.0) + cost, 4)
-        save(STATE, st)
-        return out.get("result", "")
     except (json.JSONDecodeError, AttributeError):
         return r.stdout
+    st["spent_usd"] = round(st.get("spent_usd", 0.0)
+                            + out.get("total_cost_usd", 0.0), 4)
+    save(STATE, st)          # safe now: the same dict every caller holds
+    return out.get("result", "")
 
 
 # ---------- plan parsing (dumb, format-bound) --------------------------
@@ -329,7 +340,15 @@ def tickets(plan_text: str):
 
 
 def field(body: str, name: str) -> str:
-    m = re.search(rf"^\*\*{name}:\*\*\s*(.+)$", body, re.M)
+    """Value of one `**Name:**` ticket field, multi-line included.
+
+    v8.1.1: the old pattern was `(.+)$` under re.M -- it took the first
+    physical line and silently dropped the rest, quietly disarming any
+    multi-line Monitor Profile. The value now runs to the next
+    `**Field:**` or ticket heading.
+    """
+    m = re.search(rf"^\*\*{name}:\*\*[ \t]*(.*?)(?=^\*\*[A-Z]|^###|\Z)",
+                  body, re.M | re.S)
     return m.group(1).strip() if m else ""
 
 
@@ -354,11 +373,18 @@ def budget_exceeded(st: dict, cfg: dict) -> str:
 
 # ---------- gates ------------------------------------------------------
 
-def wait_approval(name: str, detail: str) -> None:
+def wait_approval(st: dict, name: str, detail: str) -> None:
+    """Block until the named gate is approved.
+
+    v8.1.1: publishes WHICH gate is pending, so `approve` can target it
+    and a premature `approve` can be told that nothing is waiting.
+    """
     APPROVALS.mkdir(exist_ok=True)
     flag = APPROVALS / f"{name}.approved"
     if flag.exists():
         flag.unlink()
+    st["pending_gate"] = name
+    save(STATE, st)
     event("approval_request", gate=name, detail=detail)
     print(f"\n== HUMAN GATE [{name}] ==\n{detail}\n"
           f"Approve via: control-tower session / phone (writes "
@@ -367,17 +393,27 @@ def wait_approval(name: str, detail: str) -> None:
     while not flag.exists():
         time.sleep(15)
     flag.unlink()
+    st["pending_gate"] = None
+    save(STATE, st)
     event("approved", gate=name)
 
 
 # ---------- trials (experiment goals) ----------------------------------
 
 def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
-    """Launch the trial command; poll with Monitor; True if it FINISHED.
+    """Launch the trial command; poll with Monitor; True if it SUCCEEDED.
 
     Returns False whenever the trial did not run to completion, so the
     caller never scores partial metrics. (v8.0 returned True after a
     crash-class kill and let the Evaluator grade a truncated run.)
+
+    v8.1.1: ALSO False on a non-zero exit code. v8.1 covered only the
+    exits the DRIVER causes -- budget kill, Monitor kill -- and still
+    reported any self-inflicted death as completion. Consequences: a
+    trial that died faster than one Monitor poll interval was invisible
+    to both guards, and whatever stale artifact happened to be on disk
+    was graded as its output. A non-zero exit is a RULE, and rules are
+    decided here, not by a model (loop-protocol.md section 6).
     """
     trial_cmd = field(body, "Trial")
     if not trial_cmd:
@@ -416,7 +452,7 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
                 return False
             tail = "\n".join(log.read_text(errors="ignore")
                              .splitlines()[-100:])
-            rep = claude("monitor",
+            rep = claude(st, "monitor",
                          f"Monitor Profile:\n"
                          f"{field(body, 'Monitor Profile')}\n\n"
                          f"Trial log tail:\n{tail}\n\nClassify per your "
@@ -446,6 +482,11 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict) -> bool:
                 # v8.1: a killed trial is NOT an evaluable trial.
                 return False
     bill()
+    if proc.returncode != 0:
+        event("trial_failed",
+              detail=f"trial exited {proc.returncode} -- see "
+                     f"{log.relative_to(ROOT)}")
+        return False
     return True
 
 
@@ -461,7 +502,7 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
         + (f"\nThis is a REPLAN. Latest Evaluation.md:\n"
            f"{ev.read_text()}\nReason: {replan_reason}\n" if replan_reason
            else ""))
-    claude("planner", prompt)
+    claude(st, "planner", prompt)
     st["phase"] = "contract_review"
     save(STATE, st)
 
@@ -470,7 +511,7 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
     for round_ in range(2):
         if VERDICT.exists():
             VERDICT.unlink()          # never read a stale verdict
-        claude("evaluator",
+        claude(st, "evaluator",
                "Mode 1 -- contract review. Read Plan.md, Goal.md, "
                "goal.json, and the Architecture Overview. Audit per "
                "your instructions; write Evaluation.md and verdict.json.")
@@ -486,7 +527,7 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
             event("contract_review_unreadable",
                   detail="no usable verdict.json -- treating as REVISE")
         event("contract_revise", detail=f"round {round_ + 1}")
-        claude("planner", "Contract review returned REVISE. Read "
+        claude(st, "planner", "Contract review returned REVISE. Read "
                "Evaluation.md and revise Plan.md accordingly.")
     event("escalate", detail="plan failed contract review twice")
     sys.exit(1)
@@ -514,7 +555,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
 
         verdict, v = "ESCALATE", {"reason": "no attempt completed"}
         for attempt in range(1, 4):                       # RETRY <= 3
-            rep = claude("generator",
+            rep = claude(st, "generator",
                          f"Execute this ticket per your instructions:\n\n"
                          f"{body}\n\nTicket log: logs/trial-"
                          f"{st['iteration']}.log", field(body, "Boundary"))
@@ -561,7 +602,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 else:
                     if VERDICT.exists():
                         VERDICT.unlink()      # no stale verdicts
-                    claude("evaluator",
+                    claude(st, "evaluator",
                            "Mode 2 -- evaluation. Audit the latest work "
                            f"for ticket '{tid}' against Plan.md and "
                            "Goal.md per your instructions. The diff is "
@@ -603,7 +644,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             save(STATE, st)
             phase_plan(cfg, st, v.get("reason", ""))
             phase_contract_review(cfg, st)
-            wait_approval("replan", f"Replan #{st['replans']}: "
+            wait_approval(st, "replan", f"Replan #{st['replans']}: "
                           + str(v.get("reason", "")))
             st["phase"] = "iterate"
             save(STATE, st)
@@ -631,7 +672,7 @@ def phase_final(cfg: dict, st: dict) -> None:
 
     if VERDICT.exists():
         VERDICT.unlink()
-    claude("evaluator",
+    claude(st, "evaluator",
            "Mode 2 -- FINAL evaluation of the whole loop. The "
            "deterministic criteria gate already PASSED, so do not "
            "re-check thresholds: audit PROVENANCE instead. Was each "
@@ -655,6 +696,11 @@ def phase_final(cfg: dict, st: dict) -> None:
 # ---------- main --------------------------------------------------------
 
 def main() -> None:
+    # v8.1.1: through `tee`, stdout is block-buffered at 8 KB. A 54
+    # minute run left logs/driver.log at ZERO bytes and the
+    # `== HUMAN GATE ==` banner never appeared -- the documented way to
+    # follow a loop could not announce the one thing needing a human.
+    sys.stdout.reconfigure(line_buffering=True)
     argv = sys.argv[1:]
     allow_here = "--here" in argv
     args = [a for a in argv if not a.startswith("-")]
@@ -663,9 +709,19 @@ def main() -> None:
         print(json.dumps(load(STATE, {}), indent=2))
         return
     if args and args[0] == "approve":
+        # v8.1.1: used to touch BOTH gate flags. wait_approval() deletes
+        # any pre-existing flag on entry, so approving before the driver
+        # reached the gate silently did nothing -- an invisible failure
+        # mode. Target the pending gate, and say so when there is none.
+        gate = args[1] if len(args) > 1 else \
+            load(STATE, {}).get("pending_gate")
+        if gate not in ("plan", "replan"):
+            print("No gate is pending (loop-state.json has no "
+                  "pending_gate). Nothing approved.", file=sys.stderr)
+            sys.exit(1)
         APPROVALS.mkdir(exist_ok=True)
-        for gate in ("plan", "replan"):
-            (APPROVALS / f"{gate}.approved").touch()
+        (APPROVALS / f"{gate}.approved").touch()
+        print(f"approved: {gate}")
         return
 
     cfg = load(GOAL, None)
@@ -700,7 +756,7 @@ def main() -> None:
     if st["phase"] == "contract_review":
         phase_contract_review(cfg, st)
     if st["phase"] == "gate":
-        wait_approval("plan", "Plan.md ready + contract-reviewed. "
+        wait_approval(st, "plan", "Plan.md ready + contract-reviewed. "
                       "Review it, then approve.")
         st["phase"] = "iterate"
         save(STATE, st)
