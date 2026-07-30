@@ -28,9 +28,17 @@ the relevant mode skill (`skills/mode-*/SKILL.md`) for the goal type.
 3. **Satisfiability self-check.** For each Spec step: can it be
    executed with only the inputs available at that point? A circular or
    unsatisfiable step leaves the Generator no legal move but to stop.
-4. **Update core files** as needed: Architecture.md (keep Overview
+4. **Producibility self-check.** For EVERY criterion in `goal.json`,
+   some ticket's **Run Command** must actually write that criterion's
+   `source` file. The driver reads criteria off disk and runs nothing of
+   its own on a `build`/`modify` goal — a metrics file that only a human
+   would produce, or that lives behind an `if __name__ == "__main__"`
+   nothing invokes, means every ticket passes and the final gate then
+   escalates on missing numbers. Name the producing ticket for each
+   criterion in your assumptions.
+5. **Update core files** as needed: Architecture.md (keep Overview
    faithful), README, skills, nested CLAUDE.md.
-5. Write `Plan.md` (or `Triage.md` for bug sub-flow). Do NOT commit in
+6. Write `Plan.md` (or `Triage.md` for bug sub-flow). Do NOT commit in
    loop mode — the driver commits.
 
 ## Hard limits (hook-enforced)

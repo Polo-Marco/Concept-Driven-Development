@@ -463,7 +463,9 @@ class TestContractReview(DriverCase):
         st = {}
         with self.assertRaises(SystemExit):
             loop.phase_contract_review(self.write_goal(), st)
-        self.assertEqual(calls.count("evaluator"), 2)
+        # v8.1.4: reviews = revisions + 1, so an always-unreadable
+        # verdict is three fail-closed reviews, not two.
+        self.assertEqual(calls.count("evaluator"), loop.MAX_REVISIONS + 1)
         self.assertTrue(any(e["event"] == "contract_review_unreadable"
                             for e in self.events()))
 
@@ -483,6 +485,45 @@ class TestContractReview(DriverCase):
         st = {}
         loop.phase_contract_review(self.write_goal(), st)
         self.assertEqual(st["phase"], "gate")
+
+    # ---- v8.1.4: every revision gets reviewed ------------------------
+
+    def test_the_last_revision_is_reviewed_not_discarded(self):
+        """2026-07-30 toy run 3: the driver bought a Planner revision
+        after its final review, escalated without looking at it, and the
+        discarded revision had fixed the very defect the review flagged.
+        The escalation named a plan that was no longer on disk."""
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            # REVISE, REVISE, then the second revision is good.
+            loop.VERDICT.write_text(json.dumps(
+                {"verdict": "OK" if calls.count("evaluator") == 3
+                 else "REVISE"}))
+            return ""
+        loop.claude = fake
+        st = {}
+        loop.phase_contract_review(self.write_goal(), st)
+        self.assertEqual(st["phase"], "gate")
+        self.assertEqual(calls, ["evaluator", "planner",
+                                 "evaluator", "planner", "evaluator"])
+
+    def test_no_revision_is_bought_that_nothing_will_review(self):
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            loop.VERDICT.write_text(json.dumps({"verdict": "REVISE"}))
+            return ""
+        loop.claude = fake
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(self.write_goal(), {})
+        self.assertEqual(calls[-1], "evaluator",
+                         "the last thing paid for must be a review, so "
+                         "Evaluation.md describes the plan on disk")
+        self.assertEqual(calls.count("planner"), loop.MAX_REVISIONS)
+        self.assertEqual(calls.count("evaluator"), loop.MAX_REVISIONS + 1)
 
 
 # ---------- gate 1: machinery -----------------------------------------

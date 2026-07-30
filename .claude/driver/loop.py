@@ -645,8 +645,23 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
     save(STATE, st)
 
 
+MAX_REVISIONS = 2
+
+
 def phase_contract_review(cfg: dict, st: dict) -> None:
-    for round_ in range(2):
+    """Review, revise, review again -- never the other way round.
+
+    v8.1.4: this was `for _ in range(2): review; revise`, which BOUGHT a
+    Planner revision after the final review and then escalated without
+    ever looking at it. Toy run 3 (2026-07-30): the discarded revision
+    had fixed the exact defect the review flagged, and the escalation --
+    "plan failed contract review twice" -- described a plan that was no
+    longer on disk, since Evaluation.md reviewed one Plan.md while
+    another sat next to it. Two invariants now hold: the driver never
+    acts on or escalates with a plan nothing reviewed, and it never pays
+    for a revision nothing will review. Reviews = revisions + 1.
+    """
+    for revision in range(MAX_REVISIONS + 1):
         if VERDICT.exists():
             VERDICT.unlink()          # never read a stale verdict
         claude(st, "evaluator",
@@ -665,10 +680,14 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
         if v is None:
             event("contract_review_unreadable",
                   detail="no usable verdict.json -- treating as REVISE")
-        event("contract_revise", detail=f"round {round_ + 1}")
+        if revision == MAX_REVISIONS:
+            break                 # out of revisions: do not buy one more
+        event("contract_revise", detail=f"round {revision + 1}")
         claude(st, "planner", "Contract review returned REVISE. Read "
                "Evaluation.md and revise Plan.md accordingly.")
-    event("escalate", detail="plan failed contract review twice")
+    event("escalate", detail=(
+        f"plan still failed contract review after {MAX_REVISIONS} "
+        f"revisions -- Evaluation.md describes the Plan.md now on disk"))
     sys.exit(1)
 
 

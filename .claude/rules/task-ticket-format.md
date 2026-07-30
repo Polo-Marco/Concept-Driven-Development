@@ -137,6 +137,12 @@ Before ending the Planner session, verify for each ticket:
   in `docs/DEVIATIONS.md`)?
 - Is **Depends On** correct — does it list every ticket whose output
   this one consumes?
+- Does some ticket's **Run Command** actually WRITE each `goal.json`
+  criterion's `source` file? On `build`/`modify` goals the driver runs
+  nothing of its own, so a metrics file produced only by a human step —
+  or sitting behind an `if __name__ == "__main__"` that no Run Command
+  invokes — makes every ticket pass and the final criteria gate
+  escalate on numbers that were never written.
 - For every **Parallel Group**: are the members' Boundaries pairwise
   disjoint, and does no member depend on another member? Is the
   Environment Setup ticket kept out of all groups? Is grouping actually
