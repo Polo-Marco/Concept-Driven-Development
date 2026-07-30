@@ -118,3 +118,48 @@ habit at loop end is now the only guard against comprehension rot.
 
 ## Full trace
 [Cowork session, 2026-07-30 — no SessionEnd hook archive]
+
+---
+
+## Addendum — M1 verification + hook Bash gap (same session)
+
+**M1 wiring PASSED, and answered the load-bearing question.** Running
+`CDD_ROLE=evaluator claude -p '...Write tool...notes.txt'` produced the
+hook's literal denial, quoted back by the model, which also declined to
+route around it and cited `phase-authority.md`. Critically, the run
+**with `--dangerously-skip-permissions`** denied identically — so that
+flag skips permission prompts, not hooks, and the driver's enforcement
+layer is real. This was the single assumption the whole v8.1 authority
+model rested on.
+
+Two of my own diagnostics were wrong and worth recording: (a) I claimed
+the hook's stderr never reaches the terminal — it does, because the
+model quotes it; (b) the first attempt returned no match because
+Claude Code's *permission* system blocked the write before the hook was
+reached, so the useful test is the one with permissions out of the way.
+
+**Gap found and closed.** The Bash branch only checked git writes and
+the goal/ledger/state filenames. Core files and ticket Boundaries were
+unguarded on the shell path — `echo hi > Architecture.md` and
+`sed -i ... Plan.md` were allowed for every role. The authority matrix
+was enforcement for `Write` and prose for `Bash`, which is exactly the
+condition `from-tcocrai-retro-20260713-2.md` defect #2 was raised
+against. The model itself surfaced it, offering "a path the hook doesn't
+gate" as a bypass option.
+
+Fix: `bash_write_targets()` extracts write targets from redirects,
+`tee`, `sed -i`, `mv`/`cp`/`install`, `rm`, `dd`, `truncate`; the role
+decision moved into a shared `check_write()` used by both branches so
+they cannot drift. `logs/` stays writable (every Run Command tees
+there); paths outside the repo are left to VM containment. Interpreter
+escapes remain out of scope by design, pinned by a test that says so.
+
+**A test caught a real ordering bug in that fix:** the `logs/` exemption
+sat ahead of the role check, so the Monitor could write `logs/`. Wrong
+twice over — the Monitor executes no Run Command, and the observer must
+not be able to edit the observation. The monitor denial now precedes the
+exemption.
+
+Suite: 48 → 62 tests, all green. The 14 new ones cover the Bash branch,
+which had zero coverage before — which is why 48 green tests failed to
+catch the gap in the first place.

@@ -28,7 +28,10 @@ What it covers, and which v8.0 defect each case pins down:
                       PreToolUse hook is unwired
   state machine       PASS / RETRY->PASS / regression / final gate
   hook                deny/allow matrix per CDD_ROLE, driven by real
-                      PreToolUse JSON on stdin
+                      PreToolUse JSON on stdin — both the Write/Edit
+                      branch and (8.1) the Bash write-target scan, plus
+                      one test that pins the interpreter-escape gap as
+                      knowingly out of scope
 """
 import json
 import os
@@ -559,9 +562,11 @@ class TestStateMachine(DriverCase):
 
 # ---------- the PreToolUse hook, driven by real JSON ------------------
 
-class TestHook(unittest.TestCase):
-    """Offline replacement for INSTALL.md's M1: exhaustive rather than
-    end-to-end, and it needs no `claude` login."""
+class HookCaller:
+    """Shared plumbing. Not a TestCase, so nothing here is collected
+    twice by the subclasses below."""
+
+    ALLOW, DENY = 0, 2
 
     def call(self, role, tool, tool_input, boundary=""):
         env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": boundary,
@@ -572,7 +577,10 @@ class TestHook(unittest.TestCase):
                            capture_output=True)
         return r.returncode
 
-    ALLOW, DENY = 0, 2
+
+class TestHook(HookCaller, unittest.TestCase):
+    """Offline replacement for INSTALL.md's M1: exhaustive rather than
+    end-to-end, and it needs no `claude` login."""
 
     def test_interactive_session_unrestricted(self):
         self.assertEqual(self.call("", "Write",
@@ -644,6 +652,135 @@ class TestHook(unittest.TestCase):
         self.assertEqual(self.call("planner", "Write",
                                    {"file_path": "/repo/Architecture.md"}),
                          self.ALLOW)
+
+
+class TestHookBashWrites(HookCaller, unittest.TestCase):
+    """The Bash branch (v8.1). Before this, core files and ticket
+    Boundaries were unguarded on the shell path: `echo x >
+    Architecture.md` was allowed for every role, so the authority matrix
+    was enforcement for Write and prose for Bash."""
+
+    def bash(self, role, cmd, boundary=""):
+        return self.call(role, "Bash", {"command": cmd}, boundary)
+
+    # ---- core files ---------------------------------------------------
+
+    def test_redirect_to_core_file_denied(self):
+        for cmd in ("echo hi > Architecture.md",
+                    "echo hi >> Concept.md",
+                    "cat x > README.md",
+                    "echo x > Plan.md",
+                    "echo x > CLAUDE.md",
+                    "echo x > skills/mode-loop/SKILL.md"):
+            self.assertEqual(self.bash("generator", cmd), self.DENY, cmd)
+
+    def test_sed_inplace_on_core_denied(self):
+        self.assertEqual(self.bash("generator",
+                                   "sed -i 's/a/b/' Plan.md"), self.DENY)
+        self.assertEqual(self.bash("generator",
+                                   "sed -i.bak 's/a/b/' Architecture.md"),
+                         self.DENY)
+
+    def test_cp_mv_rm_dd_to_core_denied(self):
+        for cmd in ("cp template.md README.md",
+                    "mv notes.md Concept.md",
+                    "rm Concept.md",
+                    "rm -f Architecture.md",
+                    "dd if=/dev/zero of=Architecture.md",
+                    "truncate -s 0 Plan.md",
+                    "tee Architecture.md < x"):
+            self.assertEqual(self.bash("generator", cmd), self.DENY, cmd)
+
+    def test_reading_core_files_still_allowed(self):
+        for cmd in ("cat Architecture.md",
+                    "grep -n foo Concept.md",
+                    "head -20 Plan.md",
+                    "git log --oneline",
+                    "git diff HEAD -- Architecture.md"):
+            self.assertEqual(self.bash("generator", cmd), self.ALLOW, cmd)
+
+    # ---- ticket boundary ---------------------------------------------
+
+    def test_shell_write_inside_boundary_allowed(self):
+        self.assertEqual(self.bash("generator", "echo x > src/foo/a.py",
+                                   boundary="src/foo/"), self.ALLOW)
+        self.assertEqual(self.bash("generator",
+                                   "mv src/foo/a.py src/foo/b.py",
+                                   boundary="src/foo/"), self.ALLOW)
+
+    def test_shell_write_outside_boundary_denied(self):
+        self.assertEqual(self.bash("generator", "echo x > src/bar/a.py",
+                                   boundary="src/foo/"), self.DENY)
+        self.assertEqual(self.bash("generator",
+                                   "sed -i 's/a/b/' src/bar/a.py",
+                                   boundary="src/foo/"), self.DENY)
+
+    # ---- logs/ must stay writable for every role --------------------
+
+    def test_run_command_tee_to_logs_allowed(self):
+        """Every ticket's Run Command tees to logs/latest.log, and the
+        Evaluator is REQUIRED to execute it. Blocking logs/ would make
+        the Evaluator unable to do its job."""
+        cmd = "pytest tests/ -v 2>&1 | tee logs/latest.log"
+        for role in ("generator", "evaluator", "planner"):
+            self.assertEqual(self.bash(role, cmd, boundary="src/foo/"),
+                             self.ALLOW, role)
+
+    def test_monitor_still_writes_nothing(self):
+        self.assertEqual(self.bash("monitor", "echo x > logs/a.log"),
+                         self.DENY)
+        self.assertEqual(self.bash("monitor", "echo x > anything.txt"),
+                         self.DENY)
+
+    # ---- role parity with the Write branch --------------------------
+
+    def test_evaluator_shell_write_denied(self):
+        self.assertEqual(self.bash("evaluator", "echo hello > notes.txt"),
+                         self.DENY)
+        self.assertEqual(self.bash("evaluator", "echo x > Evaluation.md"),
+                         self.ALLOW)
+
+    def test_planner_shell_write_to_src_denied(self):
+        self.assertEqual(self.bash("planner", "echo x > src/a.py"),
+                         self.DENY)
+        self.assertEqual(self.bash("planner", "echo x > docs/api.md"),
+                         self.DENY)
+        self.assertEqual(self.bash("planner",
+                                   "echo x >> docs/DEVIATIONS.md"),
+                         self.ALLOW)
+
+    def test_goal_files_denied_on_shell_path(self):
+        for role in ("planner", "generator", "evaluator"):
+            for cmd in ("echo x > goal.json", "sed -i s/a/b/ Goal.md",
+                        "rm ledger.jsonl", "echo x >> events.jsonl"):
+                self.assertEqual(self.bash(role, cmd), self.DENY,
+                                 f"{role}: {cmd}")
+
+    # ---- outside the repo is the VM's problem ------------------------
+
+    def test_writes_outside_repo_allowed(self):
+        """The Evaluator is told to reconstruct prior states in /tmp."""
+        for cmd in ("echo x > /tmp/scratch.json",
+                    "cat foo > /dev/null",
+                    "mkdir -p /tmp/cdd && echo y > /tmp/cdd/a"):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+
+    def test_interactive_session_unaffected(self):
+        self.assertEqual(self.bash("", "echo x > Architecture.md"),
+                         self.ALLOW)
+
+    # ---- documented gap: this MUST stay allowed knowingly -----------
+
+    def test_interpreter_escape_is_a_known_gap(self):
+        """Pinned deliberately. A shell is Turing-complete and a pattern
+        matcher is not; adversarial containment is the VM + worktree, not
+        this hook (see the hook's module docstring). If someone makes
+        this DENY, they have started writing a shell parser — read the
+        docstring before changing this test."""
+        self.assertEqual(
+            self.bash("generator",
+                      "python3 -c \"open('Architecture.md','w').write('x')\""),
+            self.ALLOW)
 
 
 if __name__ == "__main__":

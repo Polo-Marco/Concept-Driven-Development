@@ -20,7 +20,21 @@ repo) and the tcocrai retro it cites.
    (`.claude/hooks/enforce_authority.py`) denies git writes, boundary
    breaches, and protected-file edits per role (`CDD_ROLE` /
    `CDD_BOUNDARY` env). An agent that hits a denial STOPS and reports;
-   working around it is a protocol violation.
+   working around it is a protocol violation. Verified 2026-07-30:
+   `--dangerously-skip-permissions` skips permission *prompts*, not
+   hooks, so the driver's enforcement layer is intact.
+
+   The hook decides `Write`/`Edit` exactly (they carry a `file_path`) and
+   scans `Bash` for the write targets a model reaches for by accident —
+   redirects, `tee`, `sed -i`, `mv`/`cp`, `rm`, `dd` — applying the same
+   role decision to each (v8.1; before this, core files and Boundaries
+   were unguarded on the shell path). `logs/` stays writable for the
+   roles that execute a Run Command, and the Monitor writes nothing at
+   all. Interpreter escapes (`python3 -c`, heredocs, expansion) are
+   **knowingly out of scope**: a shell is Turing-complete, a pattern
+   matcher is not. Adversarial containment is the VM plus the worktree —
+   if a role needs real confinement, confine the process, do not grow
+   the hook into a shell parser.
 4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
    agent session may edit them — a loop that can move its own
    goalposts optimizes the wrong thing. Change of goal = user edits +

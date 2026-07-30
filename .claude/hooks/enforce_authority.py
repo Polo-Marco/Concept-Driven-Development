@@ -14,6 +14,22 @@ AUTONOMOUS sessions, not a sandbox; keep the VM itself contained.
 
 Motivated by journal/from-tcocrai-retro-20260713-2.md defect #2:
 "the framework's authority matrix is prose in a prompt."
+
+Bash coverage is DELIBERATELY INCOMPLETE (v8.1)
+-----------------------------------------------
+`Write`/`Edit` calls carry an explicit file_path, so those are decided
+exactly. Shell commands do not, so `bash_write_targets()` extracts the
+write targets of the forms a model reaches for by accident — redirects,
+tee, sed -i, mv/cp/install, rm, dd, truncate — and runs each through the
+same role decision as `Write`.
+
+It does NOT and CANNOT cover interpreter escapes (`python3 -c`,
+`perl -e`), heredocs, variable/command expansion, `base64 -d`, or an
+`xargs` chain. A shell is Turing-complete; a pattern matcher is not.
+The goal is to stop the accidental breach, not the adversarial one —
+adversarial containment is the VM plus the worktree
+(`.claude/rules/loop-protocol.md`). Do not grow this into a shell
+parser; if a role needs real confinement, confine the process.
 """
 import json
 import os
@@ -75,6 +91,75 @@ def in_boundary(rel: str, boundary: list[str]) -> bool:
                or rel.startswith(b) for b in boundary)
 
 
+# Write targets a shell command would create/modify. Over-approximates
+# (a quoted ">" may be misread) — over-denial is the safe direction, and
+# the Generator is told to STOP and report rather than improvise.
+SEGMENT = re.compile(r"[|;&\n]+")
+REDIRECT = re.compile(r"\d?>>?\s*([^\s|;&<>]+)")
+LAST_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(sed|mv|cp|install|truncate)\b")
+ALL_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(rm|tee|shred)\b")
+DD_OF = re.compile(r"\bdd\b[^|;&]*?\bof=([^\s|;&]+)")
+
+
+def bash_write_targets(cmd: str) -> list:
+    """Best-effort list of paths this command would write. See the
+    module docstring for what is intentionally out of scope."""
+    out = []
+    for seg in SEGMENT.split(cmd):
+        if not seg.strip():
+            continue
+        out += REDIRECT.findall(seg)
+        m = DD_OF.search(seg)
+        if m:
+            out.append(m.group(1))
+        toks = seg.split()
+        if LAST_ARG_CMDS.match(seg) and len(toks) > 1:
+            # sed -i / mv / cp / install / truncate: the destination or
+            # edited file is the trailing argument.
+            if toks[0] != "sed" or any(t.startswith("-i") for t in toks):
+                out.append(toks[-1])
+        elif ALL_ARG_CMDS.match(seg):
+            out += [t for t in toks[1:] if not t.startswith("-")]
+    return [t.strip("'\"") for t in out if t.strip("'\"")]
+
+
+def check_write(role: str, rel: str, boundary: list):
+    """Role decision for one path. Returns a denial message or None.
+
+    Shared by the Write/Edit branch and the Bash target scan so the two
+    can never drift apart.
+    """
+    if is_protected_always(rel):
+        return "Goal/ledger/state files are user- or driver-owned."
+    if role == "monitor":
+        return "Monitor never writes files — classify and stop."
+    if role == "evaluator":
+        if rel.rsplit("/", 1)[-1] not in ("evaluation.md", "verdict.json"):
+            return "Evaluator writes only Evaluation.md/verdict.json."
+        return None
+    if role == "generator":
+        if is_core(rel):
+            return "Core files are read-only to the Generator."
+        if boundary and not in_boundary(rel, boundary):
+            return f"'{rel}' is outside your ticket Boundary."
+        return None
+    if role == "planner":
+        if rel.startswith(("src/", "tests/")):
+            return ("Planner never edits src/ or tests/ — re-dispatch "
+                    "a Generator instead.")
+        if rel.startswith("docs/") and not rel.endswith("deviations.md"):
+            return ("docs/ originals are user-maintained "
+                    "(DEVIATIONS.md append is the exception).")
+        return None
+    return None
+
+
+def boundary_env() -> list:
+    return [b.strip().replace("\\", "/").lower()
+            for b in os.environ.get("CDD_BOUNDARY", "").split(",")
+            if b.strip()]
+
+
 def main() -> None:
     role = os.environ.get("CDD_ROLE", "").strip().lower()
     if not role:               # interactive session: human supervises
@@ -92,48 +177,42 @@ def main() -> None:
         cmd = tin.get("command", "")
         if GIT_WRITE.search(cmd):
             deny("Git write commands are driver-only in loop mode.")
-        # crude protection against shell-side edits of protected files
+        # Loose net for the driver/user-owned files, kept alongside the
+        # precise scan below: these are the ones worth over-denying for.
         low = cmd.lower()
         if any(p in low for p in PROTECTED_ALWAYS) and re.search(
                 r"(>|>>|\btee\b|\bsed\s+-i|\bmv\b|\brm\b|\bcp\b)", low):
             deny("Goal/ledger/state files are user- or driver-owned.")
+        # v8.1: apply the SAME role decision as Write/Edit to the paths a
+        # shell command would write. Previously core files and ticket
+        # Boundaries were unguarded on this branch, so `echo x >
+        # Architecture.md` sailed through for every role.
+        boundary = boundary_env()
+        for target in bash_write_targets(cmd):
+            rel = norm(target)
+            if rel.startswith(".."):
+                continue          # outside the repo: VM's problem, not ours
+            if role == "monitor":
+                # Checked ahead of the logs/ exemption below: the Monitor
+                # runs no Run Command, and the observer must not be able
+                # to edit the observation it is classifying.
+                deny("Monitor never writes files — classify and stop. "
+                     f"(shell write to '{rel}')")
+            if rel.startswith("logs/") or rel == "logs":
+                continue          # gitignored runtime output; the roles
+                                  # that execute a Run Command tee here
+            msg = check_write(role, rel, boundary)
+            if msg:
+                deny(f"{msg} (shell write to '{rel}')")
         sys.exit(0)
 
     # ---- Write/Edit family -------------------------------------------
     if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         rel = norm(tin.get("file_path", tin.get("notebook_path", "")))
-
-        if is_protected_always(rel):
-            deny("Goal/ledger/state files are user- or driver-owned.")
-
-        if role == "monitor":
-            deny("Monitor never writes files — classify and stop.")
-
-        if role == "evaluator":
-            base = rel.rsplit("/", 1)[-1]
-            if base not in ("evaluation.md", "verdict.json"):
-                deny("Evaluator writes only Evaluation.md/verdict.json.")
-            sys.exit(0)
-
-        if role == "generator":
-            if is_core(rel):
-                deny("Core files are read-only to the Generator.")
-            boundary = [b.strip().replace("\\", "/").lower()
-                        for b in os.environ.get(
-                            "CDD_BOUNDARY", "").split(",") if b.strip()]
-            if boundary and not in_boundary(rel, boundary):
-                deny(f"'{rel}' is outside your ticket Boundary.")
-            sys.exit(0)
-
-        if role == "planner":
-            if rel.startswith(("src/", "tests/")):
-                deny("Planner never edits src/ or tests/ — re-dispatch "
-                     "a Generator instead.")
-            if rel.startswith("docs/") and not rel.endswith(
-                    "deviations.md"):
-                deny("docs/ originals are user-maintained "
-                     "(DEVIATIONS.md append is the exception).")
-            sys.exit(0)
+        msg = check_write(role, rel, boundary_env())
+        if msg:
+            deny(msg)
+        sys.exit(0)
 
     sys.exit(0)
 

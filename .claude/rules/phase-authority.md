@@ -110,7 +110,11 @@ During a Generator Session, the agent must NEVER:
   `CLAUDE.md` files for touched directories ARE loaded as read-only
   context.
 - Work around a PreToolUse denial. A denial means STOP and report —
-  the hook is the authority matrix, mechanically enforced.
+  the hook is the authority matrix, mechanically enforced. This covers
+  shell writes too (`echo x > Architecture.md`, `sed -i ... Plan.md`),
+  not just the `Write`/`Edit` tools. Where the hook cannot see — an
+  interpreter escape such as `python3 -c` — the prohibition still binds;
+  the absence of a mechanical block is not permission.
 
 ## Evaluator Prohibitions
 
