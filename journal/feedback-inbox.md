@@ -16,6 +16,75 @@ Entry format:
 
 ---
 
+## 2026-07-30 — first end-to-end toy loop (`.claude/driver/toy_project.sh`, build goal, $1.55)
+
+The loop's first real run. It reached the Generator and escalated on
+ticket 1. Everything *around* the failure worked — the hook denied, the
+Generator stopped and reported rather than improvising, the driver
+escalated instead of burning retries. Three code defects (all fixed in
+8.1.3) and two interface defects (NOT fixed — logged for a decision).
+
+1. **A markdown Boundary matched nothing → silent global write ban.** (fixed)
+   - What happened: the Planner wrote ``**Boundary:** `src/wordfreq/counter.py`, ...``
+     — markdown, which `task-ticket-format.md` does not forbid. `loop.py`
+     passed the field verbatim as `CDD_BOUNDARY`; `boundary_env()`
+     normalised whitespace/backslashes/case but not backticks, so every
+     entry kept its markup and no comparison in `in_boundary()` could
+     match. A non-empty Boundary that matches nothing bans every write and
+     reports it as a Boundary breach. Any real loop dies on ticket 1.
+   - Framework angle: `.claude/hooks/enforce_authority.py` `boundary_env()`
+     — fixed at the parser (sole consumer + the place that matches).
+   - Severity: blocking
+
+2. **The same seam on `**Trial:**` is command substitution.** (fixed, was latent)
+   - What happened: `loop.py` read the `Trial` field and ran it under
+     `Popen(shell=True)`. The same Planner habit — ``**Trial:** `python3
+     train.py` `` — makes the shell run the inner command and then execute
+     its stdout. Invisible in the toy run only because build tickets have
+     no `Trial` field; the first experiment goal would have hit it.
+   - Framework angle: `loop.py` `run_trial` — stripped at the launch site,
+     deliberately not inside `field()` (Spec/Monitor Profile are prose).
+   - Severity: blocking
+
+3. **The offline suite was green on a macOS-incompatible fixture.** (fixed)
+   - What happened: `test_loop.py` failed `TestFindLoop`
+     `test_finds_the_loop_in_a_sibling_worktree` — `/private/var/...` vs
+     `/var/...`. `DriverCase.setUp` injected an unresolved `mkdtemp()`
+     path, breaking the `.resolve()`d-ROOT invariant the driver has in
+     production.
+   - Framework angle: `test_loop.py` fixture, not `find_loop()`.
+   - Severity: annoyance (but it made the gate command untrustworthy)
+
+   Cross-cutting lesson for the first three: 112 green tests did not catch
+   defects 1 and 2 because **no case ever fed the machinery a value in the
+   form the Planner actually emits.** The suite tested the driver against
+   its own idea of a ticket. Where a model writes a field that code then
+   parses, the test fixture should be copied from real Planner output.
+
+4. **The human gate does not say where `Plan.md` is.** (NOT fixed)
+   - What happened: `== HUMAN GATE [plan] ==` says "Review it, then
+     approve". The loop runs in a worktree, so `Plan.md` is not in the tree
+     where the user typed `start`. Only `toy_project.sh`'s echo prints the
+     path, and real projects never see that echo.
+   - Framework angle: `loop.py` `wait_approval()`.
+   - Severity: recurring
+
+5. **`phase_status()` truncates the one event that requires action.** (NOT fixed)
+   - What happened: every event detail is cut to 54 characters, including
+     `escalate`. The escalation reason is `rep[-400:]` of the Generator's
+     report, so the user sees a 54-character window starting mid-word —
+     `generator stopped: t those literal bac` — for the event that exists
+     to make a human act.
+   - Framework angle: `loop.py` `phase_status()`.
+   - Severity: recurring
+
+   4 and 5 are one class: **a message whose purpose is to make a human act
+   is formatted as a log line.** Log lines get truncated and omit paths
+   because their reader is scanning; gate and escalation output has exactly
+   one reader who must do exactly one thing, and it should print in full
+   with the path to act on. Worth `[/retro]` checking every human-facing
+   string in the driver against this, not just these two.
+
 ## 2026-07-17 — CDD framework self-audit (v8.0 driver review, Cowork session)
 
 Reviewed `docs/loop-orchestration-design.md` + `v8.0-draft/` against two
