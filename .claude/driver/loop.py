@@ -642,7 +642,7 @@ def plan_problems(cfg: dict, plan_text: str) -> list:
 
 # ---------- budgets ----------------------------------------------------
 
-def wall_hours(st: dict) -> float:
+def wall_hours(st: dict, live: bool = True) -> float:
     """Hours the DRIVER has been running, not hours on the calendar.
 
     v8.1.7. `max_wall_hours` used to be `(now - started_epoch)/3600`,
@@ -662,26 +662,31 @@ def wall_hours(st: dict) -> float:
     bottleneck. `max_usd` never needed this -- spend does not accrue
     while idle -- and `started_epoch` is kept for the calendar age
     `status` reports next to the start time.
+
+    Pass `live=False` for a segment whose driver is NOT running: the
+    open segment is then closed at the last event on disk -- the last
+    moment the driver can be PROVEN to have been alive -- instead of at
+    `now`. A finished loop left on disk would otherwise report a runtime
+    that grows with the calendar, which is the very reading this
+    function exists to remove.
     """
     h = st.get("run_hours", 0.0)
     if st.get("run_epoch"):
-        h += max(0.0, (time.time() - st["run_epoch"]) / 3600)
+        end = time.time() if live else max(
+            st["run_epoch"],
+            EVENTS.stat().st_mtime if EVENTS.exists() else 0.0)
+        h += max(0.0, (end - st["run_epoch"]) / 3600)
     return h
 
 
 def clock_start(st: dict) -> None:
     """Open a runtime segment (driver start, or a cleared gate).
 
-    A previous run that died left `run_epoch` open. It is closed here at
-    the last event we recorded, which is the last moment the driver can
-    be PROVEN to have been alive -- crediting the crash gap to the loop
-    would re-introduce exactly the bug this function exists to fix.
+    A previous run that DIED left `run_epoch` open; it is closed at that
+    run's last event, never at now -- crediting the crash gap to the
+    loop would re-introduce exactly the bug this exists to fix.
     """
-    stale = st.get("run_epoch")
-    if stale:
-        end = EVENTS.stat().st_mtime if EVENTS.exists() else stale
-        st["run_hours"] = st.get("run_hours", 0.0) \
-            + max(0.0, (end - stale) / 3600)
+    st["run_hours"] = wall_hours(st, live=False)
     st["run_epoch"] = time.time()
     save(STATE, st)
 
@@ -1661,7 +1666,10 @@ def phase_status(cfg: dict) -> None:
     # v8.1.7: `age` is how long ago you started this, `hours` is what
     # max_wall_hours actually meters.
     age = (time.time() - st.get("started_epoch", time.time())) / 3600
-    hours = wall_hours(st)
+    name = ("cdd-" + slug(cfg))[:28].rstrip("-") if cfg.get("goal") else ""
+    alive = bool(name) and sh(
+        f"tmux has-session -t {shlex.quote(name)}").returncode == 0
+    hours = wall_hours(st, live=alive)
     out = [f"goal      {cfg.get('goal', '(no goal.json here)')}",
            f"phase     {st.get('phase', '?')}"
            + (f"   ticket {st['current_ticket']}"
@@ -1670,10 +1678,8 @@ def phase_status(cfg: dict) -> None:
 
     # "is it working, or is it dead" is the first question anyone asks,
     # and until v8.1.2c nothing answered it: a thinking phase and a
-    # crashed driver rendered identically.
-    name = ("cdd-" + slug(cfg))[:28].rstrip("-") if cfg.get("goal") else ""
-    alive = bool(name) and sh(
-        f"tmux has-session -t {shlex.quote(name)}").returncode == 0
+    # crashed driver rendered identically. (`alive` is computed above --
+    # the metered runtime needs it too.)
     idle = ((time.time() - EVENTS.stat().st_mtime) / 60
             if EVENTS.exists() else None)
     out.append(
@@ -1852,6 +1858,12 @@ def main() -> None:
         if st["phase"] == "final_eval":
             phase_final(cfg, st)
     finally:
+        # Close the runtime segment before anything reads it. Without
+        # this the shakedown run left `run_epoch` open at `done`, so
+        # every later `status` on the finished loop billed it for the
+        # calendar time since -- the exact reading wall_hours() exists
+        # to remove (found by the 8.1.7 toy run, 2026-07-31).
+        clock_stop(st)
         try:
             rec = write_journal(cfg, st)
             event("journal_written", detail=str(rec.relative_to(ROOT)))

@@ -2650,6 +2650,23 @@ class TestRuntimeClock(DriverCase):
         loop.clock_start(st)
         self.assertAlmostEqual(st["run_hours"], 0.5, places=2)
 
+    def test_a_finished_loop_does_not_keep_billing_itself(self):
+        """Found by the 8.1.7 shakedown run: the driver exited with
+        run_epoch still open, so every later `status` on a loop that had
+        already reported `done` billed it for the calendar time since --
+        the reading this whole mechanism exists to remove."""
+        t0 = 1_000_000.0
+        loop.EVENTS.write_text("")
+        os.utime(loop.EVENTS, (t0 + 1800, t0 + 1800))   # died at +30min
+        st = {"run_epoch": t0, "run_hours": 0.0}
+        loop.time = FakeClock(start=t0 + 20 * 3600)     # read 20h later
+        self.assertAlmostEqual(loop.wall_hours(st, live=False), 0.5,
+                               places=2)
+        self.assertAlmostEqual(loop.wall_hours(st), 20.0, places=1,
+                               msg="a LIVE driver is billed to now")
+        loop.clock_stop(st)
+        self.assertIsNone(st["run_epoch"])
+
     def test_status_separates_calendar_age_from_metered_runtime(self):
         loop.time = FakeClock(start=1_000_000.0 + 30 * 3600)
         loop.save(loop.STATE, {"phase": "gate", "iteration": 1,
