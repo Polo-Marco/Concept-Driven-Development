@@ -16,6 +16,60 @@ Entry format:
 
 ---
 
+## 2026-07-31 — cdd-toy-816-loop: $5.48 spent before ticket 1 was dispatched
+
+- **What happened:** the wordfreq `build` toy took 3 contract-review
+  rounds (2 REVISE). Six sessions, 6.10M tokens, **$5.48 — 46% of a $12
+  cap — with zero tickets executed**. The Evaluator was 73% of it
+  ($4.00 vs the Planner's $1.48): each of its three passes re-built and
+  ran all four tickets under `/tmp` instead of reading the plan. Both
+  defects it found were real (`run_tests()` self-recursion; a missing
+  `-t .` that stopped `tests/__init__.py`'s `sys.path` insert firing),
+  so the rounds were earned — the cost of earning them was not budgeted.
+- **Framework angle:** three separate gaps.
+  1. `MAX_REVISIONS = 2` bounds contract review **by round count only**.
+     `budget_exceeded()` is not consulted between rounds, so a review
+     can eat an arbitrary share of `max_usd` before the human gate —
+     the one place the user could still intervene cheaply.
+  2. `cdd-evaluator` Mode 1 says verify by executing, and puts no bound
+     on it. Re-implementing an entire 4-ticket plan three times is a
+     literal reading of that instruction, and it is doing the
+     Generator's job before the plan is even approved.
+  3. `enforce_authority.py` shell-write scanner **false-positives on
+     `->`** inside a heredoc body — it reads a Python return-type
+     annotation as a redirect and blocks the command, naming the token
+     after the arrow as the write target. The Evaluator worked around
+     it by stripping return-type annotations from its repro copies.
+     (Related, already known: it reached `/tmp` via heredoc at all
+     because the scanner cannot see interpreter/heredoc payloads —
+     `loop-protocol.md §3` calls that out of scope. The false positive
+     is the new part, and it is the more damaging half: the gap only
+     fails open, this fails *closed* on legal work.)
+  4. **`max_wall_hours` counts time the loop was blocked at a human
+     gate, and time the driver was not running at all.**
+     `budget_exceeded()` computes `(time.time() - started_epoch)/3600`
+     with no exclusions. This run sat ~3.6h at the plan gate (driver
+     process dead), and the moment the gate was approved the first
+     budget check in `phase_iterate` fired `escalate: budget exhausted:
+     max_wall_hours` — **before one ticket ran, with $0 spent since
+     resume**. The approval was consumed for nothing and the cap had to
+     be raised (2 → 6) just to re-enter the loop. This contradicts the
+     gate's own design: `loop-protocol.md` says gates are event-driven
+     and pitches approving "from your phone", i.e. with no SLA — so an
+     overnight approval guarantees an instant escalation on resume.
+     `max_wall_hours` should meter *driver runtime*, not calendar time:
+     accumulate elapsed time across runs and stop the clock while
+     `wait_approval()` blocks. Cost caps (`max_usd`) already behave
+     correctly here because spend genuinely doesn't accrue while idle.
+     Minor, same area: the resume's approval event logged as
+     `approved: ` with an empty gate name.
+- **Also:** every cache write in all six sessions was
+  `ephemeral_1h_input_tokens` (2× input) rather than 5m (1.25×). That
+  premium is **$0.77 of the $5.48**, and nothing in the framework
+  chooses it — it comes from the CLI. Worth knowing before reading a
+  `spent_usd` as a modelling number.
+- **Severity:** recurring
+
 ## 2026-07-30 — the EXPERIMENT path, first end to end (2 runs, $16.95)
 
 Four `build` runs had proved the pipeline and left its whole reason for
