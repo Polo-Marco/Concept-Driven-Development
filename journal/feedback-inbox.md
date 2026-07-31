@@ -16,6 +16,37 @@ Entry format:
 
 ---
 
+## 2026-07-31 — cdd-toy-818: the mode-skill path, exercised for the first time
+
+- **What happened:** first toy loop run on a FAITHFUL deployment
+  (8.1.8 scaffolders copy `CLAUDE.md` + `skills/`). `goal_reached`,
+  5 tickets, 0 retries, 0 replans, **$9.14 of $25**, 0.43h driver
+  runtime. The path that had never run before ran clean: the Planner
+  followed `mode-build` Spec Step 3 and wrote a 324-line project skill
+  (`skills/wordfreq-stdlib/SKILL.md`), every ticket carried
+  `Skills to Load: @skills/wordfreq-stdlib/SKILL.md` instead of `none`,
+  and the delivered `src/wordfreq/counter.py` is **byte-identical to
+  the skill's copy-paste template** — Planner → ticket → Generator,
+  end to end. The 8.1.8 no-Ask-phase clause was quoted back almost
+  verbatim in the plan's Assumptions block, with five named calls and
+  no silent guess.
+- **Framework angle:** two observations, neither blocking.
+  1. **`max_iterations: 6` is now tight.** With mode skills present the
+     Planner produced 5 tickets, not the 3–4 it produced without them,
+     so the toy finished at iteration 5/6 — one retry of headroom for
+     the whole run. The toy's default was measured before skills
+     existed; a single RETRY anywhere would now escalate on
+     `max_iterations` with the work nearly done. Same class as the
+     `max_wall_hours` and `max_usd` defaults that already had to be
+     raised: **a cap measured on a thinner harness.**
+  2. **Contract review got CHEAPER as the plan got bigger** — 0
+     revisions and $1.93 pre-gate, against 1 revision / $2.58 (8.1.7,
+     4 tickets) and 2 revisions / $5.48 (8.1.6, 4 tickets). The plan
+     volunteered its own "Evidence ownership (self-check)" section
+     before the Evaluator asked. One data point each, so not a trend —
+     but if it holds, the mode skill is paying for itself at the gate.
+- **Severity:** annoyance (item 1), observation (item 2)
+
 ## 2026-07-30 — the EXPERIMENT path, first end to end (2 runs, $16.95)
 
 Four `build` runs had proved the pipeline and left its whole reason for
