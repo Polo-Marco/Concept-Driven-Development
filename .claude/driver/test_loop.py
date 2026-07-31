@@ -75,6 +75,28 @@ What it covers, and which v8.0 defect each case pins down:
   human-facing output the gate prints the absolute path to Plan.md, and
                       an escalate reason prints in full instead of a
                       54-character window starting mid-word
+  retry feedback      attempt 2 carries the verdict that rejected
+                      attempt 1 (8.1.5: the dispatch was the ticket body
+                      and nothing else, so a retry could only help a
+                      nondeterministic fault)
+  no-op session       a Generator that changed nothing, twice, escalates
+                      instead of buying a third identical session — but
+                      a relaunch after a dead trial still may write
+                      nothing
+  first green         under `final-pass`, the iteration where a criterion
+                      FIRST reads green buys an audit (8.1.5: forged
+                      evidence sat green for five committed tickets)
+  evidence ownership  at most one ticket's Boundary may admit a
+                      criterion's source file, and it must name the file
+                      rather than its tree
+  budget reload       a raised cap is picked up mid-loop; criteria stay
+                      frozen
+  journal record      the driver writes one on EVERY terminal exit,
+                      including an escalation, and never overwrites the
+                      user's Feedback block
+  close               refuses an unfinished loop, then records, commits
+                      and removes the ephemerals — and leaves the merge
+                      to the user
   hook                deny/allow matrix per CDD_ROLE, driven by real
                       PreToolUse JSON on stdin — both the Write/Edit
                       branch and (8.1) the Bash write-target scan, plus
@@ -2087,6 +2109,439 @@ class TestKillReachesTheTrial(DriverCase):
                 msg=f"pid {pid} survived the kill: the driver reaped the "
                     f"shell and orphaned the trial"):
             os.kill(pid, 0)
+
+
+# ---------- v8.1.6: the 2026-07-31 live-run defects --------------------
+
+TRIAL_PLAN = """# Plan
+
+### Phase 1, Step 1: Only ticket
+**Boundary:** src/
+**Trial:** exit 1
+**Run Command:** true
+"""
+
+
+class LiveRunCase(DriverCase):
+    """Shared setUp for the six defects the first live run exposed
+    (journal/from-tmmluplus-eval-retro-20260731.md). A real git repo,
+    because tree_fingerprint() is the evidence for two of them."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.time = FakeClock(step=0.0)     # trials never reach a poll
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        loop.sh("git add -A")
+        loop.sh("git commit -q -m base")
+        loop.git_commit = lambda msg: "deadbee"
+
+    def fresh_state(self, **over):
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started": "2026-07-31T02:26:06+00:00",
+              "started_epoch": loop.time.time()}
+        st.update(over)
+        return st
+
+
+class TestRetryCarriesTheVerdict(LiveRunCase):
+    """Problem 3: the retry dispatch was the ticket body and nothing
+    else, so attempt 2 was byte-for-byte the prompt that just failed.
+    Three sessions, zero bytes changed, then ESCALATE."""
+
+    def run_with(self, verdicts):
+        prompts = []
+        seq = list(verdicts)
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":
+                prompts.append(prompt)
+                (self.tmp / f"gen{len(prompts)}.txt").write_text("x")
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(seq.pop(0)))
+            return "done"
+        loop.claude = fake
+        self.results({"metrics": {"acc": 0.5}})
+        loop.phase_iterate(self.write_goal(), self.fresh_state())
+        return prompts
+
+    def test_the_second_attempt_is_told_why_the_first_failed(self):
+        p = self.run_with([
+            {"verdict": "RETRY", "reason": "aggregate-check.json is stale",
+             "evidence": ["rows=2, expected 1"]},
+            {"verdict": "PASS", "reason": "ok"},
+            {"verdict": "PASS", "reason": "ok"}])
+        self.assertNotIn("attempt", p[0].split("Ticket log")[0].lower(),
+                         "attempt 1 has no prior verdict to carry")
+        self.assertIn("attempt 2", p[1])
+        self.assertIn("aggregate-check.json is stale", p[1])
+        self.assertIn("rows=2, expected 1", p[1])
+
+    def test_a_retry_with_no_evidence_still_dispatches(self):
+        p = self.run_with([{"verdict": "RETRY", "reason": "just no"},
+                           {"verdict": "PASS", "reason": "ok"},
+                           {"verdict": "PASS", "reason": "ok"}])
+        self.assertIn("just no", p[1])
+        self.assertIn("(none)", p[1])
+
+
+class TestNoOpSessionIsNotRetryable(LiveRunCase):
+    """Problem 4: nothing compared the tree before and after a dispatch,
+    so a session that could not possibly succeed still spent attempts 2
+    and 3 -- and the Evaluator audit each one bought."""
+
+    def drive(self, writes: bool, plan=None, verdict=None):
+        (self.tmp / "Plan.md").write_text(plan or PLAN)
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "generator" and writes:
+                (self.tmp / f"gen{len(calls)}.txt").write_text("x")
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    verdict or {"verdict": "RETRY", "reason": "stale"}))
+            return "done"
+        loop.claude = fake
+        self.results({"metrics": {"acc": 0.5}})
+        loop.phase_iterate(self.write_goal(), self.fresh_state())
+        return calls
+
+    def test_a_second_no_op_escalates_instead_of_buying_a_third(self):
+        calls = self.drive(writes=False)
+        self.assertEqual(calls.count("generator"), 2,
+                         "attempt 3 was dispatched after two no-ops")
+        self.assertTrue(any(e["event"] == "no_op_session"
+                            for e in self.events()))
+        self.assertEqual(self.ledger()[-1]["verdict"], "ESCALATE")
+
+    def test_the_first_no_op_is_forgiven_because_attempt_2_is_new(self):
+        """Attempt 2 carries the verdict attempt 1 never saw, so it has
+        genuinely new input -- escalating at the first no-op would throw
+        away the fix v8.1.6 just bought."""
+        calls = self.drive(writes=False)
+        self.assertGreaterEqual(calls.count("generator"), 2)
+        self.assertNotIn("no_op_session",
+                         [e["event"] for e in self.events()[:3]])
+
+    def test_a_session_that_wrote_something_keeps_all_three_attempts(self):
+        calls = self.drive(writes=True)
+        self.assertEqual(calls.count("generator"), 3)
+        self.assertFalse(any(e["event"] == "no_op_session"
+                             for e in self.events()))
+
+    def test_a_failed_trial_is_not_a_no_op_failure(self):
+        """The RETRY a dead trial buys is a RELAUNCH of an unchanged
+        config -- exactly the case where the Generator should write
+        nothing (loop-protocol.md section 5)."""
+        calls = self.drive(writes=False, plan=TRIAL_PLAN)
+        self.assertEqual(calls.count("generator"), 3)
+        self.assertFalse(any(e["event"] == "no_op_session"
+                             for e in self.events()))
+
+
+class TestFirstGreenIsAudited(LiveRunCase):
+    """Problem 2: under `final-pass`, six of seven tickets were PASSed on
+    the deterministic gate alone. Three criteria went green at iteration
+    3 on a unit-test fixture and nothing with provenance judgement looked
+    at them until iteration 8."""
+
+    def drive(self, st, make_green: bool):
+        roles, prompts = [], []
+
+        def fake(_st, role, prompt, *a, **k):
+            roles.append(role)
+            prompts.append(prompt)
+            if role == "generator" and make_green:
+                self.results({"metrics": {"acc": 0.5}})
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "audited"}))
+            return "done"
+        loop.claude = fake
+        loop.phase_iterate(self.write_goal(
+            evaluation_cadence="final-pass"), st)
+        return roles, prompts
+
+    def test_a_criterion_going_green_buys_an_audit(self):
+        roles, prompts = self.drive(self.fresh_state(), make_green=True)
+        self.assertIn("evaluator", roles,
+                      "a criterion first went green and nothing audited it")
+        self.assertTrue(any(e["event"] == "first_green"
+                            for e in self.events()))
+        audit = [p for p, r in zip(prompts, roles) if r == "evaluator"][0]
+        self.assertIn("FIRST", audit)
+        self.assertIn("acc", audit)
+
+    def test_an_unchanged_green_still_defers(self):
+        """The saving that `final-pass` exists for is intact: only the
+        LAST ticket buys an audit when nothing changed colour."""
+        self.results({"metrics": {"acc": 0.5}})
+        roles, _ = self.drive(self.fresh_state(criteria_green=["acc"]),
+                              make_green=False)
+        self.assertEqual(roles, ["generator", "generator", "evaluator"])
+        self.assertIn("deferred", str(self.ledger()[0]["reason"]))
+        self.assertFalse(any(e["event"] == "first_green"
+                             for e in self.events()))
+
+
+class TestPlanEvidenceOwnership(DriverCase):
+    """Problem 1: `results/` was a whole-directory Boundary entry on four
+    tickets. A schema-module ticket therefore had write access to the
+    file its criteria are read from, and its test fixture wrote one."""
+
+    TWO_OWNERS = """# Plan
+
+### Phase 1, Step 1: Schema module
+**Boundary:** src/schema.py, results/
+**Run Command:** pytest
+
+### Phase 1, Step 2: The harness
+**Boundary:** src/run.py, results/out.json
+**Run Command:** python3 src/run.py
+"""
+    TREE_ONLY = """# Plan
+
+### Phase 1, Step 1: The harness
+**Boundary:** src/run.py, results/
+**Run Command:** python3 src/run.py
+"""
+    NAMED = """# Plan
+
+### Phase 1, Step 1: The harness
+**Boundary:** `src/run.py`, `results/out.json`
+**Run Command:** python3 src/run.py
+"""
+    NO_OWNER = """# Plan
+
+### Phase 1, Step 1: The reporter
+**Boundary:** bench/report.py
+**Trial:** python3 bench/train.py && python3 bench/report.py
+"""
+
+    def test_two_tickets_that_can_write_the_evidence_are_rejected(self):
+        p = loop.plan_problems(self.write_goal(), self.TWO_OWNERS)
+        self.assertEqual(len(p), 1)
+        self.assertIn("2 tickets", p[0])
+        self.assertIn("Phase 1, Step 1", p[0])
+        self.assertIn("Phase 1, Step 2", p[0])
+
+    def test_a_tree_entry_is_rejected_in_favour_of_the_file(self):
+        p = loop.plan_problems(self.write_goal(), self.TREE_ONLY)
+        self.assertEqual(len(p), 1)
+        self.assertIn("Name the file, not the tree", p[0])
+
+    def test_one_ticket_naming_the_file_is_accepted(self):
+        self.assertEqual(loop.plan_problems(self.write_goal(),
+                                            self.NAMED), [])
+
+    def test_no_owner_is_legal(self):
+        """On an experiment goal the DRIVER launches the trial, so the
+        metrics file is written by no session and belongs in no
+        Boundary. Requiring an owner would fail every correct plan."""
+        self.assertEqual(loop.plan_problems(self.write_goal(),
+                                            self.NO_OWNER), [])
+
+    def test_a_bulleted_boundary_is_still_read(self):
+        plan = ("# Plan\n\n### Phase 1, Step 1: T\n**Boundary:**\n"
+                "- src/a.py\n- results/\n**Run Command:** true\n")
+        self.assertTrue(loop.plan_problems(self.write_goal(), plan))
+
+    def test_the_gate_runs_before_the_evaluator_is_paid(self):
+        (self.tmp / "Plan.md").write_text(self.TWO_OWNERS)
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "planner":                  # "fixes" the plan
+                (self.tmp / "Plan.md").write_text(self.NAMED)
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
+            return ""
+        loop.claude = fake
+        st = {}
+        loop.phase_contract_review(self.write_goal(), st)
+        self.assertEqual(calls, ["planner", "evaluator"],
+                         "the rejected plan was reviewed anyway")
+        self.assertEqual(st["phase"], "gate")
+        self.assertTrue(any(e["event"] == "plan_rejected"
+                            for e in self.events()))
+
+    def test_a_plan_that_never_gets_fixed_escalates(self):
+        (self.tmp / "Plan.md").write_text(self.TWO_OWNERS)
+        calls = []
+        loop.claude = lambda _st, role, *a, **k: (calls.append(role) or "")
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(self.write_goal(), {})
+        self.assertNotIn("evaluator", calls,
+                         "never pay to review a plan a gate rejected")
+        esc = [e for e in self.events() if e["event"] == "escalate"][-1]
+        self.assertIn("evidence", esc["detail"])
+
+
+class TestBudgetHotReload(DriverCase):
+    """Problem 8 / habits: cfg was read once at startup, so raising a cap
+    meant killing tmux -- and a restart costs an iteration."""
+
+    def test_a_raised_cap_is_picked_up_mid_loop(self):
+        cfg = {"budgets": {"max_usd": 25}, "criteria": []}
+        self.write_goal(budgets={"max_usd": 50})
+        loop.reload_budgets(cfg)
+        self.assertEqual(cfg["budgets"]["max_usd"], 50)
+        self.assertTrue(any(e["event"] == "budgets_updated"
+                            for e in self.events()))
+
+    def test_the_contract_itself_is_not_reloaded(self):
+        """Budgets are the user's dial; criteria are frozen
+        (loop-protocol.md section 4)."""
+        cfg = {"budgets": {"max_usd": 25},
+               "criteria": [{"metric": "acc", "op": ">", "value": 0.9,
+                             "source": "results/out.json"}]}
+        self.write_goal(budgets={"max_usd": 50},
+                        criteria=[{"metric": "acc", "op": ">", "value": 0.0,
+                                   "source": "results/out.json"}])
+        loop.reload_budgets(cfg)
+        self.assertEqual(cfg["criteria"][0]["value"], 0.9)
+
+    def test_a_corrupt_goal_file_keeps_the_caps(self):
+        cfg = {"budgets": {"max_usd": 25}}
+        loop.GOAL.write_text("{not json")
+        loop.reload_budgets(cfg)
+        self.assertEqual(cfg["budgets"]["max_usd"], 25)
+
+    def test_an_unchanged_file_is_not_an_event(self):
+        cfg = {"budgets": {"max_usd": 50}}
+        self.write_goal(budgets={"max_usd": 50})
+        loop.reload_budgets(cfg)
+        self.assertFalse(any(e["event"] == "budgets_updated"
+                             for e in self.events()))
+
+
+class TestJournalRecord(DriverCase):
+    """Problem 6: CLAUDE.md and governance.md both said the driver
+    appends a loop record. `grep -n journal loop.py` returned comments
+    and one reminder string."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.LEDGER.write_text(json.dumps(
+            {"ts": "t", "iteration": 1, "ticket": "Phase 1, Step 1",
+             "attempt": 1, "verdict": "PASS", "reason": "clean",
+             "evidence": [], "criteria": []}) + "\n")
+
+    def state(self, **over):
+        st = {"phase": "done", "iteration": 3, "replans": 1,
+              "spent_usd": 32.85, "started": "2026-07-31T10:22:18+00:00",
+              "started_epoch": loop.time.time()}
+        st.update(over)
+        return st
+
+    def test_the_record_names_the_loop_and_its_numbers(self):
+        cfg = self.write_goal(type="build", goal="prove the pipeline")
+        p = loop.write_journal(cfg, self.state())
+        self.assertEqual(p.name, "20260731-102218-build.md")
+        text = p.read_text()
+        for needle in ("prove the pipeline", "32.85", "Phase 1, Step 1",
+                       "## Feedback", "## Criteria"):
+            self.assertIn(needle, text)
+
+    def test_an_escalation_is_recorded_too(self):
+        """The loops that most need a record are the ones that do not
+        finish -- writing only on `done` would have missed the run this
+        whole release comes from."""
+        cfg = self.write_goal()
+        loop.event("escalate", detail="forged evidence at Step 7")
+        p = loop.write_journal(cfg, self.state(phase="iterate"))
+        self.assertIn("forged evidence at Step 7", p.read_text())
+
+    def test_the_users_feedback_survives_a_rewrite(self):
+        cfg = self.write_goal()
+        p = loop.write_journal(cfg, self.state())
+        p.write_text(p.read_text().replace(
+            "- Rating: [good | ok | bad]", "- Rating: bad"))
+        loop.write_journal(cfg, self.state(iteration=9))
+        self.assertIn("- Rating: bad", p.read_text())
+        self.assertIn("iterations: 9", p.read_text())
+
+    def test_the_driver_writes_one_even_when_a_phase_dies(self):
+        cfg = self.write_goal(type="build")
+        loop.claude = lambda *a, **k: ""
+        self.addCleanup(setattr, loop, "phase_plan", loop.phase_plan)
+        loop.phase_plan = lambda *a, **k: sys.exit(1)
+        argv, sys.argv = sys.argv, ["loop.py", "--here"]
+        self.addCleanup(setattr, sys, "argv", argv)
+
+        class Quiet(io.StringIO):
+            def reconfigure(self, **_kw):     # main() line-buffers stdout
+                pass
+        with contextlib.redirect_stdout(Quiet()):
+            with self.assertRaises(SystemExit):
+                loop.main()
+        self.assertTrue(list((self.tmp / "journal").glob("*-build.md")),
+                        "a driver that died left no record at all")
+
+
+class TestCloseTheLoop(DriverCase):
+    """Four consecutive retros flagged unclosed loops, with the
+    housekeeping reminder already in place. The missing part was never
+    the reminder."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        loop.sh("git add -A")
+        loop.sh("git commit -q -m base")
+        loop.LEDGER.write_text("")
+        loop.EVENTS.write_text("")
+
+    def close(self, st, force=False):
+        cfg = self.write_goal(type="build")
+        loop.save(loop.STATE, st)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            loop.phase_close(cfg, st, force)
+        return out.getvalue()
+
+    def test_refuses_a_loop_that_is_not_finished(self):
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    self.close({"phase": "iterate", "iteration": 2})
+            finally:
+                sys.stderr = real
+        self.assertTrue((self.tmp / "Plan.md").exists(),
+                        "a refused close must delete nothing")
+
+    def test_force_closes_an_escalated_loop(self):
+        self.close({"phase": "iterate", "iteration": 2}, force=True)
+        self.assertFalse((self.tmp / "Plan.md").exists())
+
+    def test_it_removes_every_ephemeral_and_keeps_the_record(self):
+        out = self.close({"phase": "done", "iteration": 3,
+                          "started": "2026-07-31T10:22:18+00:00"})
+        for f in ("Plan.md", "goal.json", "ledger.jsonl",
+                  "loop-state.json", "events.jsonl"):
+            self.assertFalse((self.tmp / f).exists(), f)
+        self.assertTrue((self.tmp / "journal" /
+                         "20260731-102218-build.md").exists())
+        self.assertIn("Feedback block is still the template", out)
+
+    def test_the_record_is_committed_and_the_branch_is_left_alone(self):
+        head = loop.sh("git rev-parse HEAD").stdout.strip()
+        out = self.close({"phase": "done", "iteration": 1,
+                          "started": "2026-07-31T10:22:18+00:00"})
+        self.assertNotEqual(loop.sh("git rev-parse HEAD").stdout.strip(),
+                            head, "the journal record was never committed")
+        self.assertIn("journal record", loop.sh(
+            "git log -1 --pretty=%B").stdout)
+        self.assertIn("merge", out, "closing must not merge for the user")
 
 
 class TestPlannerGoalTypeMapping(unittest.TestCase):

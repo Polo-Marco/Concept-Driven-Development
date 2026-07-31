@@ -50,9 +50,18 @@ never substitute a different mode's skill.
    nothing invokes, means every ticket passes and the final gate then
    escalates on missing numbers. Name the producing ticket for each
    criterion in your assumptions.
-5. **Update core files** as needed: Architecture.md (keep Overview
+5. **Evidence-ownership self-check (driver-enforced).** The converse of
+   4: at most ONE ticket may be able to write each criterion's `source`
+   file, and its **Boundary** must name that file — never just its
+   parent directory. A `results/` entry on a ticket that only builds a
+   schema module lets that ticket's own test fixture write the file its
+   criteria are judged on; on 2026-07-31 exactly that turned three
+   criteria green four iterations before the harness existed. The
+   driver checks this before it pays for a contract review and sends
+   the plan back if it fails.
+6. **Update core files** as needed: Architecture.md (keep Overview
    faithful), README, skills, nested CLAUDE.md.
-6. Write `Plan.md` (or `Triage.md` for bug sub-flow). Do NOT commit in
+7. Write `Plan.md` (or `Triage.md` for bug sub-flow). Do NOT commit in
    loop mode — the driver commits.
 
 ## Hard limits (hook-enforced)

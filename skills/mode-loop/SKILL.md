@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1
+version: 8.1.6
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -237,12 +237,20 @@ the loop from here on:
   minutes. NEVER approve on your own judgement: the plan gate is the only
   human checkpoint left in the loop, and this session is interactive, so
   the PreToolUse hook does not restrain you. That restraint is yours.
+- `close` → when the loop has finished (or the user has finished it by
+  hand), run `python3 .claude/driver/loop.py close`. It writes the
+  journal record, deletes the ephemeral artifacts and commits; it never
+  merges the branch. Remind them to fill the `## Feedback` block first —
+  `[/retro]` reads it, and it is the one part the driver cannot write.
 
 Tell the user:
 
 - The driver runs four deterministic gates first — machinery,
   goal-contract shape, worktree isolation, preflight. Nothing is
-  planned or spent until all four pass.
+  planned or spent until all four pass. A fifth runs once a plan
+  exists: at most one ticket may be able to write each criterion's
+  `source` file, and it must name the file rather than its tree. A plan
+  that fails goes back to the Planner before a review is paid for.
 - Then Planner → Evaluator contract review, then it WAITS at the human
   gate. They review `Plan.md` and tell you to approve (or run
   `python3 .claude/driver/loop.py approve` themselves).
@@ -262,6 +270,10 @@ Tell the user:
 - At the end, read a sample of the loop's diffs and explain them to
   yourself. With no mid-loop checkpoint, this is the only thing
   standing between you and a codebase you no longer understand.
+- **Budgets are hot-reloadable** (8.1.6): raising a cap in `goal.json`
+  mid-loop is picked up at the next iteration, no restart. Everything
+  else in that file is frozen — and a restart still costs an iteration,
+  so propose caps with headroom rather than counting on the raise.
 
 Then stop *acting* and start *waiting*. Execution is the driver's — you
 neither plan nor build — but the user should not need a second terminal

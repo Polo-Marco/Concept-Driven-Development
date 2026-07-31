@@ -130,10 +130,15 @@ call.
 
 - **One file per pipeline loop:** `journal/YYYYMMDD-HHMMSS-<mode>.md`
   (e.g. `journal/20260701-142230-modify.md`).
-- **Each session appends its own record** to the current loop's file:
-  the Planner appends what it planned and why; the Generator appends
-  what it built, commits (SHAs), and any stops/retries; the Evaluator
-  appends its verdict.
+- **In loop mode the DRIVER writes it** (v8.1.6), from `ledger.jsonl` +
+  `loop-state.json` + `events.jsonl`, on every terminal exit — done,
+  escalation or crash — and rewrites it on resume. Sessions inside a
+  loop append nothing; they have no state the ledger lacks. The one
+  part the driver never touches is the `## Feedback` block.
+- **In manual sessions each session appends its own record** to the
+  current loop's file: the Planner appends what it planned and why; the
+  Generator appends what it built, commits (SHAs), and any
+  stops/retries; the Evaluator appends its verdict.
 - **The user fills the `## Feedback` block** at loop end: a rating
   (good / ok / bad), what went well, and — critically — any
   *instruction that was not followed*.

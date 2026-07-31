@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.1.5
+# Concept-Driven Development (CDD) 8.1.6
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode
@@ -118,10 +118,14 @@ never work around.
    mid-loop `[Halt here]` pauses in loop mode.
 4. Driver iterates tickets: Generator (bearings + smoke test → TDD) →
    trial launch + Monitor polling → Evaluator → `verdict.json` →
-   PASS commit / RETRY ≤3 / REPLAN (re-gated) / ESCALATE. Ledger
-   appended every iteration. Budgets checked every iteration.
-5. Final evaluation verifies ALL `goal.json` criteria → done. Driver
-   reminds; user fills Feedback block, deletes ephemeral files.
+   PASS commit / RETRY ≤3 (each retry carries the verdict that
+   rejected the last attempt) / REPLAN (re-gated) / ESCALATE. Ledger
+   appended every iteration. Budgets checked — and re-read — every
+   iteration.
+5. Final evaluation verifies ALL `goal.json` criteria → done. The
+   driver writes the loop's `journal/` record on every terminal exit;
+   the user fills its Feedback block and closes the loop with
+   `python3 .claude/driver/loop.py close`.
 
 Remote control: keep an interactive session in tmux with Remote
 Control enabled as the control tower — `status` and `approve` from
@@ -136,8 +140,10 @@ at session start); parallel groups follow
 
 ### Session Journal (two tiers)
 - **Tier 1 (`journal/*.md`):** curated per-loop summaries + the user's
-  Feedback block. The driver appends loop records (iterations,
-  verdicts, ledger summary). Primary artifact for `[/retro]`.
+  Feedback block. In loop mode the driver writes the record (tickets,
+  iterations, verdicts, criteria, notable events) on every terminal
+  exit and never overwrites the Feedback block; in manual sessions each
+  session appends its own. Primary artifact for `[/retro]`.
 - **Tier 2 (`journal/traces/*.jsonl`):** full transcripts via the
   `SessionEnd` hook. Gitignored. Claude Code only.
 

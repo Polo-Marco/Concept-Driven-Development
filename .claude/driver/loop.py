@@ -7,12 +7,13 @@ JSON artifacts, branches on verdicts, enforces budgets, and owns all
 long-running processes and git commits. LLM intelligence lives inside
 the sessions; control flow lives here, where it is auditable.
 
-v8.1 adds four deterministic gates, on the principle that anything
+v8.1 adds five deterministic gates, on the principle that anything
 rule-bound must never be handed to a probabilistic model:
 
   * machinery()      -- the loop's own parts are installed and wired
   * validate_goal()  -- the goal contract is well-formed
   * preflight()      -- environment preconditions, before any model call
+  * plan_problems()  -- one ticket owns each criterion's evidence (8.1.6)
   * check_criteria() -- goal.json criteria, read straight off disk
 
 Usage:
@@ -20,6 +21,7 @@ Usage:
     python3 .claude/driver/loop.py status     # what is happening now
     python3 .claude/driver/loop.py approve    # approve the pending gate
     python3 .claude/driver/loop.py check      # run gates only, then exit
+    python3 .claude/driver/loop.py close      # close a finished loop
     python3 .claude/driver/loop.py            # run in the foreground
     python3 .claude/driver/loop.py --here     # allow the primary worktree
 
@@ -30,6 +32,7 @@ same driver in the foreground -- what `start` puts inside tmux.
 Requires: goal.json (written by the [/loop] Ask phase), Claude Code
 CLI on PATH, git. Python 3.9+, stdlib only.
 """
+import hashlib
 import json
 import operator
 import os
@@ -123,6 +126,37 @@ def git_commit(message: str) -> str:
         event("commit_failed", detail=why[:200])
         return ""
     return sh("git rev-parse --short HEAD").stdout.strip()
+
+
+def tree_fingerprint() -> str:
+    """Hash of everything a session could have changed in this tree.
+
+    v8.1.6. A Generator session that writes nothing cannot fix anything,
+    and until now nothing noticed: the 2026-07-31 live run spent three
+    consecutive sessions (84s, 74s, 80s) on one ticket that changed zero
+    bytes, then escalated -- attempts 2 and 3 were decided before they
+    were dispatched (journal/from-tmmluplus-eval-retro-20260731.md,
+    problem 4).
+
+    Tracked content comes from `git diff HEAD`; untracked files are
+    fingerprinted by name+size+mtime rather than content, so a results
+    parquet is not read on every dispatch. Metadata over-reports change
+    (a rewrite with identical bytes looks like a change), and that is
+    the safe direction: this function only ever decides whether to
+    ESCALATE for NO change, so a false "changed" costs an attempt and a
+    false "unchanged" would cost a wrong escalation.
+    """
+    h = hashlib.sha256()
+    h.update(sh("git status --porcelain -uall").stdout.encode())
+    h.update(sh("git diff HEAD").stdout.encode())
+    for line in sh("git ls-files --others --exclude-standard"
+                   ).stdout.splitlines():
+        try:
+            s = (ROOT / line).stat()
+            h.update(f"{line}:{s.st_size}:{s.st_mtime_ns}".encode())
+        except OSError:
+            h.update(f"{line}:gone".encode())
+    return h.hexdigest()
 
 
 # governance.md section 5 declares these the driver's OWN ephemeral
@@ -497,6 +531,80 @@ def field(body: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+# ---------- gate 4: who is allowed to write the evidence ---------------
+
+def boundary_paths(body: str) -> list:
+    """A ticket's Boundary as comparable path prefixes.
+
+    Mirrors boundary_env() in .claude/hooks/enforce_authority.py -- same
+    markdown tolerance -- but also splits on newlines and drops list
+    bullets, because a Boundary written as a bulleted list is a form the
+    hook currently sees as one long entry. Reading MORE entries here is
+    the fail-closed direction: every entry is one more way a ticket can
+    be found to reach a criterion's source.
+    """
+    raw = re.split(r"[,\n]", field(body, "Boundary"))
+    return [e for e in (x.strip().lstrip("-*").strip().strip("`'\"")
+                        .strip().replace("\\", "/").lower() for x in raw)
+            if e]
+
+
+def covers(entry: str, path: str) -> bool:
+    """True when a Boundary entry admits writes to `path`. Same rule as
+    the hook's in_boundary(), for one entry."""
+    return (path == entry or path.startswith(entry.rstrip("/") + "/")
+            or path.startswith(entry))
+
+
+def plan_problems(cfg: dict, plan_text: str) -> list:
+    """Who may write each criterion's evidence? At most one ticket, and
+    it must name the file.
+
+    v8.1.6, from the 2026-07-31 live run (problem 1). `results/` sat in
+    the Boundary of four tickets. Ticket 2 -- a schema module and its
+    unit tests -- therefore had write access to the evidence tree, and
+    its test fixture landed a record with `acc=0.6` in the file the
+    criteria are read from. Three criteria went green FOUR iterations
+    before the harness that earns them existed, and stayed green until a
+    real run overwrote them. The hook was not at fault; it enforced the
+    Boundary it was given, and the Boundary was wrong.
+
+    This is rule-bound, so it is decided here and not by a model
+    (loop-protocol.md section 6). It is deliberately NOT the converse
+    check -- "does some ticket actually WRITE this file?" -- which needs
+    to understand a Run Command and stays with the Planner Self-Check in
+    task-ticket-format.md. Zero owners is legal: on an experiment goal
+    the DRIVER launches the trial, so the metrics file is written by no
+    session and belongs in no Boundary.
+    """
+    problems = []
+    for c in cfg.get("criteria", []):
+        src = str(c.get("source", "")).strip().replace("\\", "/").lower()
+        if not src:
+            continue
+        owners = []
+        for tid, _title, body, _done in tickets(plan_text):
+            hits = [e for e in boundary_paths(body) if covers(e, src)]
+            if hits:
+                owners.append((tid, hits))
+        if len(owners) > 1:
+            problems.append(
+                f"{len(owners)} tickets can write '{c['source']}' "
+                f"({', '.join(t for t, _ in owners)}). Evidence for a "
+                f"success criterion belongs to exactly one ticket -- the "
+                f"one whose Run Command produces it. Remove it from the "
+                f"Boundary of every other ticket.")
+        elif owners and src not in owners[0][1]:
+            tid, hits = owners[0]
+            problems.append(
+                f"{tid} reaches '{c['source']}' through the tree entry "
+                f"'{hits[0]}'. Name the file, not the tree: a directory "
+                f"Boundary lets any code that runs in that session -- a "
+                f"test fixture, a stray default path -- write the "
+                f"evidence its own criterion is judged on.")
+    return problems
+
+
 # ---------- budgets ----------------------------------------------------
 
 def budget_exceeded(st: dict, cfg: dict) -> str:
@@ -739,38 +847,83 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
     acts on or escalates with a plan nothing reviewed, and it never pays
     for a revision nothing will review. Reviews = revisions + 1.
     """
+    why = "Evaluation.md describes the Plan.md now on disk"
     for revision in range(MAX_REVISIONS + 1):
-        if VERDICT.exists():
-            VERDICT.unlink()          # never read a stale verdict
-        claude(st, "evaluator",
-               "Mode 1 -- contract review. Read Plan.md, Goal.md, "
-               "goal.json, and the Architecture Overview. Audit per "
-               "your instructions; write Evaluation.md and verdict.json.")
-        # v8.1: fail-CLOSED. A missing or corrupt verdict from a safety
-        # pre-gate used to default to "OK", which silently passed the
-        # gate whenever the Evaluator crashed or wrote bad JSON.
-        v = load(VERDICT, {}).get("verdict")
-        if v == "OK":
-            event("contract_ok", detail="plan matches the goal contract")
-            st["phase"] = "gate"
-            save(STATE, st)
-            return
-        if v is None:
-            event("contract_review_unreadable",
-                  detail="no usable verdict.json -- treating as REVISE")
+        # v8.1.6: the deterministic gate runs FIRST and, when it fires,
+        # spends a Planner revision instead of an Evaluator review. The
+        # Evaluator reads a Boundary the way a human does and cannot see
+        # that four tickets' entries all admit one metrics file; this
+        # can, it costs nothing, and a plan it rejects is not worth
+        # paying to review (loop-protocol.md section 6).
+        plan = ROOT / "Plan.md"
+        problems = plan_problems(
+            cfg, plan.read_text() if plan.exists() else "")
+        if problems:
+            why = "criterion evidence has more than one owner: " \
+                  + "; ".join(problems)
+            event("plan_rejected", detail=why)
+            fix = ("A deterministic gate rejected Plan.md before any "
+                   "review was paid for. Fix the **Boundary:** fields:\n"
+                   "- " + "\n- ".join(problems) + "\n\nChange nothing "
+                   "else unless the fix requires it.")
+        else:
+            if VERDICT.exists():
+                VERDICT.unlink()      # never read a stale verdict
+            claude(st, "evaluator",
+                   "Mode 1 -- contract review. Read Plan.md, Goal.md, "
+                   "goal.json, and the Architecture Overview. Audit per "
+                   "your instructions; write Evaluation.md and "
+                   "verdict.json.")
+            # v8.1: fail-CLOSED. A missing or corrupt verdict from a
+            # safety pre-gate used to default to "OK", which silently
+            # passed the gate whenever the Evaluator crashed or wrote
+            # bad JSON.
+            v = load(VERDICT, {}).get("verdict")
+            if v == "OK":
+                event("contract_ok",
+                      detail="plan matches the goal contract")
+                st["phase"] = "gate"
+                save(STATE, st)
+                return
+            if v is None:
+                event("contract_review_unreadable",
+                      detail="no usable verdict.json -- treating as "
+                             "REVISE")
+            why = "Evaluation.md describes the Plan.md now on disk"
+            fix = ("Contract review returned REVISE. Read Evaluation.md "
+                   "and revise Plan.md accordingly.")
         if revision == MAX_REVISIONS:
             break                 # out of revisions: do not buy one more
         event("contract_revise", detail=f"round {revision + 1}")
-        claude(st, "planner", "Contract review returned REVISE. Read "
-               "Evaluation.md and revise Plan.md accordingly.")
+        claude(st, "planner", fix)
     event("escalate", detail=(
         f"plan still failed contract review after {MAX_REVISIONS} "
-        f"revisions -- Evaluation.md describes the Plan.md now on disk"))
+        f"revisions -- {why}"))
     sys.exit(1)
+
+
+def reload_budgets(cfg: dict) -> None:
+    """Re-read ONLY the budget caps from goal.json, in place.
+
+    v8.1.6. `cfg` was loaded once at startup, so raising a cap mid-loop
+    meant killing tmux and restarting the driver -- and a restart costs
+    an iteration (see phase_iterate). The 2026-07-31 run did this twice.
+    Budgets are the user's dial and belong to the user; criteria are the
+    contract and stay frozen (loop-protocol.md section 4), so this
+    deliberately copies one key and not the object.
+    """
+    fresh = load(GOAL, None)
+    if not isinstance(fresh, dict):
+        return                            # corrupt/absent: keep the caps
+    b = fresh.get("budgets")
+    if isinstance(b, dict) and b != cfg.get("budgets"):
+        cfg["budgets"] = b
+        event("budgets_updated", detail=json.dumps(b, sort_keys=True))
 
 
 def phase_iterate(cfg: dict, st: dict) -> None:
     while True:
+        reload_budgets(cfg)
         reason = budget_exceeded(st, cfg)
         if reason:
             event("escalate", detail=f"budget exhausted: {reason}")
@@ -803,14 +956,32 @@ def phase_iterate(cfg: dict, st: dict) -> None:
 
         verdict, v = "ESCALATE", {"reason": "no attempt completed"}
         for attempt in range(1, 4):                       # RETRY <= 3
+            # v8.1.6: a retry carries WHY. The dispatch used to be the
+            # ticket body and nothing else, so attempt 2 was byte-for-byte
+            # the prompt that had just failed -- which can only help when
+            # the fault is nondeterministic. On 2026-07-31 the fault was a
+            # stale artifact the ticket never mentions, and all three
+            # attempts correctly concluded there was nothing to do. Without
+            # this, `RETRY <= 3` is a budget line item, not a mechanism.
+            prior = "" if attempt == 1 else (
+                f"\n\nThis is attempt {attempt}. The previous attempt was "
+                f"REJECTED:\n  reason: {v.get('reason', '')}\n  evidence:\n"
+                + "".join(f"    - {e}\n"
+                          for e in v.get("evidence", []) or ["(none)"])
+                + "Fix THAT. If nothing inside this ticket's Boundary can "
+                  "fix it, stop and report per your instructions rather "
+                  "than repeating work that already passed.")
             # v8.1.5: `ticket-`, not `trial-`. The driver used to hand
             # the Generator the very path run_trial reopens "w" for the
             # trial, so on an experiment ticket the Generator's own run
             # output was destroyed by the trial that followed it.
+            before = tree_fingerprint()
             rep = claude(st, "generator",
                          f"Execute this ticket per your instructions:\n\n"
                          f"{body}\n\nTicket log: logs/ticket-"
-                         f"{st['iteration']}.log", field(body, "Boundary"))
+                         f"{st['iteration']}.log" + prior,
+                         field(body, "Boundary"))
+            wrote_nothing = tree_fingerprint() == before
             if "STATUS: stopped" in rep:
                 # v8.1.4: still the last 400 characters -- the reason is
                 # at the end of a stop report -- but cut at a word
@@ -830,10 +1001,13 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             prev_green = set(st.get("criteria_green", []))
             now_green = {r["metric"] for r in crit if r["ok"]}
             regressed = sorted(prev_green - now_green)
+            first_green = sorted(now_green - prev_green)
             st["criteria_green"] = sorted(now_green)
             save(STATE, st)
             for r in crit:
                 event("criterion", detail=criteria_line(r))
+            if first_green:
+                event("first_green", detail=", ".join(first_green))
 
             if not trial_ok:
                 v = {"verdict": "RETRY",
@@ -851,7 +1025,16 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 event("regression", detail=", ".join(regressed))
             else:
                 cadence = cfg.get("evaluation_cadence", "per-iteration")
-                if cadence == "final-pass" and len(todo) > 1:
+                # v8.1.6: `final-pass` no longer defers the audit of a
+                # criterion that just went green. The moment a criterion
+                # first reads green is the moment provenance is worth
+                # paying for -- on 2026-07-31 three of six went green at
+                # iteration 3 on a unit-test fixture, and the only LLM
+                # audit the whole loop bought was at iteration 8, five
+                # committed tickets later. One extra audit, at the one
+                # iteration where it could have caught it.
+                if cadence == "final-pass" and len(todo) > 1 \
+                        and not first_green:
                     # v8.1: "deferred" no longer means unchecked. The
                     # deterministic gate above ran, the Generator's own
                     # TDD ran, and a regression would have blocked here.
@@ -868,10 +1051,36 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                            "Goal.md per your instructions. The diff is "
                            "`git diff HEAD`. You MUST execute, not just "
                            "read: run the tests and the Run Command and "
-                           "paste their real output as evidence. Write "
-                           "Evaluation.md and verdict.json.")
+                           "paste their real output as evidence."
+                           + (f" These criteria went green for the FIRST "
+                              f"time in this iteration: "
+                              f"{', '.join(first_green)} -- prove each "
+                              f"number was EARNED by the harness this "
+                              f"ticket built, not left behind by a test "
+                              f"fixture, a stale artifact or a default "
+                              f"output path." if first_green else "")
+                           + " Write Evaluation.md and verdict.json.")
                     v = load(VERDICT, {"verdict": "ESCALATE",
                                        "reason": "missing verdict.json"})
+            # v8.1.6: a Generator that changed nothing, TWICE, is a
+            # protocol failure and not a retryable one. Attempt 1 is
+            # forgiven -- attempt 2 carries the verdict it never saw, so
+            # it has genuinely new input. A no-op AFTER that feedback
+            # means the worker read why it failed and still could not
+            # act, which is a human's problem, and attempt 3 would only
+            # buy a third identical session plus its audit. Skipped when
+            # the trial itself failed: relaunching an unchanged config is
+            # exactly what that RETRY is for. Decided before the ledger
+            # is written, so the record says what the driver actually did.
+            if v.get("verdict") == "RETRY" and wrote_nothing and trial_ok \
+                    and attempt > 1:
+                event("no_op_session", detail=f"{tid} attempt {attempt} "
+                      "wrote nothing -- not retrying an identical session")
+                v = {"verdict": "ESCALATE",
+                     "reason": f"generator changed nothing on attempt "
+                               f"{attempt} after being told: "
+                               + str(v.get("reason", "")),
+                     "evidence": v.get("evidence", [])}
             LEDGER.open("a").write(json.dumps(
                 {"ts": now(), "iteration": st["iteration"], "ticket": tid,
                  "attempt": attempt, "verdict": v.get("verdict"),
@@ -974,6 +1183,188 @@ def phase_final(cfg: dict, st: dict) -> None:
         event("escalate", detail="final eval: "
               + v.get("reason", "no usable verdict.json"))
     save(STATE, st)
+
+
+# ---------- the loop's own record --------------------------------------
+
+FEEDBACK_BLOCK = """## Feedback (filled by user)
+- Rating: [good | ok | bad]
+- What went well:
+- Instruction(s) not followed:
+- Notes:
+"""
+
+
+def journal_path(cfg: dict, st: dict) -> Path:
+    stamp = re.sub(r"[^0-9]", "", str(st.get("started", "")))[:14] \
+        or "00000000000000"
+    return (ROOT / "journal" /
+            f"{stamp[:8]}-{stamp[8:14]}-{cfg.get('type', 'loop')}.md")
+
+
+def write_journal(cfg: dict, st: dict) -> Path:
+    """Write this loop's Tier-1 journal record. Overwrites its own file.
+
+    v8.1.6. CLAUDE.md and governance.md section 6 both said the driver
+    appends a loop record; `grep -n journal loop.py` returned comments
+    and one reminder string. The 2026-07-31 retro survived only because
+    the control tower hand-wrote 260 lines -- a loop run without one
+    would have left the ledger and nothing else.
+
+    Called from a `finally`, so it runs on EVERY terminal exit including
+    an escalation and a crash. Writing only on `done` would have missed
+    that run entirely, and the loops that most need a record are exactly
+    the ones that do not finish. The record is a projection of
+    ledger.jsonl + loop-state.json, so rewriting it on resume is
+    correct; the user's Feedback block is the one part carried over.
+    """
+    path = journal_path(cfg, st)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    feedback = FEEDBACK_BLOCK
+    if path.exists() and "## Feedback" in path.read_text():
+        feedback = "## Feedback" + \
+            path.read_text().split("## Feedback", 1)[1]
+
+    rows = []
+    if LEDGER.exists():
+        for line in LEDGER.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    plan = ROOT / "Plan.md"
+    tick = list(tickets(plan.read_text())) if plan.exists() else []
+    _, crit = check_criteria(cfg)
+    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
+    b = cfg.get("budgets", {})
+    notable = ("escalate", "replan", "regression", "no_op_session",
+               "first_green", "trial_killed", "commit_failed",
+               "plan_rejected", "goal_reached")
+    evs = []
+    if EVENTS.exists():
+        for line in EVENTS.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("event") in notable:
+                evs.append(f"- `{e['ts'][11:19]}` **{e['event']}** — "
+                           + str(e.get("detail", "")))
+
+    out = [f"# Session Journal — loop ({cfg.get('type', '?')}) — "
+           f"{st.get('started', '?')}", "",
+           "## Request", cfg.get("goal", "(no goal)"), "",
+           "## Outcome",
+           f"- phase at exit: **{st.get('phase', '?')}**"
+           + (f" (ticket {st['current_ticket']})"
+              if st.get("current_ticket") else ""),
+           f"- iterations: {st.get('iteration', 0)}"
+           f" / {b.get('max_iterations', '-')}"
+           f" · replans: {st.get('replans', 0)}"
+           f" / {b.get('max_replans', '-')}",
+           f"- spend: ${st.get('spent_usd', 0.0):.2f}"
+           f" / {b.get('max_usd', '-')} · wall: {hours:.1f}h"
+           f" / {b.get('max_wall_hours', '-')}", ""]
+    if tick:
+        out += ["## Tickets"] + [
+            f"- [{'x' if d else ' '}] {i} — {t}" for i, t, _, d in tick
+        ] + [""]
+    out += ["## Criteria (deterministic gate, as last read)"] + [
+        f"- `{criteria_line(r)}`" for r in crit] + [""]
+    if rows:
+        out += ["## Iterations (ledger.jsonl)", "",
+                "| it | ticket | try | verdict | reason |",
+                "|---|---|---|---|---|"] + [
+            f"| {r.get('iteration')} | {r.get('ticket')} | "
+            f"{r.get('attempt')} | {r.get('verdict')} | "
+            + str(r.get("reason", "")).replace("|", "/")[:120] + " |"
+            for r in rows] + [""]
+    if evs:
+        out += ["## Notable events"] + evs + [""]
+    out += ["## Full trace",
+            "journal/traces/ — auto-archived by the SessionEnd hook "
+            "(Claude Code only).", "", feedback.rstrip() + "\n"]
+    path.write_text("\n".join(out))
+    return path
+
+
+# ---------- close: the loop is not over until it is closed -------------
+
+EPHEMERAL = ("Plan.md", "Triage.md", "Evaluation.md", "verdict.json",
+             "goal.json", "Goal.md", "ledger.jsonl", "loop-state.json",
+             "events.jsonl")
+
+
+def phase_close(cfg: dict, st: dict, force: bool) -> None:
+    """Summarise, record, and delete the loop's ephemeral artifacts.
+
+    v8.1.6. Four consecutive retros flagged unclosed loops, with the
+    housekeeping REMINDER already in place -- so the missing part was
+    never the reminder. Deleting nine files by hand, from the right
+    tree, is mechanical, and mechanical work belongs to the driver.
+
+    What it deliberately does NOT do: merge or delete the branch, or
+    touch the primary tree. Those are irreversible and are the user's
+    call; they are printed instead.
+    """
+    if not st:
+        die("No loop-state.json in this tree -- nothing to close.")
+    name = ("cdd-" + slug(cfg))[:28].rstrip("-") if cfg.get("goal") else ""
+    if name and sh(f"tmux has-session -t {shlex.quote(name)}"
+                   ).returncode == 0 and not force:
+        die(f"The driver is still running (tmux session '{name}').\n"
+            f"  Stop it first, or close anyway with --force.")
+    if st.get("phase") != "done" and not force:
+        die(f"This loop is in phase '{st.get('phase')}', not 'done'.\n"
+            f"  Closing now discards the state a resume would need.\n"
+            f"  If you finished it by hand, say so: loop.py close --force")
+
+    rec = write_journal(cfg, st)
+    ok, crit = check_criteria(cfg)
+    branch = sh("git rev-parse --abbrev-ref HEAD").stdout.strip()
+    print(f"\nclosing: {cfg.get('goal', '(no goal)')}")
+    print(f"  phase     {st.get('phase')}   criteria gate: "
+          f"{'PASS' if ok else 'FAIL'}")
+    for r in crit:
+        print("    " + criteria_line(r))
+    print(f"  journal   {rec.relative_to(ROOT)}")
+    if FEEDBACK_BLOCK.splitlines()[1] in rec.read_text():
+        print("            !! Feedback block is still the template -- "
+              "fill it in; [/retro] reads it")
+
+    removed = []
+    for f in EPHEMERAL:
+        p = ROOT / f
+        if p.exists():
+            p.unlink()
+            removed.append(f)
+    if APPROVALS.exists():
+        for f in APPROVALS.glob("*.approved"):
+            f.unlink()
+        try:
+            APPROVALS.rmdir()
+        except OSError:
+            pass
+    print("  deleted   " + (", ".join(removed) or "nothing"))
+
+    # One commit, after the deletions: the record goes in and the
+    # ephemerals go out together. Committing first would drag every
+    # ephemeral into git one commit before removing it again.
+    sha = git_commit(
+        f"docs(loop): close {branch} -- journal record + housekeeping\n\n"
+        f"Loop record: {rec.relative_to(ROOT)}\n"
+        f"phase {st.get('phase')}, {st.get('iteration', 0)} iterations, "
+        f"{st.get('replans', 0)} replans, "
+        f"${st.get('spent_usd', 0.0):.2f}.\n"
+        f"Removed per governance.md §5: " + (", ".join(removed) or "none"))
+    print(f"  commit    {sha or 'nothing to commit'}")
+
+    print(f"\nStill yours to decide:\n"
+          f"  merge     git checkout <main> && git merge {branch}\n"
+          f"            (the loop's commits live only on this branch)\n"
+          f"  worktree  git worktree remove {ROOT}\n"
+          f"  primary   delete any stale Goal.md / goal.json left in the\n"
+          f"            tree you started the loop from\n")
 
 
 # ---------- where the loop actually lives ------------------------------
@@ -1214,7 +1605,7 @@ def main() -> None:
     allow_here = "--here" in argv
     args = [a for a in argv if not a.startswith("-")]
 
-    if args and args[0] in ("status", "approve"):
+    if args and args[0] in ("status", "approve", "close"):
         elsewhere = find_loop()
         if elsewhere != ROOT:
             print(f"(the loop is in {elsewhere})")
@@ -1247,8 +1638,13 @@ def main() -> None:
         die("goal.json not found or unreadable -- run the [/loop] Ask "
             "phase first.")
 
-    # Four deterministic gates, cheapest first. Nothing is planned and
-    # nothing is spent until all four pass.
+    if args and args[0] == "close":
+        phase_close(cfg, load(STATE, {}), "--force" in argv)
+        return
+
+    # Five deterministic gates, cheapest first. Nothing is planned and
+    # nothing is spent until they pass; plan_problems() runs inside the
+    # contract review, where a plan first exists to check.
     machinery()
     validate_goal(cfg)
 
@@ -1288,24 +1684,36 @@ def main() -> None:
     event("loop_start" if st["iteration"] == 0 else "loop_resume",
           detail=cfg.get("goal", ""))
 
-    if st["phase"] == "plan":
-        phase_plan(cfg, st)
-    if st["phase"] == "contract_review":
-        phase_contract_review(cfg, st)
-    if st["phase"] == "gate":
-        wait_approval(st, "plan", "Plan.md ready + contract-reviewed. "
-                      "Review it, then approve.")
-        st["phase"] = "iterate"
-        save(STATE, st)
-    if st["phase"] == "iterate":
-        phase_iterate(cfg, st)
-    if st["phase"] == "final_eval":
-        phase_final(cfg, st)
+    # v8.1.6: the record is written from a `finally`, so an escalation, a
+    # SystemExit out of a failed contract review and an outright crash
+    # all leave one -- see write_journal(). It must never mask the exit
+    # it is running under, hence the bare except.
+    try:
+        if st["phase"] == "plan":
+            phase_plan(cfg, st)
+        if st["phase"] == "contract_review":
+            phase_contract_review(cfg, st)
+        if st["phase"] == "gate":
+            wait_approval(st, "plan", "Plan.md ready + contract-reviewed. "
+                          "Review it, then approve.")
+            st["phase"] = "iterate"
+            save(STATE, st)
+        if st["phase"] == "iterate":
+            phase_iterate(cfg, st)
+        if st["phase"] == "final_eval":
+            phase_final(cfg, st)
+    finally:
+        try:
+            rec = write_journal(cfg, st)
+            event("journal_written", detail=str(rec.relative_to(ROOT)))
+        except Exception as exc:                       # never mask
+            print(f"(journal record failed: {exc})", file=sys.stderr)
+
     if st["phase"] == "done":
         event("housekeeping_reminder",
-              detail="fill journal Feedback block; read a sample of the "
-                     "loop's diffs and explain them; delete Plan.md/"
-                     "Evaluation.md/goal artifacts when satisfied")
+              detail="fill the journal Feedback block, read a sample of "
+                     "the loop's diffs and explain them, then close the "
+                     "loop: python3 .claude/driver/loop.py close")
 
 
 if __name__ == "__main__":

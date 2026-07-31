@@ -49,17 +49,29 @@ repo) and the tcocrai retro it cites.
    well-formed and has at least one machine-checkable criterion),
    `require_isolation()` (not the primary working tree), and
    `preflight()` (the environment preconditions declared in `Goal.md`).
-   `check_criteria()` then reads every criterion straight off disk. All
-   five fail CLOSED — a missing source file, an unparseable artifact or
-   an absent metric is a failure, never a pass. Rationale: the Ask phase
-   already forces every criterion into metric + op + value + source, so
-   handing the comparison to a probabilistic model adds cost and removes
-   certainty.
+   Once a plan exists, `plan_problems()` checks that at most one ticket
+   can write each criterion's `source` file and that it names the file
+   rather than its tree (v8.1.6) — a plan that fails goes back to the
+   Planner before a contract review is paid for. `check_criteria()`
+   then reads every criterion straight off disk. All fail CLOSED — a
+   missing source file, an unparseable artifact or an absent metric is a
+   failure, never a pass. Rationale: the Ask phase already forces every
+   criterion into metric + op + value + source, so handing the
+   comparison to a probabilistic model adds cost and removes certainty.
 7. **Deterministic is necessary, not sufficient.** `check_criteria()`
    proves a number met its threshold; it cannot prove the number was
    earned. Provenance stays with the Evaluator, which must EXECUTE
    rather than read. Keep both checks — the cheap one being free is not
    a reason to delete the expensive one.
+
+   **A criterion recorded green by `check_criteria()` alone has met a
+   threshold, not earned one** (v8.1.6), and the regression guard
+   inherits that uncertainty: it will defend an unearned green as
+   readily as a real one, so deleting forged evidence reads to it as a
+   regression. This is why the iteration where a criterion FIRST reads
+   green always buys an Evaluator audit, even under `final-pass`
+   cadence — provenance is worth paying for at the moment the colour
+   changes, not five committed tickets later.
 
 ## The loop
 
@@ -73,11 +85,23 @@ goal.json → [gates: machinery, contract shape, isolation, preflight]
                         → Evaluator → verdict.json  (cadence-dependent)
           → final: check_criteria() hard gate, THEN Evaluator provenance
           → PASS: driver marks [x], commits, next ticket
-            RETRY: same ticket, ≤3 attempts
+            RETRY: same ticket, ≤3 attempts, each carrying the verdict
+                   that rejected the last one
             REPLAN: fresh Planner + ledger + Evaluation.md, ≤ budget
             ESCALATE: stop, notify user
           → final evaluation of ALL Goal.md criteria → done
+          → loop.py close: journal record, housekeeping
 ```
+
+**A retry carries WHY** (v8.1.6). The Generator dispatch on attempt 2+
+includes the previous verdict's `reason` and `evidence`; retrying a
+ticket verbatim can only help a nondeterministic fault. And a Generator
+session that changed **nothing** twice is a protocol failure, not a
+retryable one — the driver fingerprints the tree around each dispatch
+and escalates rather than buying a third identical session. The
+exception is a RETRY caused by a trial that did not complete:
+relaunching an unchanged config is exactly what that retry is for
+(Protocol #5).
 
 **Verdict routing:** metric-based failures → RETRY/REPLAN. Protocol
 failures (boundary breach, worker stop/death, unsatisfiable spec,
@@ -137,12 +161,35 @@ command topic; keep secrets out of digests (governance.md §2).
 
 ## Housekeeping (driver responsibility, not memory)
 
-On `done`: the driver reminds; the user fills the journal Feedback
-block, then deletes `Plan.md`, `Evaluation.md`, `verdict.json`,
-`goal.json`, `Goal.md`, `ledger.jsonl`, `loop-state.json`,
-`events.jsonl`. `ledger.jsonl` content worth keeping is summarized
-into the loop's `journal/` record first. Three retros in a row flagged
-unclosed loops — closing IS part of the loop.
+**The driver writes the loop's `journal/` record** (v8.1.6) — goal,
+outcome, tickets, criteria, every ledger row and the notable events —
+on EVERY terminal exit, including an escalation and a crash, not only
+on `done`. It never overwrites the `## Feedback` block, which is yours.
+
+**Closing is a command, not a memory exercise:**
+
+```bash
+python3 .claude/driver/loop.py close      # add --force if not `done`
+```
+
+It writes the record, prints the criteria one last time, deletes
+`Plan.md`, `Evaluation.md`, `verdict.json`, `goal.json`, `Goal.md`,
+`ledger.jsonl`, `loop-state.json`, `events.jsonl` and the approval
+flags, and commits. It deliberately does NOT merge or delete the
+branch, and does not touch the tree you started from — those are
+irreversible and yours; it prints the commands. Four retros in a row
+flagged unclosed loops while the reminder was already in place, so the
+missing part was never the reminder.
+
+**Budgets are hot-reloadable** (v8.1.6): the driver re-reads the
+`budgets` block of `goal.json` at every iteration, so raising a cap
+mid-loop no longer needs a restart. Criteria stay frozen (Protocol #4).
+
+**Every driver restart consumes an iteration** — `iteration` counts
+dispatches, and a resume re-dispatches the ticket it was on. Size
+`max_iterations` with headroom for interruptions; do not expect the
+counter to forgive them, because a cap a restart can reset is a cap a
+crash loop can defeat.
 
 ## Scope guards
 

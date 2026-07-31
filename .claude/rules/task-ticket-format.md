@@ -143,6 +143,18 @@ Before ending the Planner session, verify for each ticket:
   or sitting behind an `if __name__ == "__main__"` that no Run Command
   invokes — makes every ticket pass and the final criteria gate
   escalate on numbers that were never written.
+- And its converse: is each criterion's `source` file writable by **at
+  most one** ticket, and does that ticket's **Boundary** name the FILE
+  rather than its parent directory? A whole-tree entry (`results/`) on
+  a ticket that does not produce the evidence lets anything running in
+  that session — a test fixture, a default output path — write the file
+  its own criteria are read from. On 2026-07-31 `results/` sat in four
+  tickets' Boundaries; a schema ticket's fixture wrote `acc=0.6` and
+  three criteria read green four iterations before the harness existed.
+  The driver enforces this before paying for a contract review
+  (`plan_problems()`), so a plan that fails it comes straight back.
+  Zero owners is legal: on an `experiment` goal the driver launches the
+  trial, so its metrics file belongs in no Boundary at all.
 - For every **Parallel Group**: are the members' Boundaries pairwise
   disjoint, and does no member depend on another member? Is the
   Environment Setup ticket kept out of all groups? Is grouping actually
