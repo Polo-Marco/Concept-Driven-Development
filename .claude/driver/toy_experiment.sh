@@ -65,7 +65,13 @@ git config --get user.email >/dev/null 2>&1 || {
   exit 1; }
 
 mkdir -p "$DIR"
+# A deployment is CLAUDE.md + .claude/ + skills/ (README.md "Deploying").
+# v8.1.8: .claude/ alone left the toy without mode skills, so the smoke
+# test never exercised the path that shapes tickets
+# (journal/retro-20260731-toy-816.md, problem 5).
 cp -r "$FW/.claude" "$DIR/.claude"
+cp -r "$FW/skills" "$DIR/skills"
+cp "$FW/CLAUDE.md" "$DIR/CLAUDE.md"
 cd "$DIR"
 mkdir -p bench configs logs results
 

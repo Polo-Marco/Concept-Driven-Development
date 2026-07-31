@@ -1,7 +1,7 @@
 ---
 name: mode-migrate
 description: Migration persona for bringing existing codebases under the framework. Planner-only — no Generator session, no Plan.md. Produces Concept.md, layered Architecture.md, README.md, and bespoke skills.
-version: 7.0
+version: 8.1.8
 ---
 
 # Mode: Migrate
@@ -60,6 +60,10 @@ Core Principles (`.claude/rules/principles.md`).
 
 **Step 4: Halt**
 - Output questions. STOP. Loop until user says **"proceed to spec"**.
+- *(Loop mode: skip it — you are headless. `Goal.md` is the Ask phase's
+  output; unanswered questions become Assumptions in the plan. See
+  `.claude/agents/cdd-planner.md` § "In loop mode there is no Ask phase
+  and no halt".)*
 
 ### Spec Phase
 

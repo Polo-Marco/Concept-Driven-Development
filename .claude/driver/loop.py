@@ -300,6 +300,19 @@ def machinery() -> None:
             "  Without it, phase authority is prose, not enforcement --\n"
             "  every guarantee in .claude/rules/phase-authority.md is\n"
             "  honour-system only. Wire it before running unattended.")
+    # v8.1.8: a deployment is CLAUDE.md + .claude/ + skills/. The first
+    # two are load-bearing and abort above; `skills/` does NOT, because
+    # cdd-planner.md has a documented fallback (plan from Goal.md +
+    # task-ticket-format.md, and say so) that a project may legitimately
+    # rely on. But the fallback should be a CHOICE, not a silent
+    # discovery -- the toy ran four loops on it before anyone noticed
+    # (journal/retro-20260731-toy-816.md, problem 5).
+    thin = [p for p in ("skills", "CLAUDE.md") if not (ROOT / p).exists()]
+    if thin:
+        event("deployment_thin", detail=(
+            "no " + " and no ".join(thin) + " in this tree -- the "
+            "Planner will fall back to task-ticket-format.md and mode "
+            "skills will not shape the tickets"))
     event("machinery_ok", detail=f"{len(ROLES)} agents + hook wired")
 
 

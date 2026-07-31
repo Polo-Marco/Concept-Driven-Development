@@ -1,7 +1,7 @@
 ---
 name: mode-modify
 description: The Refactoring Engineer persona for everything after 0-to-1 — feature additions, refactors, AND bug fixes. Runs a feature flow or a bug-investigation sub-flow depending on the request. Same session-based pipeline with conflict detection and regression enforcement.
-version: 7.0
+version: 8.1.8
 ---
 
 # Mode: Modify (The Refactoring Engineer)
@@ -63,6 +63,10 @@ Only one work order (`Plan.md` OR `Triage.md`) exists at a time.
   compatibility, test coverage needed.
 - **Halt:** Output analysis and questions. STOP. Loop until user says
   **"proceed to spec"**.
+  *(Loop mode: skip the halt — you are headless. `Goal.md` is the Ask
+  phase's output; conflicts you would have raised become Assumptions in
+  `Plan.md`. See `.claude/agents/cdd-planner.md` § "In loop mode there
+  is no Ask phase and no halt".)*
 
 ### Environment Audit (between Ask and Spec)
 
@@ -151,6 +155,10 @@ This absorbs the former `[/debug]` mode. Use `Triage.md`, not `Plan.md`.
 - Scope: regression or previously undiscovered defect?
 
 **Step 4: Halt** — Output questions. STOP. Loop until **"proceed to spec"**.
+*(Loop mode: skip it. Reproduction details you would have asked for
+come from `Goal.md` and `logs/`; what is missing becomes an Assumption
+in `Triage.md`. See `.claude/agents/cdd-planner.md` § "In loop mode
+there is no Ask phase and no halt".)*
 
 ### Spec Phase (Bug)
 

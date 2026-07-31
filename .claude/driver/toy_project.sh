@@ -35,7 +35,16 @@ git config --get user.email >/dev/null 2>&1 || {
   exit 1; }
 
 mkdir -p "$DIR"
+# A deployment is CLAUDE.md + .claude/ + skills/ (README.md "Deploying").
+# v8.1.8: this copied .claude/ alone, so the toy had no mode skills and
+# no root CLAUDE.md -- the Planner fell back to task-ticket-format.md
+# (legal, and it said so) and the smoke test never once exercised the
+# mode-skill path, which is the part that shapes tickets. It proved the
+# driver, not the framework (journal/retro-20260731-toy-816.md, problem
+# 5).
 cp -r "$FW/.claude" "$DIR/.claude"
+cp -r "$FW/skills" "$DIR/skills"
+cp "$FW/CLAUDE.md" "$DIR/CLAUDE.md"
 cd "$DIR"
 
 cat > Concept.md <<'EOF'

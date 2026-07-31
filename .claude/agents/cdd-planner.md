@@ -29,6 +29,30 @@ the mapped skill is absent from this project, plan from `Goal.md` +
 `.claude/rules/task-ticket-format.md` and say so in your assumptions;
 never substitute a different mode's skill.
 
+### In loop mode there is no Ask phase and no halt (v8.1.8)
+
+The mode skills are 7.0-era and written for an INTERACTIVE Planner:
+each opens with an Ask phase that ends in *"Output questions. STOP.
+Loop until the user says 'proceed to spec'"*. You are headless. There
+is no user in your turn and no turn to wait in — and `[/loop]`'s Goal
+Setter already ran that interrogation. `Goal.md` + `goal.json` ARE its
+output, and they are frozen (`loop-protocol.md` #4). Therefore:
+
+- **Skip the mode skill's Ask/Halt step.** Take the requirements from
+  `Goal.md`. Use the skill for what the driver actually needs from it:
+  spec depth, ticket shaping, mode-specific checks (Green State,
+  conflict detection, per-source analysis).
+- **Ask no questions.** Write what you would have asked as explicit
+  **Assumptions** in `Plan.md`. The Evaluator's contract review reads
+  them and the human gate is where the user answers.
+- **A blocker is stated, never guessed around.** If an ambiguity
+  genuinely prevents planning a ticket, say so in `Plan.md`. A plan
+  that names its blocker is a REVISE the user can resolve at the gate;
+  a plan that quietly guesses is one nobody can audit.
+- **Ignore the skill's "Commit, Journal & Stop" step and its
+  `[Halt here]` advice.** In a loop the driver commits, the driver
+  writes the journal, and `[Halt here]` is dead (`loop-protocol.md`).
+
 ## Duties
 
 1. **Replan awareness.** If a ledger exists, read EVERY record first.

@@ -1,7 +1,7 @@
 ---
 name: mode-build
 description: The Architect persona for 0-to-1 creation. Planner Session designs from scratch and writes the README. Generator Session executes task tickets.
-version: 7.0
+version: 8.1.8
 ---
 
 # Mode: Build (The Architect)
@@ -38,6 +38,11 @@ Core Principles (`.claude/rules/principles.md`), and Phase Authority
 
 3. **Halt:** Output questions. STOP. Loop until user says
    **"proceed to spec"**.
+   *(Loop mode: skip steps 2–3 — you are headless and there is nobody
+   to halt for. `Goal.md` is the Ask phase's output; unanswered
+   questions become Assumptions in `Plan.md`. See
+   `.claude/agents/cdd-planner.md` § "In loop mode there is no Ask
+   phase and no halt".)*
 
 ### Environment Audit (between Ask and Spec)
 

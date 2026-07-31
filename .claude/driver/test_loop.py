@@ -2548,6 +2548,52 @@ class TestCloseTheLoop(DriverCase):
         self.assertIn("merge", out, "closing must not merge for the user")
 
 
+class TestLoopModeHasNoAskPhase(unittest.TestCase):
+    """v8.1.8: the mode skills are 7.0-era and open with an INTERACTIVE
+    Ask phase ending in "STOP. Loop until the user says 'proceed to
+    spec'" -- an instruction a headless loop Planner cannot follow and
+    cannot safely ignore. Nobody knew what it did when it read one,
+    because the only harness that could find out (the toy) copied no
+    skills/ at all (journal/retro-20260731-toy-816.md, problem 5).
+
+    The rule lives in cdd-planner.md, which the loop Planner always
+    reads; every skill that still tells someone to halt must point at
+    it, or a model reading the skill top-down hits the contradiction
+    with nothing to resolve it."""
+
+    REPO = HERE.parent.parent
+    RULE = "In loop mode there is no Ask phase and no halt"
+
+    @staticmethod
+    def flat(path):
+        """One line, single-spaced -- these files wrap at 72 columns, so
+        a cross-reference is routinely split across two lines."""
+        return " ".join(path.read_text().split())
+
+    def test_the_planner_states_the_rule(self):
+        self.assertIn(self.RULE,
+                      self.flat(self.REPO / ".claude" / "agents"
+                                / "cdd-planner.md"))
+
+    def test_every_halting_skill_points_at_it(self):
+        for skill in sorted((self.REPO / "skills").glob("mode-*/SKILL.md")):
+            text = self.flat(skill)
+            if not re.search(r"\*\*(?:Step \d+: )?Halt", text):
+                continue                    # nothing to halt for
+            self.assertIn(self.RULE, text,
+                          f"{skill.parent.name} tells the Planner to "
+                          f"halt and never says what loop mode does "
+                          f"instead")
+
+    def test_the_scaffolders_deploy_what_the_readme_promises(self):
+        """A smoke test that copies less than a deployment proves the
+        driver, not the framework."""
+        for sh_name in ("toy_project.sh", "toy_experiment.sh"):
+            src = (HERE / sh_name).read_text()
+            for part in ('"$FW/.claude"', '"$FW/skills"', '"$FW/CLAUDE.md"'):
+                self.assertIn(part, src, f"{sh_name} does not copy {part}")
+
+
 class TestPlannerGoalTypeMapping(unittest.TestCase):
     """v8.1.5: `phase_plan()` prompts the Planner with a goal TYPE --
     "the mode skill for goal type 'experiment'" -- and cdd-planner.md

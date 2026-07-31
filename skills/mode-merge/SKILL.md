@@ -1,7 +1,7 @@
 ---
 name: mode-merge
 description: The Integration Architect persona for combining two or more existing projects into one unified codebase. Architecture-first — reverse-engineers each source independently before planning the merge. Writes a unified README. Drives a Planner -> Generator pipeline.
-version: 7.0
+version: 8.1.8
 ---
 
 # Mode: Merge (The Integration Architect)
@@ -74,6 +74,12 @@ Write `Merge-Analysis.md` (ephemeral, like Plan.md):
 - Output `Architecture-<source>.md` files, `Merge-Analysis.md`, and
   the open questions. STOP. Loop until the user says
   **"proceed to spec"**.
+- *(Loop mode: still WRITE the per-source models and `Merge-Analysis.md`
+  — they are the analysis the plan rests on — but do not halt. The open
+  questions become Assumptions in `Plan.md`, and a conflict you cannot
+  resolve is stated there rather than guessed. See
+  `.claude/agents/cdd-planner.md` § "In loop mode there is no Ask phase
+  and no halt".)*
 
 ### Spec Phase
 
