@@ -77,8 +77,10 @@ repo) and the tcocrai retro it cites.
 
 ```
 goal.json → [gates: machinery, contract shape, isolation, preflight]
-          → Planner → Evaluator contract review (OK|REVISE, ≤2)
+          → Planner → Evaluator contract review (OK|REVISE, ≤2 rounds
+                      AND ≤ half of max_usd)
           → HUMAN GATE (approve once; also after each REPLAN)
+          → `plan(loop):` commit of everything the plan phase produced
           → per ticket: Generator (bearings + smoke test → TDD/impl)
                         → driver launches Trial, Monitor polls
                         → check_criteria() + regression guard (free)
@@ -102,6 +104,29 @@ and escalates rather than buying a third identical session. The
 exception is a RETRY caused by a trial that did not complete:
 relaunching an unchanged config is exactly what that retry is for
 (Protocol #5).
+
+**Contract review is bounded by money, not only by rounds** (v8.1.7).
+`MAX_REVISIONS` was the sole bound and no budget was consulted between
+rounds, so a review could eat an arbitrary share of `max_usd` before
+the one gate where the user can still intervene cheaply — two
+consecutive `build` loops spent their pre-gate budget this way
+(2026-07-31: $5.48, 59% of the run, six sessions, zero tickets). Once
+the pre-gate phases have spent half of `max_usd` the driver stops
+buying rounds and hands the plan to the human gate, which is free. The
+FIRST review is always bought: skipping it would not bound a cost, it
+would delete the safety gate. The gate banner then states what it is
+handing you — reviewed OK, or review cut short — because a gate that
+misreports itself is worse than no gate.
+
+**The plan phase commits at its gate** (v8.1.7). The driver commits
+`git add -A`, so with nothing flushed between the Planner and ticket 1,
+the first `feat(loop):` commit carried Plan.md, Evaluation.md,
+verdict.json, Architecture.md, a user budget edit and the journal
+record under one ticket's title — three authors in one commit, and a
+per-ticket Boundary audit read off `git log` cannot work that way. A
+`plan(loop):` commit now lands the moment the gate clears (and after
+each replan gate), so `feat(loop):` carries exactly one ticket
+(governance.md §1).
 
 **Verdict routing:** metric-based failures → RETRY/REPLAN. Protocol
 failures (boundary breach, worker stop/death, unsatisfiable spec,
@@ -184,6 +209,18 @@ missing part was never the reminder.
 **Budgets are hot-reloadable** (v8.1.6): the driver re-reads the
 `budgets` block of `goal.json` at every iteration, so raising a cap
 mid-loop no longer needs a restart. Criteria stay frozen (Protocol #4).
+
+**`max_wall_hours` meters DRIVER RUNTIME, not the calendar** (v8.1.7).
+The clock runs only while the driver process is working: it stops at
+every human gate and does not run between runs. It used to be
+`now - started_epoch`, which billed the loop for time it was not alive
+— a loop that sat 3.6h at the plan gate escalated `budget exhausted:
+max_wall_hours` the instant the approval landed, before one ticket ran,
+with $0 spent since resume. That contradicted this file's own pitch of
+approving from your phone, i.e. with no SLA. A run that crashed is
+credited only up to its last recorded event, which is the last moment
+the driver can be proven alive. `status` shows both clocks: calendar
+age next to the start time, metered runtime under `budgets`.
 
 **Every driver restart consumes an iteration** — `iteration` counts
 dispatches, and a resume re-dispatches the ticket it was on. Size

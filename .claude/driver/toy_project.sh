@@ -94,7 +94,12 @@ a smoke test of the pipeline cannot fail on someone else's packaging.
 Nothing else is checked.
 
 ## Budgets
-6 iterations, 1 replan, 2 wall-clock hours, $12.
+6 iterations, 1 replan, 2 hours of driver runtime, $12.
+
+`goal.json` is the contract the driver reads; this line is a summary of
+it. Raise a cap there (it is re-read every iteration) and this prose may
+lag — that is fine, the JSON wins. Wall hours meter driver runtime, so
+time spent waiting at the plan gate costs nothing.
 
 ## Notes
 This is a smoke test of the pipeline, not a product. Planner and

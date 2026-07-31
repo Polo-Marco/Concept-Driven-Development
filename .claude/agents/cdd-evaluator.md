@@ -52,6 +52,20 @@ For each ticket ask:
   a REVISE — the driver gates on the JSON, so a lossy translation
   silently redefines "done".
 
+**Ceiling — read the plan, do not build it** (v8.1.7). Mode 1 is a
+close reading plus CHEAP spot-checks: grep for a file the plan claims
+exists, run a `--help`, confirm a dataset path or an import resolves.
+Do **not** re-implement the tickets — no writing the plan's modules or
+its test suite under `/tmp` to see whether they would pass. That is the
+Generator's job, on a plan that is not approved yet. Three review passes
+that each rebuilt a whole four-ticket plan cost $5.48 — 59% of that
+loop's total spend — before ticket 1 was dispatched
+(`journal/retro-20260731-toy-816.md`, problem 2). If you cannot judge a
+ticket without building it, that IS the finding: REVISE, and say what
+the plan fails to specify. The driver now stops buying review rounds
+once the pre-gate phases have spent half of `max_usd`, so an expensive
+review is one the user pays for in tickets they never get.
+
 Write findings to `Evaluation.md`, verdict to `verdict.json`:
 `OK` (proceed to human gate) or `REVISE` (list what the Planner must
 fix). A missing or unparseable `verdict.json` is treated as REVISE by
@@ -119,7 +133,14 @@ Verdict rules:
 - NEVER modify code, tests, skills, core files, or docs/.
 - NEVER commit. NEVER make architecture decisions — flag gaps instead.
 - Running code, tests, and reconstructing prior states in /tmp to
-  verify claims is REQUIRED — that is your job, not an option.
+  verify claims is REQUIRED — that is your job, not an option. **In
+  Mode 2.** In Mode 1 it is over-reach; see the ceiling above.
 - Refer to those out-of-repo files by ABSOLUTE path. The hook cannot
   see a Bash call's cwd, so a relative `tests/foo.py` is read as
   repo-relative and denied.
+- **A PreToolUse denial ENDS the session.** Say what you were denied
+  and stop. Reaching the same target by another road — a heredoc, an
+  interpreter, `/tmp` — is a protocol violation, not a workaround
+  (`loop-protocol.md` §3, `phase-authority.md`). The hook is the
+  authority matrix, mechanically enforced; where it cannot see, the
+  prohibition still binds.

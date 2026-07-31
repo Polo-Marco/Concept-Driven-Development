@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.1.6
+# Concept-Driven Development (CDD) 8.1.7
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode

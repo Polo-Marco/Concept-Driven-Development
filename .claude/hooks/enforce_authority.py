@@ -95,7 +95,15 @@ def in_boundary(rel: str, boundary: list[str]) -> bool:
 # (a quoted ">" may be misread) — over-denial is the safe direction, and
 # the Generator is told to STOP and report rather than improvise.
 SEGMENT = re.compile(r"[|;&\n]+")
-REDIRECT = re.compile(r"\d?>>?\s*([^\s|;&<>]+)")
+# `(?:\d|(?<![-\d]))>` — a redirect is either `N>` or a `>` NOT preceded
+# by `-`. v8.1.7: without the lookbehind, the `>` of a Python return
+# annotation read as a redirect, so `def f(x: str) -> int:` denied the
+# command and named `int:` as the write target. That is the pattern
+# failing CLOSED on legal work — strictly worse than the documented
+# heredoc blind spot, which only fails open — and it is what pushed the
+# 2026-07-31 Evaluator into stripping annotations from its repro copies
+# instead of stopping (journal/retro-20260731-toy-816.md, problem 3).
+REDIRECT = re.compile(r"(?:\d|(?<![-\d]))>>?\s*([^\s|;&<>]+)")
 LAST_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(sed|mv|cp|install|truncate)\b")
 ALL_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(rm|tee|shred)\b")
 DD_OF = re.compile(r"\bdd\b[^|;&]*?\bof=([^\s|;&]+)")

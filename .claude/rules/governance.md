@@ -24,6 +24,11 @@ changelog, commit messages carry that weight and MUST be detailed.
 - **Retro Session:** does NOT commit code. May commit its `journal/`
   summary.
 - **Loop mode (v8.0):** the driver is the only committer.
+  `plan(loop):` for everything the plan phase produced, committed the
+  moment its human gate clears (v8.1.7 — without it the first ticket
+  commit carried Plan.md, Evaluation.md, Architecture.md and a user
+  budget edit under one ticket's title, breaking "one domain per
+  commit" below and making a per-ticket Boundary audit unpassable);
   `feat(loop):` per passed ticket (verdict + evidence in the body),
   `wip(loop):` before a replan or on escalation. Sessions never
   commit inside a loop.

@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.6
+version: 8.1.7
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -274,6 +274,14 @@ Tell the user:
   mid-loop is picked up at the next iteration, no restart. Everything
   else in that file is frozen — and a restart still costs an iteration,
   so propose caps with headroom rather than counting on the raise.
+- **`max_wall_hours` is DRIVER RUNTIME** (8.1.7), not calendar time.
+  The clock stops at every human gate and between runs, so taking a
+  night to approve costs the budget nothing. Size the cap from how long
+  the work runs, not from how long you might take to answer.
+- **`goal.json` is the budget contract; `Goal.md` prose is a summary**
+  (8.1.7). When you raise a cap, raise it in `goal.json` — that is what
+  the driver reads. Update the prose if you like, but never let the two
+  disagree in the direction that matters: the JSON wins.
 
 Then stop *acting* and start *waiting*. Execution is the driver's — you
 neither plan nor build — but the user should not need a second terminal

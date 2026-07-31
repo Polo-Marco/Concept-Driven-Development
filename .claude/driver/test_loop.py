@@ -207,8 +207,12 @@ class DriverCase(unittest.TestCase):
         # v8.1.1: stubs used to leak between tests -- a case that
         # replaced loop.claude left it replaced for every case after it,
         # making the suite order-dependent.
+        # wait_approval joined the list in v8.1.7: TestObservability
+        # stubs it, and unittest runs classes in name order, so every
+        # later suite silently inherited a gate that never blocks and
+        # never emits -- the same leak this loop was written for.
         for _n in ("claude", "git_commit", "subprocess", "sh",
-                   "require_cli"):
+                   "require_cli", "wait_approval", "flush_pregate"):
             self.addCleanup(setattr, loop, _n, getattr(loop, _n))
         # the suite is offline by contract; TestAuthGate exercises
         # the real probe with a stubbed subprocess.
@@ -2586,6 +2590,238 @@ class TestPlannerGoalTypeMapping(unittest.TestCase):
             self.assertTrue((self.REPO / "skills" / s / "SKILL.md").exists(),
                             f"cdd-planner.md points the Planner at "
                             f"skills/{s}/SKILL.md, which does not exist")
+
+
+class TestRuntimeClock(DriverCase):
+    """v8.1.7: max_wall_hours meters DRIVER RUNTIME, not the calendar.
+
+    2026-07-31 toy loop: 3.6h at the plan gate with the driver process
+    dead; the approval landed and the next budget check escalated
+    `budget exhausted: max_wall_hours` before one ticket ran, $0 spent
+    since resume. The gate is pitched as approve-from-your-phone, so an
+    overnight approval was guaranteed to escalate on resume.
+    """
+
+    def test_hours_spent_at_a_gate_are_not_billed(self):
+        flag = self.tmp / "approvals" / "plan.approved"
+
+        class Clock(FakeClock):
+            def sleep(self, _sec):
+                self.t += 4 * 3600          # the human slept on it
+                flag.touch()
+        loop.time = Clock()
+        st = {}
+        loop.clock_start(st)
+        loop.wait_approval(st, "plan", "review it")
+        self.assertLess(loop.wall_hours(st), 0.01)
+        self.assertEqual(
+            loop.budget_exceeded(st, {"budgets": {"max_wall_hours": 2}}),
+            "", "a four-hour approval must not exhaust a two-hour cap")
+
+    def test_hours_spent_working_are_billed(self):
+        loop.time = FakeClock()
+        st = {}
+        loop.clock_start(st)
+        loop.time.t += 3 * 3600
+        self.assertAlmostEqual(loop.wall_hours(st), 3.0, places=3)
+        self.assertEqual(
+            loop.budget_exceeded(st, {"budgets": {"max_wall_hours": 2}}),
+            "max_wall_hours")
+
+    def test_time_between_runs_is_not_billed(self):
+        """The driver was not running; nothing accrued."""
+        loop.time = FakeClock(start=1_000_000.0 + 30 * 3600)
+        st = {"run_hours": 0.4, "run_epoch": None,
+              "started_epoch": 1_000_000.0}
+        self.assertAlmostEqual(loop.wall_hours(st), 0.4, places=3)
+        self.assertEqual(
+            loop.budget_exceeded(st, {"budgets": {"max_wall_hours": 2}}),
+            "")
+
+    def test_a_crashed_run_is_closed_at_its_last_event(self):
+        """A run that died left run_epoch open. Credit it only up to the
+        last moment the driver can be PROVEN to have been alive --
+        crediting the crash gap would restore the bug."""
+        t0 = 1_000_000.0
+        loop.EVENTS.write_text("")
+        os.utime(loop.EVENTS, (t0 + 1800, t0 + 1800))
+        loop.time = FakeClock(start=t0 + 10 * 3600)   # found 10h later
+        st = {"run_epoch": t0, "run_hours": 0.0}
+        loop.clock_start(st)
+        self.assertAlmostEqual(st["run_hours"], 0.5, places=2)
+
+    def test_status_separates_calendar_age_from_metered_runtime(self):
+        loop.time = FakeClock(start=1_000_000.0 + 30 * 3600)
+        loop.save(loop.STATE, {"phase": "gate", "iteration": 1,
+                               "started": "2026-07-31T05:04:00+00:00",
+                               "started_epoch": 1_000_000.0,
+                               "run_hours": 0.4, "run_epoch": None})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            loop.phase_status(self.write_goal(
+                budgets={"max_iterations": 8, "max_usd": 10,
+                         "max_wall_hours": 2}))
+        out = buf.getvalue()
+        self.assertIn("30.0h ago", out)          # calendar, informational
+        self.assertIn("runtime     0.4h / 2.0h", out)   # what is metered
+
+    def test_the_approval_event_names_its_gate(self):
+        """It rendered as a bare "approved:" -- the one event confirming
+        a human acted named nothing."""
+        flag = self.tmp / "approvals" / "plan.approved"
+
+        class Clock(FakeClock):
+            def sleep(self, _sec):
+                flag.touch()
+        loop.time = Clock()
+        loop.wait_approval({}, "plan", "review it")
+        approved = [e for e in self.events() if e["event"] == "approved"]
+        self.assertEqual(len(approved), 1)
+        self.assertIn("plan", approved[0].get("detail", ""))
+
+
+class TestPregateBudgetCeiling(DriverCase):
+    """v8.1.7: contract review is bounded by MONEY as well as rounds.
+
+    MAX_REVISIONS was the only bound and budget_exceeded() was never
+    consulted between rounds, so a review could eat an arbitrary share
+    of max_usd before the human gate -- the one place the user can still
+    intervene cheaply. 2026-07-31: $5.48, 59% of the loop's spend, six
+    sessions, zero tickets dispatched.
+    """
+
+    def spender(self, calls, verdict="REVISE", usd=3.0):
+        def fake(st, role, prompt, *a, **k):
+            calls.append(role)
+            st["spent_usd"] = st.get("spent_usd", 0.0) + usd
+            loop.VERDICT.write_text(json.dumps({"verdict": verdict}))
+            return ""
+        return fake
+
+    def test_rounds_stop_once_the_pregate_share_is_gone(self):
+        calls = []
+        loop.claude = self.spender(calls)
+        st = {}
+        loop.phase_contract_review(self.write_goal(), st)   # cap $10
+        self.assertEqual(st["phase"], "gate",
+                         "the plan goes to the human, who reviews free")
+        self.assertEqual(calls, ["evaluator", "planner"],
+                         "a third round costs money nobody budgeted")
+        self.assertIn("contract_review_halted",
+                      [e["event"] for e in self.events()])
+
+    def test_the_first_review_is_always_bought(self):
+        """Skipping it would not bound a cost -- it would delete the
+        safety gate and hand an unreviewed plan to a human who is being
+        asked to approve, not to audit."""
+        calls = []
+        loop.claude = self.spender(calls, verdict="OK")
+        st = {"spent_usd": 9.5}                      # already over half
+        loop.phase_contract_review(self.write_goal(), st)
+        self.assertEqual(calls.count("evaluator"), 1)
+        self.assertEqual(st["phase"], "gate")
+
+    def test_a_hard_breach_escalates_rather_than_gating(self):
+        calls = []
+        loop.claude = self.spender(calls)
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(self.write_goal(),
+                                       {"spent_usd": 10.0})
+        self.assertEqual(calls, [], "nothing is bought past the cap")
+        self.assertTrue(any(e["event"] == "escalate" and
+                            "contract review" in e.get("detail", "")
+                            for e in self.events()))
+
+    def test_the_gate_banner_reports_the_review_state(self):
+        """A gate that misreports what it hands you is worse than no
+        gate: the banner used to assert "contract-reviewed" always."""
+        calls = []
+        loop.claude = self.spender(calls, verdict="OK", usd=0.5)
+        st = {}
+        loop.phase_contract_review(self.write_goal(), st)
+        self.assertIn("OK", st["contract"])
+        calls.clear()
+        loop.claude = self.spender(calls)
+        st2 = {}
+        loop.phase_contract_review(self.write_goal(), st2)
+        self.assertIn("NOT completed", st2["contract"])
+
+
+class TestPregateFlush(DriverCase):
+    """v8.1.7: the plan phase's artifacts are committed at the gate.
+
+    The driver commits `git add -A` and nothing flushed between the
+    Planner and the first ticket, so 2026-07-31's
+    `feat(loop): Phase 1, Step 1 Environment Setup` also carried
+    Plan.md, Evaluation.md, verdict.json, Architecture.md, the user's
+    goal.json edit and the journal record. Three authors, one commit,
+    titled after one ticket -- and it made the Evaluator's per-ticket
+    Boundary audit unpassable as stated.
+    """
+
+    def setUp(self):
+        super().setUp()
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        loop.ensure_gitignore()      # as main() does, before any commit
+        (self.tmp / "a.txt").write_text("1")
+        loop.sh("git add -A")
+        loop.sh("git commit -q -m base")
+
+    def test_pregate_artifacts_get_their_own_commit(self):
+        (self.tmp / "Plan.md").write_text("### Phase 1, Step 1: X\n")
+        (self.tmp / "Evaluation.md").write_text("audit\n")
+        sha = loop.flush_pregate("plan approved")
+        self.assertTrue(sha)
+        msg = loop.sh("git log -1 --pretty=%B").stdout
+        self.assertTrue(msg.startswith("plan(loop): plan approved"))
+        self.assertIn("Plan.md", msg)
+        self.assertIn("plan_committed",
+                      [e["event"] for e in self.events()])
+
+    def test_the_next_ticket_commit_carries_only_its_ticket(self):
+        (self.tmp / "Plan.md").write_text("### Phase 1, Step 1: X\n")
+        loop.flush_pregate("plan approved")
+        (self.tmp / "src.py").write_text("x = 1\n")
+        loop.git_commit("feat(loop): Phase 1, Step 1")
+        touched = loop.sh(
+            "git show --stat --name-only --pretty= HEAD").stdout.split()
+        self.assertEqual(touched, ["src.py"])
+
+    def test_a_clean_tree_is_not_committed(self):
+        head = loop.sh("git rev-parse HEAD").stdout.strip()
+        self.assertEqual(loop.flush_pregate("plan approved"), "")
+        self.assertEqual(loop.sh("git rev-parse HEAD").stdout.strip(),
+                         head)
+
+
+class TestHookArrowIsNotARedirect(HookCaller, unittest.TestCase):
+    """v8.1.7: the shell-write scanner read the `>` of a Python return
+    annotation as a redirect, denying `def f(x: str) -> int:` and naming
+    `int:` as the write target. Failing CLOSED on legal work is strictly
+    worse than the documented heredoc blind spot, which only fails open
+    -- and it is what pushed the 2026-07-31 Evaluator into editing its
+    repro copies instead of stopping."""
+
+    def test_return_annotations_are_not_write_targets(self):
+        hook = load_hook()
+        for cmd in ("def f(x: str) -> int:",
+                    "    def run_tests(self) -> dict:",
+                    "python3 -c 'lambda a -> b'"):
+            self.assertEqual(hook.bash_write_targets(cmd), [], cmd)
+
+    def test_real_redirects_still_resolve(self):
+        hook = load_hook()
+        self.assertEqual(hook.bash_write_targets("echo x > Plan.md"),
+                         ["Plan.md"])
+        self.assertEqual(hook.bash_write_targets("cat a >> b.txt"),
+                         ["b.txt"])
+        self.assertEqual(hook.bash_write_targets("pytest -q 2> err.txt"),
+                         ["err.txt"])
+        self.assertEqual(
+            hook.bash_write_targets("pytest 2>&1 | tee logs/run.log"),
+            ["logs/run.log"])
 
 
 if __name__ == "__main__":

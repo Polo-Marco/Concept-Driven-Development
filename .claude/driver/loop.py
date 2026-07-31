@@ -128,6 +128,41 @@ def git_commit(message: str) -> str:
     return sh("git rev-parse --short HEAD").stdout.strip()
 
 
+def flush_pregate(what: str) -> str:
+    """Commit what the PLAN phase produced, the moment its gate clears.
+
+    v8.1.7. The driver commits with `git add -A`, and nothing flushed
+    between the Planner and the first ticket -- so the 2026-07-31 run's
+    `feat(loop): Phase 1, Step 1 Environment Setup` also carried
+    Plan.md, Evaluation.md, verdict.json, Architecture.md, the user's
+    goal.json budget edit and the journal record: three authors in one
+    commit titled after one ticket. That breaks governance.md section 1
+    ("one domain per commit") and, worse, makes the Evaluator's
+    per-ticket Boundary audit unpassable as stated -- it asserted "every
+    file touched matches that ticket's declared Boundary" for a commit
+    where goal.json and Architecture.md are in no Boundary at all
+    (journal/retro-20260731-toy-816.md, problem 4).
+
+    Called after each plan gate rather than before it, so the commit
+    records the plan the human actually approved.
+    """
+    files = [ln[3:] for ln in
+             sh("git status --porcelain -uall").stdout.splitlines()
+             if ln[3:].strip()]
+    if not files:
+        return ""
+    sha = git_commit(
+        f"plan(loop): {what}\n\n"
+        "Pre-gate artifacts, committed at the approval so the ticket\n"
+        "commits that follow carry exactly one ticket each\n"
+        "(governance.md section 1). Files:\n"
+        + "\n".join(f"- {f}" for f in sorted(files)[:40])
+        + ("\n- ..." if len(files) > 40 else ""))
+    if sha:
+        event("plan_committed", detail=f"{what} @ {sha}")
+    return sha
+
+
 def tree_fingerprint() -> str:
     """Hash of everything a session could have changed in this tree.
 
@@ -607,14 +642,65 @@ def plan_problems(cfg: dict, plan_text: str) -> list:
 
 # ---------- budgets ----------------------------------------------------
 
+def wall_hours(st: dict) -> float:
+    """Hours the DRIVER has been running, not hours on the calendar.
+
+    v8.1.7. `max_wall_hours` used to be `(now - started_epoch)/3600`,
+    which bills the loop for time it was not alive: the 2026-07-31 toy
+    run sat 3.6h at the plan gate with the driver process dead, and the
+    first budget check after the approval landed escalated
+    `budget exhausted: max_wall_hours` before one ticket ran, with $0
+    spent since resume. That contradicts the gate's own design --
+    loop-protocol.md calls gates event-driven and pitches approving from
+    your phone, i.e. with no SLA, so an overnight approval was
+    GUARANTEED to escalate on resume
+    (journal/retro-20260731-toy-816.md, problem 1).
+
+    The clock therefore runs only while this process is working:
+    `run_hours` accumulates closed segments, `run_epoch` opens the
+    current one, and wait_approval() closes it while a human is the
+    bottleneck. `max_usd` never needed this -- spend does not accrue
+    while idle -- and `started_epoch` is kept for the calendar age
+    `status` reports next to the start time.
+    """
+    h = st.get("run_hours", 0.0)
+    if st.get("run_epoch"):
+        h += max(0.0, (time.time() - st["run_epoch"]) / 3600)
+    return h
+
+
+def clock_start(st: dict) -> None:
+    """Open a runtime segment (driver start, or a cleared gate).
+
+    A previous run that died left `run_epoch` open. It is closed here at
+    the last event we recorded, which is the last moment the driver can
+    be PROVEN to have been alive -- crediting the crash gap to the loop
+    would re-introduce exactly the bug this function exists to fix.
+    """
+    stale = st.get("run_epoch")
+    if stale:
+        end = EVENTS.stat().st_mtime if EVENTS.exists() else stale
+        st["run_hours"] = st.get("run_hours", 0.0) \
+            + max(0.0, (end - stale) / 3600)
+    st["run_epoch"] = time.time()
+    save(STATE, st)
+
+
+def clock_stop(st: dict) -> None:
+    """Close the current runtime segment. Idempotent."""
+    if st.get("run_epoch"):
+        st["run_hours"] = wall_hours(st)
+        st["run_epoch"] = None
+        save(STATE, st)
+
+
 def budget_exceeded(st: dict, cfg: dict) -> str:
     b = cfg.get("budgets", {})
     if st.get("iteration", 0) >= b.get("max_iterations", 20):
         return "max_iterations"
     if st.get("replans", 0) > b.get("max_replans", 3):
         return "max_replans"
-    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
-    if hours >= b.get("max_wall_hours", 48):
+    if wall_hours(st) >= b.get("max_wall_hours", 48):
         return "max_wall_hours"
     if st.get("gpu_hours", 0.0) >= b.get("max_gpu_hours", 1e9):
         return "max_gpu_hours"
@@ -637,6 +723,7 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
     if flag.exists():
         flag.unlink()
     st["pending_gate"] = name
+    clock_stop(st)             # v8.1.7: a human is not driver runtime
     save(STATE, st)
     event("approval_request", gate=name, detail=detail)
     gap = notify_gap()
@@ -655,8 +742,13 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
                                # broken; this is a stat() call
     flag.unlink()
     st["pending_gate"] = None
+    clock_start(st)                        # the driver is working again
     save(STATE, st)
-    event("approved", gate=name)
+    # detail, not just gate=: the console line and every events.jsonl
+    # reader print `detail`, so this used to render as a bare
+    # "approved:" -- the one event confirming a human acted named
+    # nothing (journal/retro-20260731-toy-816.md, problem 1, minor).
+    event("approved", gate=name, detail=f"gate {name}")
 
 
 # ---------- trials (experiment goals) ----------------------------------
@@ -833,6 +925,19 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
 
 MAX_REVISIONS = 2
 
+# Share of max_usd the pre-gate phases (Planner + contract review) may
+# consume before the driver stops buying rounds and hands the plan to
+# the human gate. v8.1.7: MAX_REVISIONS bounded the review by ROUND
+# COUNT alone and budget_exceeded() was never consulted between rounds,
+# so a review could eat an arbitrary share of the budget before the one
+# gate where the user can still intervene cheaply. The 2026-07-31 toy
+# `build` loop took all three rounds -- six sessions, $5.48, 59% of the
+# run's total spend, with zero tickets dispatched -- and the same day's
+# real tmmluplus loop took two. Not a toy artifact: two of the last two
+# build loops spent their pre-gate budget on review rounds
+# (journal/retro-20260731-toy-816.md, problem 2).
+PREGATE_SHARE = 0.5
+
 
 def phase_contract_review(cfg: dict, st: dict) -> None:
     """Review, revise, review again -- never the other way round.
@@ -849,6 +954,34 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
     """
     why = "Evaluation.md describes the Plan.md now on disk"
     for revision in range(MAX_REVISIONS + 1):
+        # v8.1.7: bounded by MONEY as well as by rounds. A hard breach
+        # escalates like every other one; the soft share stops paying
+        # for rounds and hands the plan to the human gate, which is free
+        # and is where the user could always have read it themselves.
+        reload_budgets(cfg)
+        hard = budget_exceeded(st, cfg)
+        cap = cfg.get("budgets", {}).get("max_usd")
+        spent = st.get("spent_usd", 0.0)
+        if hard:
+            event("escalate", detail=(
+                f"budget exhausted during contract review: {hard} -- "
+                f"stopping with nothing built, after {revision} "
+                f"revision(s)"))
+            sys.exit(1)
+        # `and revision`: the FIRST review is always bought. Skipping it
+        # would not bound a cost -- it would delete the safety gate and
+        # send an unreviewed plan to a human who is being asked to
+        # approve, not to audit.
+        if cap is not None and spent >= PREGATE_SHARE * cap and revision:
+            st["contract"] = (
+                f"NOT completed -- stopped after {revision} revision(s) "
+                f"at ${spent:.2f} of the ${cap} cap "
+                f"({int(PREGATE_SHARE * 100)}% is the pre-gate share). "
+                f"Last round said: {why}")
+            event("contract_review_halted", detail=st["contract"])
+            st["phase"] = "gate"
+            save(STATE, st)
+            return
         # v8.1.6: the deterministic gate runs FIRST and, when it fires,
         # spends a Planner revision instead of an Evaluator review. The
         # Evaluator reads a Boundary the way a human does and cannot see
@@ -882,6 +1015,9 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
             if v == "OK":
                 event("contract_ok",
                       detail="plan matches the goal contract")
+                st["contract"] = (
+                    f"OK after {revision} revision(s), "
+                    f"${st.get('spent_usd', 0.0):.2f} spent pre-gate")
                 st["phase"] = "gate"
                 save(STATE, st)
                 return
@@ -1138,6 +1274,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             phase_contract_review(cfg, st)
             wait_approval(st, "replan", f"Replan #{st['replans']}: "
                           + str(v.get("reason", "")))
+            flush_pregate(f"replan #{st['replans']} approved")
             st["phase"] = "iterate"
             save(STATE, st)
         else:                                             # ESCALATE/fail
@@ -1235,7 +1372,7 @@ def write_journal(cfg: dict, st: dict) -> Path:
     plan = ROOT / "Plan.md"
     tick = list(tickets(plan.read_text())) if plan.exists() else []
     _, crit = check_criteria(cfg)
-    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
+    hours = wall_hours(st)
     b = cfg.get("budgets", {})
     notable = ("escalate", "replan", "regression", "no_op_session",
                "first_green", "trial_killed", "commit_failed",
@@ -1263,7 +1400,7 @@ def write_journal(cfg: dict, st: dict) -> Path:
            f" · replans: {st.get('replans', 0)}"
            f" / {b.get('max_replans', '-')}",
            f"- spend: ${st.get('spent_usd', 0.0):.2f}"
-           f" / {b.get('max_usd', '-')} · wall: {hours:.1f}h"
+           f" / {b.get('max_usd', '-')} · driver runtime: {hours:.1f}h"
            f" / {b.get('max_wall_hours', '-')}", ""]
     if tick:
         out += ["## Tickets"] + [
@@ -1520,12 +1657,16 @@ def phase_status(cfg: dict) -> None:
         print("No loop state. Nothing has run in this tree yet.")
         return
     b = cfg.get("budgets", {})
-    hours = (time.time() - st.get("started_epoch", time.time())) / 3600
+    # Two different clocks, and the difference is the whole point of
+    # v8.1.7: `age` is how long ago you started this, `hours` is what
+    # max_wall_hours actually meters.
+    age = (time.time() - st.get("started_epoch", time.time())) / 3600
+    hours = wall_hours(st)
     out = [f"goal      {cfg.get('goal', '(no goal.json here)')}",
            f"phase     {st.get('phase', '?')}"
            + (f"   ticket {st['current_ticket']}"
               if st.get("current_ticket") else ""),
-           f"started   {st.get('started', '?')}  (elapsed {hours:.1f}h)"]
+           f"started   {st.get('started', '?')}  ({age:.1f}h ago)"]
 
     # "is it working, or is it dead" is the first question anyone asks,
     # and until v8.1.2c nothing answered it: a thinking phase and a
@@ -1563,7 +1704,7 @@ def phase_status(cfg: dict) -> None:
             f"  iterations  {cap(st.get('iteration', 0), 'max_iterations')}",
             f"  replans     {cap(st.get('replans', 0), 'max_replans')}",
             f"  spend       {cap(st.get('spent_usd', 0.0), 'max_usd', '${:.2f}')}",
-            f"  wall        {cap(hours, 'max_wall_hours', '{:.1f}h')}",
+            f"  runtime     {cap(hours, 'max_wall_hours', '{:.1f}h')}",
             f"  gpu         {cap(st.get('gpu_hours', 0.0), 'max_gpu_hours', '{:.1f}h')}"]
 
     if st.get("pending_gate"):
@@ -1679,8 +1820,9 @@ def main() -> None:
     st = load(STATE, {"phase": "plan", "iteration": 0, "replans": 0,
                       "spent_usd": 0.0, "gpu_hours": 0.0,
                       "criteria_green": [],
-                      "started_epoch": time.time(), "started": now()})
-    save(STATE, st)
+                      "started_epoch": time.time(), "started": now(),
+                      "run_hours": 0.0, "run_epoch": None})
+    clock_start(st)                            # saves STATE (v8.1.7)
     event("loop_start" if st["iteration"] == 0 else "loop_resume",
           detail=cfg.get("goal", ""))
 
@@ -1694,8 +1836,15 @@ def main() -> None:
         if st["phase"] == "contract_review":
             phase_contract_review(cfg, st)
         if st["phase"] == "gate":
-            wait_approval(st, "plan", "Plan.md ready + contract-reviewed. "
-                          "Review it, then approve.")
+            # v8.1.7: the banner used to assert "contract-reviewed"
+            # unconditionally. It can now arrive here with the review cut
+            # short for budget, and a gate that misreports what it is
+            # handing you is worse than no gate.
+            wait_approval(st, "plan",
+                          "Plan.md ready. Contract review: "
+                          + st.get("contract", "not recorded")
+                          + ".\nReview it, then approve.")
+            flush_pregate("plan approved")
             st["phase"] = "iterate"
             save(STATE, st)
         if st["phase"] == "iterate":
