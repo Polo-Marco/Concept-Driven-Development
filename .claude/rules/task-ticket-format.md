@@ -155,6 +155,16 @@ Before ending the Planner session, verify for each ticket:
   (`plan_problems()`), so a plan that fails it comes straight back.
   Zero owners is legal: on an `experiment` goal the driver launches the
   trial, so its metrics file belongs in no Boundary at all.
+- If the plan pins a third-party harness/framework, does the
+  Environment Setup ticket's **Run Command** EXERCISE its runtime path
+  (import + one trivial invocation, e.g. registering the expected
+  task) rather than only installing it? An install that succeeds
+  proves nothing about the runtime dependency graph, and each missing
+  link then surfaces alone, in a later ticket, as a Generator stop
+  (2026-08-02: three escalations at tickets 7–8 for one under-tested
+  Step 1). This is the second net — the first is a `Preflight` check in
+  `Goal.md`, which fails before the Planner is paid for at all
+  (`skills/mode-loop/SKILL.md` §3).
 - For every **Parallel Group**: are the members' Boundaries pairwise
   disjoint, and does no member depend on another member? Is the
   Environment Setup ticket kept out of all groups? Is grouping actually

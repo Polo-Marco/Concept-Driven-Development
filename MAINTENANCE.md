@@ -18,12 +18,13 @@ capture      →   review        →   decide   →   apply           →   vers
 
 ### 1. Capture (continuous, zero ceremony)
 
-Two inboxes, by input type:
+Three inboxes, by input type:
 
 | Input | Where |
 |---|---|
 | **Experience** — what worked / failed in real loops | `journal/` |
 | **Ideas** — new capabilities, direction changes | `docs/inbox.md` |
+| **Hotfixes** — template files patched in place in a deployed project | `journal/hotfixes/` |
 
 - **Personal feedback:** append a dated entry to
   `journal/feedback-inbox.md` (format inside the file).
@@ -36,10 +37,28 @@ Two inboxes, by input type:
      journal/from-ocrapp-retro-20260712.md
   ```
 
+- **Hotfixes: a live loop cannot wait for this repo.** When a project
+  patches its own copy of `.claude/` or `skills/` to get unstuck, that
+  fix exists ONLY there — it is code, not a journal entry, so nothing
+  above captures it and the next deploy silently reintroduces the bug.
+  Report it as a patch plus one line of why:
+
+  ```bash
+  cd ~/dev/ocrapp && git format-patch -1 <sha> \
+     -o <framework-repo>/journal/hotfixes/
+  ```
+
+  Both v8.1.9 fixes were already live in a deployed project days before
+  this repo heard about them, and only because a retro happened to
+  mention the commit hashes in prose. Patching a project's template
+  files is still not the fix (see *Upgrading a Deployed Project*) — it
+  is the emergency, and this is how the emergency gets home.
+
 ### 2. Review — `[/retro] all`
 
 Run `[/retro] all` in this repo. The Coach reads everything in
-`journal/` — imported project retros plus `feedback-inbox.md` — looks
+`journal/` — imported project retros, `feedback-inbox.md`, and any
+patches in `hotfixes/` — looks
 for cross-project patterns ("Boundary overreach flagged in 3 of 4
 projects"), and writes recommendations to `journal/retro-YYYYMMDD.md`.
 
@@ -90,3 +109,15 @@ Never patch template files inside a project — fix here, re-copy there.
 | `MAINTENANCE.md`, `Concept.md`, `journal/`, `docs/`, `.gitignore` | `CLAUDE.md`, `.claude/`, `skills/` |
 
 `README.md` is both: the framework's public doc and this repo's README.
+
+**`journal/` is gitignored HERE** (v8.1.9). In this repo the journal is
+raw *input* to maintenance — imported project retros, personal
+feedback, hotfix patches — not something the framework ships, and it
+carries other projects' internal detail. It stays on the maintainer's
+machine; what leaves this repo is the change it motivated, with the
+journal file cited by name in the commit message and in the code
+comment that traces to it.
+
+This does NOT change the template rule: in a deployed project
+`journal/*.md` is committed and persistent (`governance.md` §6) — it is
+that project's own record, and `[/retro]` reads it there.

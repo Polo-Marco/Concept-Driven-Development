@@ -1,5 +1,10 @@
 logs/
-journal/traces/
+# Framework repo only: journal/ is maintenance INPUT (imported project
+# retros, personal feedback, hotfix patches), not something the
+# framework ships. See MAINTENANCE.md "Meta vs Template Files". A
+# DEPLOYED project commits its journal/*.md -- governance.md section 6
+# -- and ignores only journal/traces/.
+journal/
 loop-state.json
 events.jsonl
 approvals/

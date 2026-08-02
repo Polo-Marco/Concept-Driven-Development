@@ -424,6 +424,47 @@ class TestBudgets(DriverCase):
             "max_replans")
 
 
+class TestSeedGoalFiles(DriverCase):
+    """v8.1.9. `start` re-copied the primary tree's goal.json over the
+    worktree's on every resume, and the worktree's is the copy the
+    running driver reads. A user-approved budget raise (15 -> 18
+    iterations) was silently reverted twice in one loop on 2026-08-02,
+    and because a restart itself costs an iteration, each repair round
+    paid for the failure it was repairing."""
+
+    def dirs(self):
+        primary, wt = self.tmp / "primary", self.tmp / "wt"
+        primary.mkdir(), wt.mkdir()
+        return primary, wt
+
+    def test_seeds_a_fresh_worktree(self):
+        primary, wt = self.dirs()
+        (primary / "goal.json").write_text('{"budgets": {"a": 1}}')
+        (primary / "Goal.md").write_text("# Goal")
+        loop.seed_goal_files(primary, wt)
+        self.assertEqual((wt / "goal.json").read_text(),
+                         '{"budgets": {"a": 1}}')
+        self.assertEqual((wt / "Goal.md").read_text(), "# Goal")
+
+    def test_never_overwrites_the_loops_own_copy(self):
+        primary, wt = self.dirs()
+        (primary / "goal.json").write_text('{"max_iterations": 15}')
+        (wt / "goal.json").write_text('{"max_iterations": 18}')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            loop.seed_goal_files(primary, wt)
+        self.assertEqual((wt / "goal.json").read_text(),
+                         '{"max_iterations": 18}')
+        self.assertIn("WINS", out.getvalue())
+
+    def test_identical_copies_say_nothing(self):
+        primary, wt = self.dirs()
+        (primary / "goal.json").write_text("same")
+        (wt / "goal.json").write_text("same")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            loop.seed_goal_files(primary, wt)
+        self.assertEqual(out.getvalue(), "")
+
+
 # ---------- trials ----------------------------------------------------
 
 class TestRunTrial(DriverCase):
@@ -929,6 +970,63 @@ class TestHookBashWrites(HookCaller, unittest.TestCase):
     def test_interactive_session_unaffected(self):
         self.assertEqual(self.bash("", "echo x > Architecture.md"),
                          self.ALLOW)
+
+    # ---- v8.1.9: reading a protected file is not writing it ----------
+
+    def test_reading_a_goal_file_with_stderr_redirect_allowed(self):
+        """The loose net matched `>` ANYWHERE in a command that merely
+        NAMED a protected file, so the `>` of `2>&1` read as a write to
+        goal.json. On 2026-08-02 that killed a read-only Evaluator audit
+        mid-loop; the loop paid for a whole extra session to re-run it
+        (journal/from-aibench-retro-20260802.md)."""
+        for cmd in ("cat goal.json 2>&1",
+                    "python3 -c 'import json' 2>&1 | head",
+                    "jq . goal.json 2>&1 | tail -5",
+                    "grep -c x ledger.jsonl 2>&1"):
+            for role in ("planner", "generator", "evaluator"):
+                self.assertEqual(self.bash(role, cmd), self.ALLOW,
+                                 f"{role}: {cmd}")
+
+    def test_naming_a_goal_file_while_teeing_elsewhere_allowed(self):
+        """Co-occurrence is not a target. A perfectly legal Run Command
+        that passes the goal as an argument and tees to logs/ was denied
+        for every role, because `goal.json` and `tee` both appeared
+        somewhere in the string. The test is per shell segment now."""
+        cmd = ("python3 scripts/run.py --goal goal.json 2>&1 "
+               "| tee logs/latest.log")
+        for role in ("generator", "evaluator", "planner"):
+            self.assertEqual(self.bash(role, cmd, boundary="src/foo/"),
+                             self.ALLOW, role)
+
+    def test_narrowing_did_not_open_the_write_paths(self):
+        """The reason the above is safe: the precise scan denies by
+        TARGET, and it is strictly better at it than co-occurrence was."""
+        for cmd in ("echo x > goal.json", "echo x >> goal.json",
+                    "tee goal.json < a", "cp a goal.json",
+                    "mv a Goal.md", "rm -f loop-state.json",
+                    "sed -i s/a/b/ ledger.jsonl",
+                    "cp goal.json{,.bak}"):   # expansion: the loose net
+            self.assertEqual(self.bash("generator", cmd), self.DENY, cmd)
+
+    def test_denial_is_logged_where_the_driver_can_see_it(self):
+        """v8.1.9: a denial used to exist only on the agent's stderr, so
+        a false positive cost a transcript dig to find. One line per
+        denial in logs/denials.log; the driver turns the count into an
+        event."""
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "CDD_ROLE": "generator",
+                   "CDD_BOUNDARY": "", "CLAUDE_PROJECT_DIR": d}
+            r = subprocess.run(
+                [sys.executable, str(HOOK)], env=env, text=True,
+                input=json.dumps({"tool_name": "Bash",
+                                  "tool_input":
+                                  {"command": "echo x > Architecture.md"}}),
+                capture_output=True)
+            self.assertEqual(r.returncode, self.DENY)
+            logged = (Path(d) / "logs" / "denials.log").read_text()
+            self.assertIn("generator", logged)
+            self.assertIn("architecture.md", logged.lower())
+            self.assertIn("echo x > Architecture.md", logged)
 
     # ---- documented gap: this MUST stay allowed knowingly -----------
 
@@ -2452,6 +2550,19 @@ class TestJournalRecord(DriverCase):
         for needle in ("prove the pipeline", "32.85", "Phase 1, Step 1",
                        "## Feedback", "## Criteria"):
             self.assertIn(needle, text)
+
+    def test_the_record_separates_human_latency_from_runtime(self):
+        """v8.1.9: "too many human interruptions" was the 2026-08-02
+        retro's headline complaint and the record carried no number for
+        it -- 0.9h of driver runtime says nothing about the seven times
+        a person had to be fetched. calendar - runtime is that number."""
+        cfg = self.write_goal()
+        loop.event("escalate", detail="needs a human")
+        st = self.state(run_hours=0.5,
+                        started_epoch=loop.time.time() - 4 * 3600)
+        text = loop.write_journal(cfg, st).read_text()
+        self.assertIn("driver runtime: 0.5h", text)
+        self.assertRegex(text, r"elapsed: 4\.0h calendar — 3\.5h")
 
     def test_an_escalation_is_recorded_too(self):
         """The loops that most need a record are the ones that do not

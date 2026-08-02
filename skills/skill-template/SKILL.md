@@ -2,10 +2,10 @@
 name: skill-template
 description: Standard for bespoke execution skills. The Planner reads this during Spec Phase to write skills the Generator can follow mechanically.
 author: framework
-version: 7.0
+version: 8.1.9
 ---
 
-# Skill Template Standard (v7.0)
+# Skill Template Standard (v8.1.9)
 
 ## Purpose
 
@@ -41,6 +41,23 @@ Full import blocks. Complete functions. No pseudocode.
 ### Section 3: Hard Rules (DO / DO NOT)
 Binary rules. Minimum 5 DO, 5 DO NOT. Specific and testable.
 
+**A rule that constrains a pinned third-party tool MUST cite where it
+was verified against that pinned version** — `file:line` of the
+installed source, or the doc URL plus version. Write it inline:
+
+```markdown
+- DO NOT set `tokenizer_backend=None` for loglikelihood tasks.
+  (verified: lm-eval 0.4.12, `lm_eval/models/api_models.py:634`)
+```
+
+The Generator treats a skill as fact and cannot audit it, so an
+unverified claim about someone else's tool becomes a stop it has no
+legal way out of. On 2026-08-02 one such rule was the exact inverse of
+the pinned harness's behaviour and cost an escalation plus a manual
+Planner round (`journal/from-aibench-retro-20260802.md`). Third-party
+behaviour also rots on upgrade: the citation is what makes a version
+bump re-checkable instead of re-discoverable.
+
 ### Section 4: Error Handling Contract
 Per-layer patterns for raising, catching, surfacing errors.
 What NOT to catch.
@@ -60,6 +77,8 @@ Every command the Generator needs. Copy-pasteable.
 - [ ] Error handling explicit: Generator knows what to raise/catch?
 - [ ] Commands run verbatim?
 - [ ] DO NOT list covers every common mistake?
+- [ ] Every Hard Rule about a pinned third-party tool cites where it
+      was verified against that version?
 
 ## 4. Versioning
 

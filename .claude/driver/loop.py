@@ -490,6 +490,22 @@ def require_isolation(cfg: dict, allow_here: bool) -> None:
 
 # ---------- claude sessions -------------------------------------------
 
+def denials_seen() -> int:
+    """How many authority denials the hook has logged so far.
+
+    v8.1.9. The hook appends one line per denial to logs/denials.log;
+    counting around a session turns that into an event, so a denial --
+    a real breach OR a hook false positive -- is visible in `status`
+    instead of buried in a transcript. The 2026-08-02 `2>&1` false
+    positive killed a paid Evaluator audit and left no trace anywhere
+    the driver could see.
+    """
+    try:
+        return sum(1 for _ in (ROOT / "logs" / "denials.log").open())
+    except OSError:
+        return 0
+
+
 def claude(st: dict, role: str, prompt: str, boundary: str = "",
            timeout: int = 7200) -> str:
     """Spawn one fresh headless session with hook-enforced authority.
@@ -519,8 +535,14 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     # thinking or the driver was dead. One line per session is the
     # cheapest heartbeat there is.
     event("session", detail=f"{role} ({model}) started")
+    denials_before = denials_seen()
     r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
                        capture_output=True, timeout=timeout)
+    new_denials = denials_seen() - denials_before
+    if new_denials:
+        event("hook_denials",
+              detail=f"{role}: {new_denials} authority denial(s) -- "
+                     f"see logs/denials.log")
     try:
         out = json.loads(r.stdout)
     except (json.JSONDecodeError, AttributeError):
@@ -1391,6 +1413,16 @@ def write_journal(cfg: dict, st: dict) -> Path:
     tick = list(tickets(plan.read_text())) if plan.exists() else []
     _, crit = check_criteria(cfg)
     hours = wall_hours(st)
+    # v8.1.9: calendar age alongside metered runtime, so `calendar -
+    # runtime` names the loop's HUMAN latency. The 2026-08-02 retro's
+    # headline complaint was "too many human interruptions" and the
+    # record carried no number for it -- 0.9h of driver runtime says
+    # nothing about the seven times a person had to be fetched. Measured
+    # to the last event on disk, never to `now`, for the same reason
+    # wall_hours(live=False) is: a finished loop's record must not grow
+    # while it sits there.
+    last = EVENTS.stat().st_mtime if EVENTS.exists() else 0.0
+    cal = max(0.0, (last - st.get("started_epoch", last)) / 3600)
     b = cfg.get("budgets", {})
     notable = ("escalate", "replan", "regression", "no_op_session",
                "first_green", "trial_killed", "commit_failed",
@@ -1419,7 +1451,9 @@ def write_journal(cfg: dict, st: dict) -> Path:
            f" / {b.get('max_replans', '-')}",
            f"- spend: ${st.get('spent_usd', 0.0):.2f}"
            f" / {b.get('max_usd', '-')} · driver runtime: {hours:.1f}h"
-           f" / {b.get('max_wall_hours', '-')}", ""]
+           f" / {b.get('max_wall_hours', '-')}",
+           f"- elapsed: {cal:.1f}h calendar — {max(0.0, cal - hours):.1f}h"
+           f" of it waiting on a human", ""]
     if tick:
         out += ["## Tickets"] + [
             f"- [{'x' if d else ' '}] {i} — {t}" for i, t, _, d in tick
@@ -1560,6 +1594,37 @@ def find_loop() -> Path:
 
 # ---------- start: worktree + tmux + go --------------------------------
 
+def seed_goal_files(src_root: Path, target: Path) -> None:
+    """Copy the user-owned goal files into the worktree ONCE.
+
+    Goal.md/goal.json are typically uncommitted, so a fresh worktree
+    does not have them. Seed them; never overwrite.
+
+    v8.1.9: this copied unconditionally on every `start`, resume
+    included -- and the WORKTREE's goal.json is the one the running
+    driver reads (rebind() + reload_budgets()). A user-approved budget
+    raise made where the loop could see it was therefore reverted by the
+    next restart, twice in one loop on 2026-08-02. It compounds: a
+    restart itself costs an iteration (phase_iterate), so every repair
+    round paid for the failure it was repairing -- three spurious
+    `budget exhausted: max_iterations` escalations for a loop that had
+    already done its work (journal/from-aibench-retro-20260802.md,
+    problem 2b). Criteria stay frozen either way (loop-protocol.md #4);
+    the only question here is which copy of a user-owned file wins, and
+    it must be the one the loop is actually reading.
+    """
+    for f in ("Goal.md", "goal.json"):
+        src, dst = src_root / f, target / f
+        if not src.exists():
+            continue
+        if not dst.exists():
+            dst.write_text(src.read_text())
+        elif dst.read_text() != src.read_text():
+            print(f"note: {dst} differs from {src} and WINS -- the loop "
+                  f"reads the worktree's copy. Edit budgets there (they "
+                  f"hot-reload: no restart, no iteration spent).")
+
+
 def phase_start(cfg: dict, allow_here: bool) -> None:
     """Create the loop's worktree, launch the driver under tmux, print
     one line saying where it went.
@@ -1598,12 +1663,7 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
                     die("Could not create the loop worktree:\n  "
                         + (r.stderr.strip() or r.stdout.strip()))
                 event("worktree_created", detail=f"{target} on {branch}")
-            # Goal.md/goal.json are user-owned and typically uncommitted,
-            # so the worktree checkout does not have them yet.
-            for f in ("Goal.md", "goal.json"):
-                src = ROOT / f
-                if src.exists():
-                    (target / f).write_text(src.read_text())
+            seed_goal_files(ROOT, target)
 
     if not (target / ".claude" / "driver" / "loop.py").exists():
         die(f"{target} has no .claude/driver/loop.py -- the branch it "

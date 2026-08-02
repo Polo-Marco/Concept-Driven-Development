@@ -114,6 +114,7 @@ expensive pipelines.
 | `docs/DEVIATIONS.md` | Persistent, planner-appendable | Tracked departures from reference docs |
 | `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted into Concept/docs via `[/discuss]` |
 | `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr (see run-logging.md) |
+| `logs/denials.log` | Ephemeral, gitignored | Every PreToolUse authority denial (hook-written; the driver counts it into a `hook_denials` event) |
 
 There is no `CHANGELOG.md` — git history is the changelog (see §1).
 

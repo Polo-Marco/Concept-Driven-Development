@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.7
+version: 8.1.9
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -115,6 +115,18 @@ Rules for preflight checks:
   never the request.
 - Prefer the project's own script over an inline one-liner — it is
   reusable, and the smoke ticket usually needs the same thing.
+- **If the goal pins a third-party harness or framework, one check MUST
+  exercise its runtime path — import it AND make one trivial call that
+  proves the path the loop will actually use** (e.g. that the expected
+  task/model registers), not merely that the package installed. A
+  pinned dependency's *install* succeeding says nothing about its
+  runtime graph. On 2026-08-02 three of a loop's seven human
+  interruptions were exactly this class — a missing `[api]` extra, a
+  major-version-incompatible `datasets`, a missing `transformers` —
+  each surfacing one expensive Generator escalation at a time at
+  tickets 7–8, because Step 1 installed the harness and never ran it.
+  One preflight line would have failed all three at once, before the
+  Planner, for $0 (`journal/from-aibench-retro-20260802.md`).
 - Zero checks is a legal answer, but it must be a **stated conclusion**,
   not an omission. Write "no external preconditions" into Goal.md.
 

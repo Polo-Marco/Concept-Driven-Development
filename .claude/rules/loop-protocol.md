@@ -35,6 +35,18 @@ repo) and the tcocrai retro it cites.
    matcher is not. Adversarial containment is the VM plus the worktree —
    if a role needs real confinement, confine the process, do not grow
    the hook into a shell parser.
+
+   **A denial is visible, and over-denial is not free** (v8.1.9). The
+   hook appends one line per denial to `logs/denials.log` and the driver
+   turns the count into a `hook_denials` event, because a denial used to
+   exist only on the agent's stderr — so a hook FALSE POSITIVE cost a
+   transcript dig to diagnose. It costs more than that to have: on
+   2026-08-02 the shell net matched the `>` of `2>&1` as a write to
+   `goal.json` and killed a read-only Evaluator audit mid-loop, which
+   the loop then paid to re-run. The net tests per shell segment now and
+   leaves redirects to the precise target scan, which decides them
+   exactly. Denying a command that merely NAMES a protected file is a
+   defect, not caution.
 4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
    agent session may edit them — a loop that can move its own
    goalposts optimizes the wrong thing. Change of goal = user edits +
@@ -209,6 +221,17 @@ missing part was never the reminder.
 **Budgets are hot-reloadable** (v8.1.6): the driver re-reads the
 `budgets` block of `goal.json` at every iteration, so raising a cap
 mid-loop no longer needs a restart. Criteria stay frozen (Protocol #4).
+
+**Edit the WORKTREE's `goal.json`** — that is the copy the running
+driver reads, and editing it needs no restart, so it costs no
+iteration. `start` seeds `Goal.md`/`goal.json` into a fresh worktree
+ONCE and never overwrites them again (v8.1.9); it used to re-copy the
+primary tree's version on every resume, which reverted an approved
+budget raise twice in one loop and — since a restart itself consumes an
+iteration — made each repair round pay for the failure it was
+repairing: three `budget exhausted: max_iterations` escalations for a
+loop that had finished its work. If the two copies differ, `start`
+prints which one wins.
 
 **`max_wall_hours` meters DRIVER RUNTIME, not the calendar** (v8.1.7).
 The clock runs only while the driver process is working: it stops at

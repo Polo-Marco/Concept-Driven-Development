@@ -31,13 +31,49 @@ adversarial containment is the VM plus the worktree
 (`.claude/rules/loop-protocol.md`). Do not grow this into a shell
 parser; if a role needs real confinement, confine the process.
 """
+import datetime
 import json
 import os
 import re
 import sys
 
+# What the current call was trying to do, for the denial log. Set by
+# main() before any decision is taken.
+CALL_SUMMARY = ""
+
+
+def log_denial(msg: str) -> None:
+    """Leave a trace of the denial where the driver and user can find it.
+
+    v8.1.9: `deny()` wrote to the agent's stderr and exited 2, and
+    nothing else. A denial was therefore invisible in `events.jsonl`,
+    so diagnosing one — a real breach or a hook false positive — meant
+    digging through a session transcript. That is what the 2026-08-02
+    `2>&1` false positive cost: a killed Evaluator audit and a paid
+    re-run before anyone could see why (see
+    journal/from-aibench-retro-20260802.md, problem 2a).
+
+    `logs/` is gitignored runtime output and is writable by every role,
+    so logging here does not make the hook a writer of anything it
+    guards. Best-effort by design: a hook that crashed while logging
+    would fail OPEN, which is strictly worse than not logging.
+    """
+    try:
+        root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+        if not os.path.isdir(root):
+            return                     # not a real tree: leave no litter
+        d = os.path.join(root, "logs")
+        os.makedirs(d, exist_ok=True)
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(os.path.join(d, "denials.log"), "a") as fh:
+            fh.write(f"{stamp}\t{os.environ.get('CDD_ROLE', '-')}\t"
+                     f"{msg}\t{CALL_SUMMARY[:300]}\n")
+    except Exception:
+        pass
+
 
 def deny(msg: str) -> None:
+    log_denial(msg)
     print(f"CDD authority: DENIED. {msg} "
           f"(role={os.environ.get('CDD_ROLE')}; see "
           f".claude/rules/phase-authority.md). If this blocks your "
@@ -201,6 +237,10 @@ def main() -> None:
         sys.exit(0)            # malformed input: fail open, log nothing
     tool = call.get("tool_name", "")
     tin = call.get("tool_input", {}) or {}
+    global CALL_SUMMARY
+    CALL_SUMMARY = (f"{tool}: " + str(tin.get("command")
+                                      or tin.get("file_path")
+                                      or tin.get("notebook_path") or ""))
 
     # ---- Bash: block git mutations for every agent role -------------
     if tool == "Bash":
@@ -208,11 +248,31 @@ def main() -> None:
         if GIT_WRITE.search(cmd):
             deny("Git write commands are driver-only in loop mode.")
         # Loose net for the driver/user-owned files, kept alongside the
-        # precise scan below: these are the ones worth over-denying for.
-        low = cmd.lower()
-        if any(p in low for p in PROTECTED_ALWAYS) and re.search(
-                r"(>|>>|\btee\b|\bsed\s+-i|\bmv\b|\brm\b|\bcp\b)", low):
-            deny("Goal/ledger/state files are user- or driver-owned.")
+        # precise scan below for the cases quoting or expansion can hide
+        # a target from it (`cp goal.json{,.bak}`).
+        #
+        # v8.1.9 narrowed it twice, because as written it denied by mere
+        # CO-OCCURRENCE anywhere in the command string:
+        #   * redirects are gone from the verb list. `>` matched the `>`
+        #     of `2>&1`, so `cat goal.json 2>&1` was a denied "write" to
+        #     a protected file. It killed a read-only Evaluator audit
+        #     mid-loop on 2026-08-02. Nothing is lost: the precise scan
+        #     below denies `echo x > goal.json` BY TARGET, and it is
+        #     strictly better at it — the only case this net could add is
+        #     an expanded path (`> $F`), which does not contain the
+        #     filename either, so it never caught that one.
+        #   * the test is per shell segment now. Otherwise a legal Run
+        #     Command that merely NAMES the goal and tees elsewhere —
+        #     `python3 x.py --goal goal.json 2>&1 | tee logs/latest.log`
+        #     — was denied for every role, because `goal.json` and `tee`
+        #     both appeared somewhere in it.
+        # Over-denial is still the safe direction, but it is not free:
+        # each false positive costs a whole paid session and reads to
+        # the loop as a failure (journal/from-aibench-retro-20260802.md).
+        for seg in SEGMENT.split(cmd.lower()):
+            if any(p in seg for p in PROTECTED_ALWAYS) and re.search(
+                    r"(\btee\b|\bsed\s+-i|\bmv\b|\brm\b|\bcp\b)", seg):
+                deny("Goal/ledger/state files are user- or driver-owned.")
         # v8.1: apply the SAME role decision as Write/Edit to the paths a
         # shell command would write. Previously core files and ticket
         # Boundaries were unguarded on this branch, so `echo x >
