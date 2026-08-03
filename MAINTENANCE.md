@@ -80,11 +80,12 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
 - **Bump the version** everywhere it appears: README title + Version
   History row, `CLAUDE.md` header, and the `version:` frontmatter of
   any skill touched.
-  - Minor (7.x): rule tightening, skill edits, doc clarifications.
+  - Patch (8.1.x): rule tightening, skill edits, doc clarifications,
+    driver/hook fixes.
   - Major (x.0): new/removed modes, pipeline or file-structure changes.
 - **Commit** with a detailed message (git is the changelog), citing the
   motivating feedback.
-- **Tag the release:** `git tag v7.1` — so projects can diff tags to
+- **Tag the release:** `git tag v8.1.10` — so projects can diff tags to
   see exactly what to re-copy.
 - **Housekeeping:** move processed journal files to `journal/archive/`;
   delete processed entries from `feedback-inbox.md` and
@@ -95,9 +96,9 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
 
 ```bash
 cd <framework-repo>
-git diff v7.0..v7.1 -- CLAUDE.md .claude/ skills/
+git diff v8.1.9..v8.1.10 -- CLAUDE.md .claude/ skills/
 # re-copy the changed files into the project, then commit there:
-#   docs: upgrade CDD 7.0 → 7.1
+#   docs: upgrade CDD 8.1.9 → 8.1.10
 ```
 
 Never patch template files inside a project — fix here, re-copy there.

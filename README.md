@@ -1,9 +1,14 @@
-# Concept-Driven Development (CDD) 8.1.9
+# Concept-Driven Development (CDD) 8.1.10
 
 A structured AI development framework built on a session-based pipeline.
 You align. The Planner designs. The Generator builds. The Evaluator
-(optional) audits. You sign off. The Coach (optional) helps you improve.
-Git is the checkpoint system **and the changelog**.
+audits. You sign off. The Coach helps you improve. Git is the checkpoint
+system **and the changelog**.
+
+Since 8.0 the pipeline runs itself. You state a goal whose success
+criteria a machine can check, approve one plan, and a deterministic
+driver orchestrates the sessions until those criteria are met — or it
+escalates to you. You move from *in* the loop to *on* it.
 
 The name says the method: every line of code traces back to an explicit
 **Concept** and **Architecture** agreed *before* building — not invented
@@ -40,17 +45,76 @@ AI coding agents fail in predictable ways:
     process is improving except by feel.
 14. **Slow sequential builds.** Independent tickets are generated one at
     a time even when they could be built concurrently.
+15. **You are in the loop of every ticket.** Each phase hands back to you
+    to type the next command, so progress stops whenever you do.
+16. **"Done" is a feeling.** With no machine-checkable success criterion,
+    the agent grades its own homework and you audit prose.
+17. **Goalpost drift.** An agent that can edit the goal will eventually
+    optimize the goal instead of meeting it.
 
-CDD 7.0 addresses all of these with a strict pipeline, structured files
-as external memory, layered Architecture and nested `CLAUDE.md`,
-always-on engineering **principles**, an environment audit, `docs/` +
+CDD answers 1–14 with a strict pipeline, structured files as external
+memory, layered Architecture and nested `CLAUDE.md`, always-on
+engineering **principles**, an environment audit, `docs/` +
 `DEVIATIONS.md` for tracked drift, **run-log capture**, a **discuss
 mode** for direction, **Planner-maintained README**, and a **session
 journal + retro** for improving how you build.
 
+It answers 15–17 with the 8.0 loop: a deterministic driver in place of
+your keyboard, success criteria read off disk by code rather than judged
+by a model, and a goal contract every agent session is mechanically
+forbidden to edit.
+
 ## How It Works
 
-### The Session-Based Pipeline
+### The Loop (the default path since 8.0)
+
+`[/loop]` turns a goal into a contract, then hands it to
+`.claude/driver/loop.py` — a state machine, not a model — which spawns a
+fresh, short, headless session per phase:
+
+```
+[/loop] <goal>
+  │
+  ├─ Ask phase (interactive): interrogate until every success criterion
+  │  is metric + comparison + threshold + the file carrying the number
+  │  → Goal.md + goal.json, frozen the moment you confirm them
+  │
+  └─ driver (deterministic; one fresh session per phase)
+       gates: machinery · contract shape · worktree isolation · preflight
+         ↓       nothing is planned and nothing is spent until all pass
+       Planner ──→ Evaluator contract review (≤2 rounds, ≤½ of max_usd)
+         ↓
+       ══ HUMAN GATE ══  approve once — from the terminal or your phone
+         ↓                              then: plan(loop): commit
+       per ticket:  Generator → driver launches the trial ← Monitor polls
+                      → criteria gate (code, fail-closed) + regression
+                      → Evaluator → verdict.json
+                    PASS → commit · RETRY ≤3 · REPLAN → back to the gate
+                                              · ESCALATE → you
+         ↓
+       final: every goal.json criterion re-checked, then a provenance
+              audit — a number that met a threshold is not yet a number
+              that earned one
+         ↓
+       loop.py close: journal record, housekeeping, one commit
+```
+
+**Three human contact points, all event-driven:** approve the plan,
+answer an escalation, sign off. There is nothing to schedule in advance
+— the loop stops when something actually happens (a failed criterion, a
+regression, an exhausted budget), not where you guessed it might.
+
+What that buys you, concretely: the goal files are hook-protected, so no
+session can move its own goalposts; criteria are compared by
+`check_criteria()` reading the source file off disk, so "done" is not a
+model's opinion; and budgets (iterations, replans, USD, GPU-hours,
+driver runtime) are circuit breakers that bite without you watching.
+
+### The Sessions Inside It
+
+Inside a loop the driver issues these transitions itself; `[/discuss]`
+and `[/retro]` stay yours to call. Typed by hand — the 7.0 escape hatch,
+still fully supported — the same pipeline looks like this:
 
 ```
 Discuss (opt)      Planner            Generator          Evaluator (opt)    Retro (opt)
@@ -81,14 +145,27 @@ plans, audits the environment, writes/updates the **README**, and
 produces everything the Generator needs.
 
 **Generator Session** has zero authority over core files. It executes
-task tickets literally, captures each run to `logs/latest.log`, and
-commits per ticket. When the Planner has marked independent tickets with
-a **Parallel Group**, the Generator builds them concurrently
-(fan-out/fan-in) instead of one at a time.
+task tickets literally, strictly inside each ticket's **Boundary**, and
+captures each run to `logs/latest.log`. When the Planner has marked
+independent tickets with a **Parallel Group**, the Generator builds them
+concurrently (fan-out/fan-in) instead of one at a time. It commits per
+ticket in manual mode; inside a loop it never commits at all — the
+driver is the only committer.
 
-**Evaluator Session** is optional and independent. It runs the output,
-cross-checks Concept/Architecture/docs/**README**/code, audits for
-redundancy and missing context, and writes `Evaluation.md`.
+**Evaluator Session** is independent and skeptical (optional in manual
+mode, built into the loop). It has two duties: *contract review* before
+execution — does `Plan.md` actually produce the evidence every criterion
+is read from? — and *evaluation* after, where it **executes** the code
+rather than reading it, checks that results were earned rather than
+merely present, cross-checks Concept/Architecture/docs/**README**/code
+for redundancy and missing context, and writes `Evaluation.md` (plus
+`verdict.json` in a loop).
+
+**Monitor Session** (loop only) watches a long-running trial from
+outside. Every N minutes it reads the log tail against the ticket's
+Monitor Profile and returns one word — `HEALTHY`, `INTERVENE`, or
+`KILL_ESCALATE`. It writes nothing and kills nothing; the driver acts on
+the classification.
 
 **You are the final Evaluator.** You sign off, and you fill the
 **Feedback** block in the session journal.
@@ -99,9 +176,9 @@ concrete framework/skill/habit changes.
 
 ### Git Is the Changelog
 
-There is **no `CHANGELOG.md`** in 7.0. Git history *is* the changelog —
-every session can read it, and commit messages carry the weight, so
-they must be detailed:
+There is **no `CHANGELOG.md`**. Git history *is* the changelog — every
+session can read it, and commit messages carry the weight, so they must
+be detailed:
 
 ```
 git log --oneline                 # progress trail
@@ -119,7 +196,15 @@ Git commits at each ticket give you clean recovery points:
   Planner session, refine.
 - **Partial success?** Keep what worked, plan the rest anew.
 
-### The Three Commands (v8.0)
+In loop mode the driver does the first two for you — a failing ticket is
+RETRIED up to three times (each retry carrying the verdict that rejected
+the last attempt), a plan that cannot work is REPLANNED and re-gated —
+and the whole loop runs in its own git worktree, so the tree you started
+from is never at risk. The `plan(loop):` commit at the human gate is
+your reset point; each `feat(loop):` commit after it carries exactly one
+ticket.
+
+### The Three Commands
 
 | Command | Persona | Purpose |
 |---|---|---|
@@ -127,27 +212,36 @@ Git commits at each ticket give you clean recovery points:
 | `[/loop]` | The Goal Setter | Do. Measurable goal in → driver-orchestrated Plan/Generate/Monitor/Evaluate → answer out. |
 | `[/retro]` | The Coach | Improve. Review journals; tune framework + habits. |
 
-Build/modify/migrate/merge are now **goal types** inside `[/loop]`;
-`[/evaluate]` is the loop's Evaluator agent; `start execution` is
-issued by the driver. The 7.0 mode skills remain in `skills/` and can
-still be invoked manually as an escape hatch — the driver calls the
-same skills you would.
+Everything else is internal machinery. Build/modify/migrate/merge are
+**goal types** inside `[/loop]`; `[/evaluate]` is the loop's Evaluator
+agent; `start execution` is issued by the driver. The 7.0 mode skills
+remain in `skills/` and stay directly invocable as an escape hatch —
+the driver calls the same files you would, under the same authority
+rules.
 
-### Which Mode? (decision guide)
+### Which goal type? (decision guide)
+
+The Ask phase classifies your goal; the Planner then loads the matching
+mode skill.
 
 ```
-Nothing exists yet (no Concept.md)? .................... [/build]
-Existing non-CDD code to adopt? ....................... [/migrate]
-Combining two+ existing projects? ..................... [/merge]
+Nothing exists yet (no Concept.md)? ................... build
+Existing non-CDD code to adopt? ....................... migrate
+Combining two+ existing projects? ..................... merge
+Adding a feature, refactoring, or fixing a bug? ....... modify
+Answering an empirical question with trials
+  (SFT gates, ablations, probes)? ..................... experiment
+```
+
+And the two commands that are not `[/loop]`:
+
+```
 Want to think / redirect before changing anything? ... [/discuss]
-Adding a feature or refactoring? ..................... [/modify]  (feature flow)
-Something is broken / wrong output / a stack trace? .. [/modify]  (bug sub-flow)
-Generator finished; want an independent audit? ....... [/evaluate]
 Want to improve how you build, from logged facts? .... [/retro]
 ```
 
-**Your typical life:** one `[/build]` to go 0→1, then repeated
-`[/modify]` as you keep building features and fixing bugs on top. Reach
+**Your typical life:** one `[/loop]` with a `build` goal to go 0→1, then
+repeated `modify` loops as you add features and fix bugs on top. Reach
 for `[/discuss]` when a new paper or idea makes you want to redirect,
 and `[/retro]` every few loops to tune the process.
 
@@ -164,23 +258,37 @@ Three engineering principles apply in every session
 
 Authority binds to the session type, not the model:
 
-| File | Planner | Generator | Evaluator |
-|---|---|---|---|
-| Concept.md | Read / Write | Read only | Read only |
-| Architecture.md | Read / Write | Read only (selective) | Read only |
-| README.md | Read / Write | Read only | Read only |
-| Plan.md / Triage.md | Read / Write | Read only (mark `[x]`) | Read only |
-| skills/ | Read / Write / Create | Read only | Read only |
-| `**/CLAUDE.md` (nested) | Read / Write / Create | Read only | Read only |
-| docs/*.md | Read only | Read only | Read only |
-| docs/DEVIATIONS.md | Read / Append | Read only | Read only |
-| Evaluation.md | — | — | Read / Write |
-| journal/*.md | Append | Append | Append |
-| src/, tests/ | — | Read / Write (within Boundary) | Read only |
+| File | Planner | Generator | Evaluator | Monitor |
+|---|---|---|---|---|
+| Concept.md | Read / Write | Read only | Read only | — |
+| Architecture.md | Read / Write | Read only (selective) | Read only | — |
+| README.md | Read / Write | Read only | Read only | — |
+| Plan.md / Triage.md | Read / Write | Read only (mark `[x]`) | Read only | — |
+| skills/ | Read / Write / Create | Read only | Read only | — |
+| `**/CLAUDE.md` (nested) | Read / Write / Create | Read only | Read only | — |
+| docs/*.md | Read only | Read only | Read only | — |
+| docs/DEVIATIONS.md | Read / Append | Read only | Read only | — |
+| Goal.md, goal.json | **Read only — every session** (yours) | | | |
+| Evaluation.md, verdict.json | — | — | Read / Write | — |
+| journal/*.md | Append | Append | Append | — |
+| src/, tests/ | — | Read / Write (within Boundary) | Read only (may run) | Read only |
+| git write commands | loop: driver only | never | never | never |
 
 **Discuss** may edit `Concept.md` + `docs/` (with your confirmation),
 nothing else. **Retro** may write only `journal/`. Full matrix in
 `.claude/rules/phase-authority.md`.
+
+**In loop mode this is mechanically enforced**, not merely documented. A
+`PreToolUse` hook (`.claude/hooks/enforce_authority.py`) reads the
+session's role and Boundary from the environment and denies the call —
+`Write`/`Edit` by exact path, and `Bash` by scanning each shell segment
+for redirects, `tee`, `sed -i`, `mv`/`cp`/`rm`. A denied agent must stop
+and report; working around a denial is itself a protocol violation.
+Every denial is appended to `logs/denials.log` and counted into the
+loop's event feed, because a hook false positive costs real money and
+needs to be visible. Interpreter escapes (`python3 -c`) are knowingly
+out of scope — the containment boundary for anything adversarial is the
+worktree and the VM, not a pattern matcher.
 
 ## Core Files
 
@@ -202,9 +310,87 @@ nothing else. **Retro** may write only `journal/`. Full matrix in
 | `docs/DEVIATIONS.md` | Planner-appendable | Tracked departures from reference docs |
 | `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr |
 
+The loop adds its own contract and state files, all **ephemeral**, all
+deleted by `loop.py close`:
+
+| File | Written by | Purpose |
+|---|---|---|
+| `Goal.md` | you (via the Ask phase) | The goal contract, in prose — the source of truth |
+| `goal.json` | the Ask phase, then frozen | Its machine mirror: criteria, preflight, budgets, models |
+| `verdict.json` | Evaluator | The machine verdict the driver branches on |
+| `ledger.jsonl` | driver | Trial memory — what was tried, what it cost, why it failed |
+| `loop-state.json` | driver | Phase, iteration, spend, clocks (crash resume). Gitignored |
+| `events.jsonl` | driver | Event feed the control tower and `status` read. Gitignored |
+| `logs/denials.log` | the authority hook | Every denied write, with role and reason. Gitignored |
+| `approvals/*.approved` | you | Gate flag files. Gitignored |
+
 Git history replaces `CHANGELOG.md`.
 
-## What's New in 7.0
+## What's New in 8.0
+
+### 1. `[/loop]` — the pipeline runs itself
+A deterministic driver (`.claude/driver/loop.py`) spawns a fresh headless
+session per phase, parses the JSON each returns, branches on it, enforces
+budgets, owns long-running processes, and is the only thing that commits.
+It is deliberately dumb: every rule-bound decision belongs to code, and
+all model intelligence lives *inside* the phase sessions. The user
+surface collapses from eight commands to three.
+
+### 2. A goal contract a machine can check
+The Ask phase refuses to accept a success criterion it cannot express as
+**metric + comparison + threshold + the file carrying the number**, and
+names who writes that file. `Goal.md` holds the prose (why each bar is
+the right bar); `goal.json` is its mechanical mirror. Both freeze the
+moment you confirm them — the hook denies every agent edit, including
+the session that wrote them. A loop that can move its own goalposts
+optimizes the wrong thing.
+
+### 3. Deterministic gates, all failing closed
+Before a single model call: the machinery is installed and wired, the
+contract is well-formed and has at least one checkable criterion, the
+loop is in its own worktree, and the environment preconditions declared
+in `Goal.md` all exit 0. Once a plan exists, one more: at most one
+ticket may be able to write each criterion's evidence file, and it must
+name the file rather than its directory — a plan that fails comes back
+before a review is paid for. Then `check_criteria()` reads each
+criterion straight off disk after every ticket. A missing file, an
+unparseable artifact, or an absent metric is a failure, never a pass.
+
+But deterministic is necessary, not sufficient: a number that met a
+threshold is not yet a number that *earned* one. The Evaluator still
+audits provenance by executing the code, and the iteration where a
+criterion first turns green always buys that audit.
+
+### 4. Authority enforced, not merely documented
+The phase-authority matrix became a `PreToolUse` hook that denies the
+call. See **Phase-Based Authority** above for how it decides and what it
+knowingly does not cover.
+
+### 5. Trials, the Monitor, and the ledger
+An `experiment` goal replaces the Test Contract with a **Hypothesis**, a
+**Trial** command, a **Metrics Contract**, a **Success Threshold**, and a
+**Monitor Profile**. The driver — not the Generator — launches the trial
+and polls a cheap Monitor session against the log tail. Every trial is
+appended to `ledger.jsonl`, which a replanning Planner must read: it is
+the loop's memory of what has already failed, and its config is
+immutable (any parameter change is a new trial, not an edited one).
+
+### 6. Budgets as circuit breakers
+Iterations, replans, USD, GPU-hours and wall-clock are caps that stop the
+loop, sized on the assumption that something will eventually spin idle
+overnight. Two refinements you feel immediately: `max_wall_hours` meters
+**driver runtime**, so the clock stops while a gate waits for you and
+taking a night to approve costs nothing; and caps are re-read every
+iteration, so raising one mid-loop needs no restart (criteria stay
+frozen).
+
+### 7. Drive it from your phone
+Keep one interactive session in tmux with Remote Control on as a control
+tower: it reads the event feed to answer `status`, and writes the
+approval flag when you say `approve`. Optional push
+(`.claude/driver/notify.sh`) tells you a gate opened.
+
+## Carried Over from 7.0
 
 ### 1. Run-log capture ("check the latest run log")
 Every Run Command tees to `logs/latest.log` via
@@ -254,10 +440,9 @@ knows to read it, and commit messages are required to be detailed.
 
 ### 7. Parallel Generator (fan-out / fan-in)
 Sequential generation is slow when a plan has several independent
-tickets. In 7.0 the **Planner decides** what can run in parallel — at
-plan-time, not the Generator at runtime — because judging cross-ticket
-dependencies is an architectural call. It declares this with two ticket
-fields:
+tickets. The **Planner decides** what can run in parallel — at plan-time,
+not the Generator at runtime — because judging cross-ticket dependencies
+is an architectural call. It declares this with two ticket fields:
 
 - **`Depends On:`** — which tickets must finish first.
 - **`Parallel Group:`** — a label; tickets sharing it run concurrently.
@@ -274,7 +459,7 @@ It's **opt-in**: plans with no `Parallel Group:` labels run fully
 sequentially, exactly as before. See
 `.claude/rules/parallel-execution.md`.
 
-### Carried over
+### Older, still load-bearing (6.x)
 - Layered `Architecture.md` with selective loading.
 - Environment audit baked into the Planner.
 - Reference docs in `docs/` with `DEVIATIONS.md` for tracked drift.
@@ -325,43 +510,58 @@ that contradicts a reference doc without a logged deviation.
 your-project/
 ├── CLAUDE.md                       ← Router (auto-loaded by Claude Code & Cursor)
 ├── .claude/
-│   ├── settings.json               ← SessionEnd hook: archive full trace (new in 7.0)
-│   ├── agents/                     ← cdd-planner/generator/evaluator/monitor (new in 8.0)
-│   ├── driver/loop.py              ← deterministic loop driver (new in 8.0)
-│   ├── hooks/archive_transcript.py ← Copies transcript → journal/traces/ (new in 7.0)
-│   ├── hooks/enforce_authority.py  ← PreToolUse authority enforcement (new in 8.0)
+│   ├── settings.json               ← PreToolUse (authority) + SessionEnd (trace) hooks
+│   ├── agents/                     ← Role definitions for the loop's headless sessions
+│   │   ├── cdd-planner.md          ← Plans; never executes, never calls other agents
+│   │   ├── cdd-generator.md        ← One ticket, TDD, inside its Boundary
+│   │   ├── cdd-evaluator.md        ← Contract review + provenance audit
+│   │   └── cdd-monitor.md          ← Cheap trial health check; writes nothing
+│   ├── driver/
+│   │   ├── loop.py                 ← The deterministic loop driver (8.0)
+│   │   ├── test_loop.py            ← Its test suite — run it after any driver edit
+│   │   ├── notify.sh.example       ← Optional push (ntfy / Telegram)
+│   │   ├── toy_project.sh          ← Offline end-to-end shakedown, build goal
+│   │   └── toy_experiment.sh       ← Offline shakedown with injected trial faults
+│   ├── hooks/
+│   │   ├── enforce_authority.py    ← PreToolUse: denies out-of-role writes (8.0)
+│   │   └── archive_transcript.py   ← SessionEnd: copies transcript → journal/traces/
 │   └── rules/
-│       ├── loop-protocol.md        ← the [/loop] pipeline (new in 8.0)
+│       ├── loop-protocol.md        ← The [/loop] pipeline, gates, budgets (8.0)
 │       ├── principles.md           ← Simplicity, Surgical change, Think-first
 │       ├── governance.md           ← Git-as-changelog, security, logging, TDD, journal
-│       ├── run-logging.md          ← logs/latest.log capture (new in 7.0)
-│       ├── phase-authority.md      ← Authority matrix (Planner/Gen/Eval/Discuss/Retro)
+│       ├── run-logging.md          ← logs/latest.log capture
+│       ├── phase-authority.md      ← Authority matrix (all six session types)
 │       ├── generator-protocol.md   ← Selective context load, retry, halt
-│       ├── parallel-execution.md   ← Fan-out/fan-in parallel Generator (new in 7.0)
-│       └── task-ticket-format.md   ← Ticket format (+ Depends On / Parallel Group)
+│       ├── parallel-execution.md   ← Fan-out/fan-in parallel Generator
+│       └── task-ticket-format.md   ← Ticket format (+ experiment tickets)
 ├── skills/
 │   ├── skill-template/SKILL.md     ← How to write skills
-│   ├── mode-discuss/SKILL.md       ← The Thinking Partner (new in 7.0)
-│   ├── mode-build/SKILL.md         ← The Architect
-│   ├── mode-modify/SKILL.md        ← Refactoring Engineer (+ bug sub-flow)
-│   ├── mode-migrate/SKILL.md       ← Migration Specialist
-│   ├── mode-merge/SKILL.md         ← Integration Architect
-│   ├── mode-evaluate/SKILL.md      ← The Auditor
-│   └── mode-retro/SKILL.md         ← The Coach (new in 7.0)
+│   ├── mode-loop/SKILL.md          ← The Goal Setter + loop launcher (8.0)
+│   ├── mode-discuss/SKILL.md       ← The Thinking Partner
+│   ├── mode-retro/SKILL.md         ← The Coach
+│   ├── mode-build/SKILL.md         ← The Architect        ┐
+│   ├── mode-modify/SKILL.md        ← Refactoring Engineer  │ goal types;
+│   ├── mode-migrate/SKILL.md       ← Migration Specialist  │ loaded by
+│   ├── mode-merge/SKILL.md         ← Integration Architect │ the Planner
+│   └── mode-evaluate/SKILL.md      ← The Auditor          ┘
 ├── src/
 │   └── <module>/CLAUDE.md          ← Optional nested module rules
 ├── docs/                           ← User-maintained reference docs
 │   ├── api-contract.md
 │   ├── inbox.md
 │   └── DEVIATIONS.md
-├── journal/                        ← Session records + feedback (new in 7.0)
+├── journal/                        ← Session records + feedback
 │   ├── 20260701-142230-modify.md   ← Tier 1: curated summary (in git)
 │   └── traces/                     ← Tier 2: full raw transcripts (gitignored)
-├── logs/                           ← Run output (gitignored, new in 7.0)
-│   └── latest.log
+├── logs/                           ← Run output (gitignored)
+│   ├── latest.log                  ← Most recent Run Command
+│   ├── driver.log                  ← The loop's own output
+│   └── denials.log                 ← Every authority denial, with role + reason
+├── approvals/                      ← Gate flag files (gitignored, loop only)
 ├── Concept.md                      ← Vision (persistent)
 ├── Architecture.md                 ← Layered design (persistent)
 ├── README.md                       ← User-facing usage (Planner-maintained)
+├── Goal.md + goal.json             ← The loop's frozen contract (ephemeral)
 ├── Plan.md                         ← Work order (ephemeral)
 └── Evaluation.md                   ← Auditor output (ephemeral)
 ```
@@ -371,7 +571,11 @@ your-project/
 ### Prerequisites
 - **Claude Code** or **Cursor** (or both)
 - Claude Pro, Max, Teams, or Enterprise account
-- Git initialized in your project
+- Git initialized in your project, with `user.name` / `user.email` set —
+  in a loop the driver is the only committer, and a commit that fails
+  for want of an identity fails quietly
+- For `[/loop]` only: **Python 3** (standard library only — the driver
+  has no dependencies), **tmux**, and a git version with `worktree`
 
 ### Install (both tools, same files)
 
@@ -385,18 +589,95 @@ mkdir my-project && cd my-project && git init
 printf 'logs/\njournal/traces/\n' >> .gitignore
 ```
 
-Copying `.claude/` brings the optional `SessionEnd` hook
-(`.claude/settings.json` + `.claude/hooks/archive_transcript.py`) that
-archives full session transcripts to `journal/traces/` — Claude Code
-will ask you to approve the hook on first run. Delete
-`.claude/settings.json` if you don't want it (e.g. Cursor-only).
+**Copy all three, not just `.claude/`.** `[/loop]` refuses to start when
+any of the driver, the four agent definitions, the authority hook,
+`loop-protocol.md`, or the `PreToolUse` wiring in `.claude/settings.json`
+is missing — and it refuses loudly rather than falling back to a manual
+relay, because a loop that silently degrades still records itself as a
+loop. A deployment without `skills/` starts, but the Planner then works
+from its fallback instead of the mode skill that shapes tickets.
+
+`.claude/settings.json` wires two hooks, and Claude Code asks you to
+approve them on first run:
+
+- **`PreToolUse` → `enforce_authority.py`** — the authority matrix,
+  mechanically enforced. Deleting it does not just lose a nicety; it
+  removes the only thing stopping a Generator from editing the goal it
+  is being measured against.
+- **`SessionEnd` → `archive_transcript.py`** — optional Tier-2 trace
+  archiving to `journal/traces/`. Claude Code only; harmless in Cursor.
+
+The driver adds its own ephemeral files (`loop-state.json`,
+`events.jsonl`, `approvals/`, `journal/traces/`) to `.gitignore` itself
+on first run — it stages the whole tree when it commits, so its
+bookkeeping must not be able to land in a feature commit.
 
 `CLAUDE.md` is the single entry point — the router for both Claude Code
 and Cursor. Rule files in `.claude/rules/` are read on-demand. Nested
 `CLAUDE.md` files auto-load when the agent works in their directory.
 Switch tools mid-project freely; git keeps everything in sync.
 
+### Verify the install
+
+```bash
+python3 .claude/driver/test_loop.py     # or: pytest .claude/driver/test_loop.py
+```
+
+The driver ships with its own test suite (203 tests, no dependencies);
+run it after any edit to `loop.py` or the hook. For a real end-to-end
+rehearsal — gates, planner, contract review, human gate, generator,
+evaluator, commits, final audit — `.claude/driver/toy_project.sh`
+scaffolds a throwaway project that needs no network and no GPU. That one
+spends real model budget; the cost is measured, not estimated, and
+documented at the top of the script.
+
 ## Usage
+
+### Running a loop
+
+```
+You:     [/loop] Get the eval harness running against our endpoint and
+         report accuracy on the social-science split.
+
+Agent:   [Verifies the loop machinery is installed. Classifies: build.]
+         "Three things I can't accept as written:
+          - 'report accuracy' — which file carries the number?
+          - what threshold counts as passing?
+          - what must be true before the loop can start at all?"
+You:     [answers]
+
+Agent:   "I will check `acc` in results/latest.json is > 0, and
+          `schema_valid` in the same file is == 1. Before starting I run
+          three preflight checks: .env has both keys, the endpoint
+          answers a 1-token call, the dataset directory exists.
+          Nothing else is checked. Budgets: 12 iterations, 3 replans,
+          $60, 24h of driver runtime. Correct?"
+You:     yes
+
+Agent:   [Writes Goal.md + goal.json — frozen from here on, for it too.
+          Runs `loop.py start`: makes the worktree, launches the driver
+          under tmux, says where to watch it.]
+
+         …four gates pass · Planner plans · Evaluator reviews the
+         contract · driver waits…
+
+Driver:  == HUMAN GATE ==  Plan.md ready. Contract review: OK.
+You:     [read Plan.md] approve
+Agent:   [runs `loop.py approve`; the plan phase commits]
+
+         …per ticket: generate → run → criteria checked off disk →
+         evaluate → commit. Hours pass. You are elsewhere…
+
+Driver:  done — 9/9 tickets, every criterion green, journal written.
+
+You:     [fill the ## Feedback block; read a sample of the diffs]
+         python3 .claude/driver/loop.py close
+```
+
+Keep that session alive in tmux with Remote Control on and it becomes
+your control tower: message it `status` or `approve` from your phone.
+Ask it for `status` at any point and it reads the event feed back to
+you — phase, iteration, spend, which criteria are green.
 
 ### Discussing direction (before you build)
 
@@ -415,7 +696,15 @@ Agent:   [Edits Concept.md + docs, commits `docs: semantic chunking
           direction`. Recommends [/modify] when you're ready to build.]
 ```
 
-### Building a new project
+### Driving the phases by hand (the escape hatch)
+
+The three examples below are 7.0-style manual operation: you invoke each
+phase yourself and nothing runs unattended. It stays supported — the
+driver calls exactly these skills — and it is the right mode when you
+want to watch every step, or when a goal genuinely resists being written
+as a machine-checkable criterion.
+
+#### Building a new project
 
 ```
 You:     [/build] A FastAPI app that uploads PDFs, extracts text, and
@@ -434,7 +723,7 @@ Agent:   [Executes tickets; runs tee to logs/latest.log; commits per
 Agent:   "Generator session complete. Ready for your evaluation."
 ```
 
-### Modifying — features AND bugs
+#### Modifying — features AND bugs
 
 ```
 # Feature
@@ -456,7 +745,7 @@ Agent:   [Reads logs/latest.log, identifies the error, opens a
           [/modify] bug sub-flow to fix it]
 ```
 
-### Evaluating, signing off, and improving
+#### Evaluating, signing off, and improving
 
 ```
 You:     [/evaluate]
@@ -511,9 +800,25 @@ tickets concurrently. Here, any other Group-A ticket that also depends
 only on Phase 1 and has a **disjoint Boundary** (e.g. `src/auth/`) runs
 at the same time as this one.
 
+**Experiment tickets** swap the Test Contract for a **Hypothesis**, a
+**Trial** (the exact launch command — the *driver* runs it, never the
+Generator), a **Metrics Contract** (which file each metric lands in), a
+**Success Threshold** mapping 1:1 to a `goal.json` criterion, and a
+**Monitor Profile** (poll interval plus known failure signatures like
+`cuda_oom`, `nan_loss`, `stall`). They are precise about outcomes and
+interfaces and deliberately light on implementation path — granular
+technical detail specified upfront cascades errors when it turns out to
+be wrong.
+
 ### Generator Retry Logic
 1. Attempt to fix (try 1). 2. Try again (try 2). 3. Final attempt (try
 3). 4. Still failing → commit progress with a WIP message and stop.
+
+In a loop the driver owns the retry, up to three attempts per ticket,
+and each retry **carries the verdict that rejected the previous
+attempt** — re-sending the ticket body alone can only help a
+nondeterministic fault. A Generator session that changed nothing twice
+running escalates instead of buying a third identical session.
 
 ### `[Halt here]` Flags — manual mode only
 The Planner does NOT place halt flags. You place them after reviewing
@@ -528,10 +833,17 @@ budget gates that stop the loop when something is actually wrong.
 
 ### The Evaluation Model
 - **Layer 1 — TDD (automated).** Tests before code.
-- **Layer 2 — Manual Verification.** Each ticket lists what to inspect.
-- **Layer 3 — Auditor (optional, `[/evaluate]`).** Independent run +
-  consistency + simplicity + context/README audits, with a verdict.
-- **Layer 4 — You.** Sign off, then log feedback in `journal/`.
+- **Layer 2 — The criteria gate (loop, free).** `check_criteria()` reads
+  each criterion's metric out of its source file and compares it. Code,
+  not a model; fail-closed, so a missing file or an absent metric is a
+  failure. It also acts as a regression guard on every ticket.
+- **Layer 3 — Manual Verification.** Each ticket lists what to inspect.
+- **Layer 4 — Auditor (`[/evaluate]`, the loop's Evaluator).**
+  Independent *execution* + consistency + simplicity + context/README
+  audits, with a verdict. Layer 2 proves a number met its threshold; only
+  this layer can tell you the number was earned. Keep both — the cheap
+  one being free is not a reason to delete the expensive one.
+- **Layer 5 — You.** Sign off, then log feedback in `journal/`.
 
 ## Syncing Your Docs — use git, not Drive sync
 
@@ -558,10 +870,13 @@ personal feedback from real projects are copied into `journal/`,
 `[/retro] all` surfaces cross-project patterns, and a Maintainer
 session applies accepted recommendations, bumps the version, and tags
 a release. Deployed projects upgrade by diffing tags
-(`git diff v7.0..v7.1 -- CLAUDE.md .claude/ skills/`) and re-copying.
+(`git diff v8.1.9..v8.1.10 -- CLAUDE.md .claude/ skills/`) and
+re-copying — never by patching template files in place. When a live loop
+forces you to patch anyway, `git format-patch` it into the framework's
+`journal/hotfixes/` so the next release doesn't reintroduce the bug.
 Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 
-## Roadmap (planned, not yet in 7.0)
+## Roadmap (not built yet)
 
 - **Federated subsystems.** For big projects with loosely-coupled parts
   (annotation, preprocessing), one monorepo where each subsystem has its
@@ -582,20 +897,33 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 | 6.0 | Layered Architecture. Environment audit. `[/evaluate]`. Reference docs + DEVIATIONS. |
 | 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[/merge]`. Independent Auditor. Process logging. |
 | **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[/discuss]` mode. `[/debug]` folded into `[/modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[/retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
-| **8.1.9** | **The cost of a wrong denial and of a reverted budget — the first deployment loop the framework did not itself run. The PreToolUse shell net no longer denies by CO-OCCURRENCE: it matched the `>` of `2>&1` as a write to any protected file the command merely NAMED, killing a read-only Evaluator audit mid-loop, and a legal Run Command that passed `goal.json` as an argument and teed to `logs/` was denied for every role. Redirects are decided by the precise target scan (which already denied `echo x > goal.json`) and the loose net tests per shell segment. Every denial now lands in `logs/denials.log` and a `hook_denials` event, because a false positive used to cost a transcript dig. `start` SEEDS `Goal.md`/`goal.json` into a worktree once and never overwrites: re-copying the primary tree's copy on resume reverted an approved budget raise twice in one loop, and since a restart itself consumes an iteration, each repair round paid for the failure it was repairing (three spurious `max_iterations` escalations for a finished loop). A `Preflight` check must EXERCISE a pinned third-party harness's runtime path, not just install it (three of that loop's seven interruptions were this class, each surfacing alone at tickets 7–8), with a Planner self-check as the second net. A Hard Rule about a pinned tool must cite where it was verified against that version — one such rule shipped as the exact inverse of the harness's behaviour. The journal record separates calendar time from driver runtime, so "too many human interruptions" has a number. MAINTENANCE.md gains a hotfix inbox: both fixes here were live in a deployed project for days with no path home. Journal: journal/from-aibench-retro-20260802.md.** |
-| **8.1.8** | **The toy becomes a faithful deployment, and the contradiction that hid behind it. Both scaffolders now copy `CLAUDE.md` and `skills/` alongside `.claude/` — until now the smoke test copied `.claude/` alone, so the Planner used its documented fallback and the harness never once exercised the mode-skill path, the part that shapes tickets: it proved the driver, not the framework. That exposed a live conflict: the 7.0 mode skills open with an INTERACTIVE Ask phase ending in "STOP. Loop until the user says 'proceed to spec'", which a headless loop Planner cannot follow. `cdd-planner.md` now states the rule (skip the Ask/Halt step; `Goal.md` IS the Ask phase's output; unanswered questions become Assumptions in `Plan.md`; a genuine blocker is stated, never guessed around), and every halting mode skill points at it — with a test that keeps them pointing. `machinery()` reports a thin deployment as an event rather than aborting, because the Planner's fallback is legal and the choice is the user's. Journal: journal/retro-20260731-toy-816.md problem 5.** |
-| **8.1.7** | **What the first toy `build` loop on 8.1.6 charged for. `max_wall_hours` meters DRIVER RUNTIME, not the calendar: the clock stops at every human gate and between runs, and a crashed run is credited only to its last recorded event — a loop that sat 3.6h at the plan gate used to escalate `budget exhausted` the instant the approval landed, before one ticket ran, with $0 spent since resume, which contradicted the framework's own approve-from-your-phone gate. Contract review is bounded by MONEY as well as rounds (it stops buying rounds past half of `max_usd`, always buys the first review, and the gate banner says which), and `cdd-evaluator` Mode 1 now has a ceiling: read the plan, do not re-implement it — three passes that each rebuilt a four-ticket plan cost 59% of a loop's spend before ticket 1. The PreToolUse shell scanner no longer reads the `>` of a Python return annotation as a redirect, which was the rare case of it failing CLOSED on legal work. The plan phase commits at its gate (`plan(loop):`), so a `feat(loop):` commit carries exactly one ticket and a per-ticket Boundary audit is a check that can pass. Journal: journal/retro-20260731-toy-816.md.** |
-| **8.1.6** | **The first LIVE run (real endpoint, real dataset) and the six defects it exposed. Evidence ownership: at most one ticket's Boundary may admit a criterion's `source` file, and it must name the file rather than its tree — a `results/` entry on four tickets let a schema ticket's test fixture turn three criteria green four iterations before the harness existed, and the driver now rejects such a plan before paying for a contract review. A RETRY carries the verdict that rejected the previous attempt (it used to re-send the ticket body alone, so three sessions changed zero bytes), and a Generator that writes nothing twice escalates instead of buying a third identical session. Under `final-pass` cadence the iteration where a criterion FIRST reads green always buys a provenance audit. The driver writes the loop's journal record on every terminal exit (the docs had promised this for two versions; nothing did it), re-reads budget caps every iteration so raising one no longer needs a restart, and `loop.py close` performs the housekeeping four consecutive retros asked for. Journal: journal/from-tmmluplus-eval-retro-20260731.md.** |
-| **8.1.5** | **The experiment path's first end-to-end run — trials, the Monitor, RETRY, REPLAN and the ledger as replan memory, none of which a `build` goal ever touches. New toy harness `.claude/driver/toy_experiment.sh` (deterministic fault injection, no GPU, no network) that forces all of them. Three defects fixed: the driver now ensures its own ephemeral files (`loop-state.json`, `events.jsonl`, `journal/traces/`) are gitignored, so a `feat(loop):` commit carries the ticket's work and not the loop's bookkeeping; a trial log is named per ATTEMPT, so the relaunch a RETRY buys no longer truncates the log of the failure that bought it; and `cdd-planner.md` now states the goal-type → mode-skill mapping, because the driver names a type and there is no `skills/mode-experiment/` to find. Journal: journal/feedback-inbox.md 2026-07-30 (experiment run).** |
-| **8.1.4** | **The loop's first COMPLETED run. Plan parsing accepts a ticket heading at any level and marks it back at that level (a `##` plan parsed as zero tickets); an unparseable plan escalates instead of reporting `all_tickets_done` with nothing built; contract review reviews every revision it pays for (reviews = revisions + 1) rather than escalating while holding an unreviewed plan; the Planner must check that some ticket's Run Command WRITES each criterion's source file; the human gate prints the absolute path to Plan.md and `status` never truncates an escalation. Toy harness re-budgeted from measurement and its traces gitignored. Four end-to-end runs, journal/feedback-inbox.md 2026-07-30.** |
-| **8.1.1–8.1.3** | **First real loop runs. 8.1.1–8.1.2: trial exit code checked, spend actually accumulated (so `max_usd` bites), multi-line ticket fields kept whole, `approve` targets the pending gate, Planner may write a nested `CLAUDE.md`, a PASS that never reached git escalates; `loop.py start` (worktree + tmux), `status` for humans, unauthenticated-CLI gate, per-session heartbeat events. 8.1.3: a Boundary written as markdown (the form the Planner actually emits) still matches real paths — before this, every entry kept its backticks and matched nothing, so the first end-to-end loop denied every Generator write and escalated on ticket 1; the same field habit on `**Trial:**` was command substitution under `shell=True`. Motivated by journal/from-tmmluplus-eval-retro-20260730.md + journal/feedback-inbox.md 2026-07-30.** |
-| **8.1** | **Deterministic gates: `check_criteria()` reads `goal.json` criteria straight off disk (fail-closed) as the per-ticket regression guard and the final stop condition; `preflight()` verifies environment preconditions declared in `Goal.md` before any model call; `machinery()` refuses to start when the loop's own parts are missing instead of degrading to a manual relay; `validate_goal()` rejects a contract with no machine-checkable criteria. USD budget enforced; GPU-hours billed against trial start (was reset every Monitor poll); a killed trial no longer gets evaluated; contract review fails closed. Evaluator must execute rather than read, and audits provenance. `Goal.md` is the source of truth with `goal.json` a derived mirror, audited by contract review (Faithful?/Sourced?). Driver refuses the primary working tree. `[Halt here]` removed from loop mode. Motivated by journal/feedback-inbox.md 2026-07-17 + from-ccd-ai-bench-retro-20260715.md.** |
 | **8.0** | **Loop orchestration: 3-command surface (`[/discuss]`/`[/loop]`/`[/retro]`); deterministic driver (`.claude/driver/loop.py`); hook-ENFORCED phase authority (PreToolUse deny); Goal.md/goal.json contracts; experiment tickets + trial ledger + Monitor agent; Evaluator contract review pre-gate; JSON machine state; control-tower remote control (phone). Design: docs/loop-orchestration-design.md.** |
+| **8.1** | **Deterministic gates: `check_criteria()` reads `goal.json` criteria straight off disk (fail-closed) as the per-ticket regression guard and the final stop condition; `preflight()` verifies environment preconditions declared in `Goal.md` before any model call; `machinery()` refuses to start when the loop's own parts are missing instead of degrading to a manual relay; `validate_goal()` rejects a contract with no machine-checkable criteria. USD budget enforced; GPU-hours billed against trial start (was reset every Monitor poll); a killed trial no longer gets evaluated; contract review fails closed. Evaluator must execute rather than read, and audits provenance. `Goal.md` is the source of truth with `goal.json` a derived mirror, audited by contract review (Faithful?/Sourced?). Driver refuses the primary working tree. `[Halt here]` removed from loop mode. Motivated by journal/feedback-inbox.md 2026-07-17 + from-ccd-ai-bench-retro-20260715.md.** |
+| **8.1.1–8.1.3** | **First real loop runs. 8.1.1–8.1.2: trial exit code checked, spend actually accumulated (so `max_usd` bites), multi-line ticket fields kept whole, `approve` targets the pending gate, Planner may write a nested `CLAUDE.md`, a PASS that never reached git escalates; `loop.py start` (worktree + tmux), `status` for humans, unauthenticated-CLI gate, per-session heartbeat events. 8.1.3: a Boundary written as markdown (the form the Planner actually emits) still matches real paths — before this, every entry kept its backticks and matched nothing, so the first end-to-end loop denied every Generator write and escalated on ticket 1; the same field habit on `**Trial:**` was command substitution under `shell=True`. Motivated by journal/from-tmmluplus-eval-retro-20260730.md + journal/feedback-inbox.md 2026-07-30.** |
+| **8.1.4** | **The loop's first COMPLETED run. Plan parsing accepts a ticket heading at any level and marks it back at that level (a `##` plan parsed as zero tickets); an unparseable plan escalates instead of reporting `all_tickets_done` with nothing built; contract review reviews every revision it pays for (reviews = revisions + 1) rather than escalating while holding an unreviewed plan; the Planner must check that some ticket's Run Command WRITES each criterion's source file; the human gate prints the absolute path to Plan.md and `status` never truncates an escalation. Toy harness re-budgeted from measurement and its traces gitignored. Four end-to-end runs, journal/feedback-inbox.md 2026-07-30.** |
+| **8.1.5** | **The experiment path's first end-to-end run — trials, the Monitor, RETRY, REPLAN and the ledger as replan memory, none of which a `build` goal ever touches. New toy harness `.claude/driver/toy_experiment.sh` (deterministic fault injection, no GPU, no network) that forces all of them. Three defects fixed: the driver now ensures its own ephemeral files (`loop-state.json`, `events.jsonl`, `journal/traces/`) are gitignored, so a `feat(loop):` commit carries the ticket's work and not the loop's bookkeeping; a trial log is named per ATTEMPT, so the relaunch a RETRY buys no longer truncates the log of the failure that bought it; and `cdd-planner.md` now states the goal-type → mode-skill mapping, because the driver names a type and there is no `skills/mode-experiment/` to find. Journal: journal/feedback-inbox.md 2026-07-30 (experiment run).** |
+| **8.1.6** | **The first LIVE run (real endpoint, real dataset) and the six defects it exposed. Evidence ownership: at most one ticket's Boundary may admit a criterion's `source` file, and it must name the file rather than its tree — a `results/` entry on four tickets let a schema ticket's test fixture turn three criteria green four iterations before the harness existed, and the driver now rejects such a plan before paying for a contract review. A RETRY carries the verdict that rejected the previous attempt (it used to re-send the ticket body alone, so three sessions changed zero bytes), and a Generator that writes nothing twice escalates instead of buying a third identical session. Under `final-pass` cadence the iteration where a criterion FIRST reads green always buys a provenance audit. The driver writes the loop's journal record on every terminal exit (the docs had promised this for two versions; nothing did it), re-reads budget caps every iteration so raising one no longer needs a restart, and `loop.py close` performs the housekeeping four consecutive retros asked for. Journal: journal/from-tmmluplus-eval-retro-20260731.md.** |
+| **8.1.7** | **What the first toy `build` loop on 8.1.6 charged for. `max_wall_hours` meters DRIVER RUNTIME, not the calendar: the clock stops at every human gate and between runs, and a crashed run is credited only to its last recorded event — a loop that sat 3.6h at the plan gate used to escalate `budget exhausted` the instant the approval landed, before one ticket ran, with $0 spent since resume, which contradicted the framework's own approve-from-your-phone gate. Contract review is bounded by MONEY as well as rounds (it stops buying rounds past half of `max_usd`, always buys the first review, and the gate banner says which), and `cdd-evaluator` Mode 1 now has a ceiling: read the plan, do not re-implement it — three passes that each rebuilt a four-ticket plan cost 59% of a loop's spend before ticket 1. The PreToolUse shell scanner no longer reads the `>` of a Python return annotation as a redirect, which was the rare case of it failing CLOSED on legal work. The plan phase commits at its gate (`plan(loop):`), so a `feat(loop):` commit carries exactly one ticket and a per-ticket Boundary audit is a check that can pass. Journal: journal/retro-20260731-toy-816.md.** |
+| **8.1.8** | **The toy becomes a faithful deployment, and the contradiction that hid behind it. Both scaffolders now copy `CLAUDE.md` and `skills/` alongside `.claude/` — until now the smoke test copied `.claude/` alone, so the Planner used its documented fallback and the harness never once exercised the mode-skill path, the part that shapes tickets: it proved the driver, not the framework. That exposed a live conflict: the 7.0 mode skills open with an INTERACTIVE Ask phase ending in "STOP. Loop until the user says 'proceed to spec'", which a headless loop Planner cannot follow. `cdd-planner.md` now states the rule (skip the Ask/Halt step; `Goal.md` IS the Ask phase's output; unanswered questions become Assumptions in `Plan.md`; a genuine blocker is stated, never guessed around), and every halting mode skill points at it — with a test that keeps them pointing. `machinery()` reports a thin deployment as an event rather than aborting, because the Planner's fallback is legal and the choice is the user's. Journal: journal/retro-20260731-toy-816.md problem 5.** |
+| **8.1.9** | **The cost of a wrong denial and of a reverted budget — the first deployment loop the framework did not itself run. The PreToolUse shell net no longer denies by CO-OCCURRENCE: it matched the `>` of `2>&1` as a write to any protected file the command merely NAMED, killing a read-only Evaluator audit mid-loop, and a legal Run Command that passed `goal.json` as an argument and teed to `logs/` was denied for every role. Redirects are decided by the precise target scan (which already denied `echo x > goal.json`) and the loose net tests per shell segment. Every denial now lands in `logs/denials.log` and a `hook_denials` event, because a false positive used to cost a transcript dig. `start` SEEDS `Goal.md`/`goal.json` into a worktree once and never overwrites: re-copying the primary tree's copy on resume reverted an approved budget raise twice in one loop, and since a restart itself consumes an iteration, each repair round paid for the failure it was repairing (three spurious `max_iterations` escalations for a finished loop). A `Preflight` check must EXERCISE a pinned third-party harness's runtime path, not just install it (three of that loop's seven interruptions were this class, each surfacing alone at tickets 7–8), with a Planner self-check as the second net. A Hard Rule about a pinned tool must cite where it was verified against that version — one such rule shipped as the exact inverse of the harness's behaviour. The journal record separates calendar time from driver runtime, so "too many human interruptions" has a number. MAINTENANCE.md gains a hotfix inbox: both fixes here were live in a deployed project for days with no path home. Journal: journal/from-aibench-retro-20260802.md.** |
+| **8.1.10** | **The v8.0 line released as the mainline, and the docs made to match it. The README was still a 7.0 document with 8.x rows bolted onto its version table: it opened on the manual session pipeline, routed users to `[/build]`/`[/modify]` as primary commands, described `[/loop]` nowhere in Usage, and its file tree predated the driver, the agents and the authority hook. Rewritten around the loop — how it works, what the four gates buy, what the hook enforces and what it knowingly does not, the loop's own ephemeral files, an install that names the `[/loop]` prerequisites and a way to verify them, and a walkthrough of a real run. Two dangling pointers to `v8.0-draft/INSTALL.md` — a path that never shipped — removed, including the one in `machinery()`, which is the single message a half-deployed project ever sees. `docs/loop-orchestration-design.md` no longer claims to be an unimplemented draft and names where the shipped loop diverged from it. Version History reordered chronologically. Prompted by the release itself, not by a retro.** |
 
 ## Tips
 
 - **Discuss before big pivots.** A `[/discuss]` that prevents a bad
   build is cheaper than the build.
+- **Spend the Ask phase.** Every minute making a criterion checkable
+  buys back an hour of auditing prose later. If you can't say which file
+  carries the number, the loop can't tell you it's done.
+- **Set budgets as if something will spin overnight**, because
+  eventually it will. For a first unattended run, put `max_iterations`
+  near the ticket count, not at 20.
+- **Read a sample of the loop's diffs afterwards** and explain them to
+  yourself. With no mid-loop checkpoint, this is the only thing standing
+  between you and a codebase you no longer understand.
+- **Close the loop** (`loop.py close`). Four consecutive retros flagged
+  loops left open with the reminder already in place — so make it the
+  command you run, not the thing you remember.
 - **Say "check the latest run log."** Let the agent read the error
   instead of pasting it.
 - **Fill the journal feedback.** `[/retro]` is only as good as the

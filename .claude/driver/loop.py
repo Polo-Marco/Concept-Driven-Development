@@ -290,7 +290,13 @@ def machinery() -> None:
     missing = [str(f.relative_to(ROOT)) for f in required
                if not f.exists()]
     if missing:
-        die("Loop machinery is incomplete -- see v8.0-draft/INSTALL.md.\n"
+        # v8.1.10: pointed at `v8.0-draft/INSTALL.md`, a path that has
+        # never existed in a released tree -- so the one message a
+        # half-deployed project ever sees named a file it could not open.
+        die("Loop machinery is incomplete -- re-copy CLAUDE.md, .claude/ "
+            "and skills/ from the\n"
+            "  framework repo (README `Setup`, or MAINTENANCE.md "
+            "`Upgrading a Deployed Project`).\n"
             "  missing: " + ", ".join(missing))
 
     require_cli()

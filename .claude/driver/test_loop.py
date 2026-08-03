@@ -781,8 +781,9 @@ class HookCaller:
 
 
 class TestHook(HookCaller, unittest.TestCase):
-    """Offline replacement for INSTALL.md's M1: exhaustive rather than
-    end-to-end, and it needs no `claude` login."""
+    """Offline coverage of the authority hook: exhaustive rather than
+    end-to-end, and it needs no `claude` login. The manual walkthrough it
+    replaces lived in a draft INSTALL.md that never shipped."""
 
     def test_interactive_session_unrestricted(self):
         self.assertEqual(self.call("", "Write",

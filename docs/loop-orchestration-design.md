@@ -1,8 +1,16 @@
 # Loop Orchestration — v8.0 Design
 
-> Status: **draft for the v8.0 Maintainer session**. Written 2026-07-14
-> in a Discuss session; revised same day against current external
-> guidance (see §14). Not yet implemented.
+> Status: **shipped**. Implemented in 8.0 and hardened through 8.1.9;
+> this file is kept as the as-designed record — why the loop is shaped
+> the way it is — not as a description of the code. Where the two
+> disagree, `.claude/rules/loop-protocol.md` is current and this is
+> history. Known divergences: the human gate count settled at three
+> (plan, replan, escalate) with mid-loop `[Halt here]` removed in 8.1;
+> the deterministic gates, the plan-evidence check and the runtime
+> clock were all added after this was written.
+>
+> Written 2026-07-14 in a Discuss session; revised same day against
+> current external guidance (see §14).
 >
 > Motivating evidence (per MAINTENANCE.md, changes must cite feedback):
 > - `journal/feedback-inbox.md` entry 2026-07-14 (five items:

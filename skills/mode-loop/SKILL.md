@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.9
+version: 8.1.10
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -32,8 +32,10 @@ that ALL of these exist:
 **If anything is missing, STOP and say so loudly.** Do not run the Ask
 phase, do not write Goal.md, and above all do NOT fall back to a manual
 Planner → Generator relay. Tell the user exactly which files are absent
-and point at `v8.0-draft/INSTALL.md` (framework repo) or
-`MAINTENANCE.md` § Upgrading a Deployed Project.
+and point at the framework repo's README § Setup or `MAINTENANCE.md`
+§ Upgrading a Deployed Project — the fix is always to re-copy
+`CLAUDE.md`, `.claude/` and `skills/`, never to hand-write the part that
+is missing.
 
 Why this rule exists: `journal/from-ccd-ai-bench-retro-20260715.md`. A
 project was deployed with the v8.0 `CLAUDE.md` and none of the

@@ -20,7 +20,10 @@ high leverage, no infrastructure beyond git + markdown.
 
 A set of copyable template files (`CLAUDE.md`, `.claude/`, `skills/`)
 that turn a coding agent into a disciplined pipeline: Discuss → Plan →
-Generate → Evaluate → Retro, with the user as final evaluator.
+Generate → Evaluate → Retro, with the user as final evaluator. Since 8.0
+a deterministic driver (`.claude/driver/loop.py`) can run that pipeline
+unattended against a machine-checkable goal contract, so the user
+approves one plan instead of typing every transition.
 
 ## Design Principles
 
@@ -36,7 +39,8 @@ Generate → Evaluate → Retro, with the user as final evaluator.
 ## Scope
 
 - In: pipeline modes, rules, ticket format, journal/retro loop,
-  template docs.
+  template docs, and the loop driver + its authority hook — the parts
+  that let the pipeline run without a human in the middle.
 - Out (for now): CI enforcement, multi-user workflows, non-git storage.
   Roadmap: federated subsystems for large monorepos (see README).
 
@@ -44,5 +48,6 @@ Generate → Evaluate → Retro, with the user as final evaluator.
 
 - Retros across projects show *decreasing* repeat findings
   version-over-version.
-- A new project goes 0→1 with one `[/build]` and no framework friction.
+- A new project goes 0→1 with one `[/loop]` (`build` goal) and no
+  framework friction.
 - Every framework change cites the feedback that motivated it.
