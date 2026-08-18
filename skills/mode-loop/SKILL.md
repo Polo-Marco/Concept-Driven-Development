@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.10
+version: 8.1.12
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -74,6 +74,32 @@ not a blocker — it is a ticket. Say so, and expect the Planner to own
 it. The Evaluator's contract review will check that the plan really
 does produce every source (**Sourced?**), and the driver fails closed on
 a missing source file rather than guessing.
+
+**Every `source` must be a path only THIS loop can write** (v8.1.12).
+This is the fifth thing, and it is the one that costs money when it is
+missed. `check_criteria()` reads a file; it cannot read a run. So a
+criterion pointed at a path that survives across loops reads the
+PREVIOUS loop's number as this loop's result:
+
+- ✗ `results/mmmu/latest.json` — a moving pointer; always exists,
+  always belongs to whoever ran last
+- ✗ `results/test-summary.json` — one file, no version, every loop
+- ✓ `results/<loop-id>/mmmu.json`
+- ✓ `results/<config-id>/mmmu/<loop-id>.json` — when the project also
+  wants to compare runs by model, quantization, decoding or serving
+  stack later
+
+Fix it here, in the Ask phase, where it is free. `evidence_gate()`
+REFUSES to start a loop whose criteria read files that already exist,
+and it refuses before the Planner is dispatched — so the alternative to
+choosing a path now is choosing one after the driver has stopped. Pick
+the loop's id with the user and put it in `Goal.md`; the criteria and
+the tickets' Run Commands both quote it.
+
+Two things a unique path buys beyond correctness: a loop can no longer
+be handed a green criterion it did not earn, and the run history stops
+being a single mutable file, so results accumulate instead of
+overwriting each other.
 
 Also extract:
 
@@ -259,9 +285,10 @@ the loop from here on:
 
 Tell the user:
 
-- The driver runs four deterministic gates first — machinery,
-  goal-contract shape, worktree isolation, preflight. Nothing is
-  planned or spent until all four pass. A fifth runs once a plan
+- The driver runs five deterministic gates first — machinery,
+  goal-contract shape, worktree isolation, preflight, and evidence
+  (nothing already sits at a path a criterion reads). Nothing is
+  planned or spent until all five pass. A sixth runs once a plan
   exists: at most one ticket may be able to write each criterion's
   `source` file, and it must name the file rather than its tree. A plan
   that fails goes back to the Planner before a review is paid for.

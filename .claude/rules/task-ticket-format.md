@@ -155,6 +155,14 @@ Before ending the Planner session, verify for each ticket:
   (`plan_problems()`), so a plan that fails it comes straight back.
   Zero owners is legal: on an `experiment` goal the driver launches the
   trial, so its metrics file belongs in no Boundary at all.
+- Is each criterion's `source` a path only THIS loop can write? A
+  stable pointer (`results/<bench>/latest.json`) or a single unversioned
+  file (`results/test-summary.json`) carries the previous loop's number
+  into this one, and `check_criteria()` reads the file, not the run.
+  The driver refuses such a start (`evidence_gate()`), so a plan that
+  assumes one never gets written; the Planner's job here is to make
+  every Run Command WRITE the versioned path the criteria name, not a
+  convenience alias next to it.
 - If the plan pins a third-party harness/framework, does the
   Environment Setup ticket's **Run Command** EXERCISE its runtime path
   (import + one trivial invocation, e.g. registering the expected

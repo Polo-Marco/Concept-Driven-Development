@@ -686,7 +686,8 @@ class TestStateMachine(DriverCase):
         loop.claude = fake
         st = {"phase": "iterate", "iteration": 0, "replans": 0,
               "spent_usd": 0.0, "gpu_hours": 0.0,
-              "criteria_green": ["acc"],          # was green before
+              # v8.1.12: keyed `metric@source`, not the bare name
+              "criteria_green": ["acc@results/out.json"],
               "started_epoch": loop.time.time()}
         loop.phase_iterate(cfg, st)
         self.assertTrue(any(e["event"] == "regression"
@@ -2383,8 +2384,9 @@ class TestFirstGreenIsAudited(LiveRunCase):
         """The saving that `final-pass` exists for is intact: only the
         LAST ticket buys an audit when nothing changed colour."""
         self.results({"metrics": {"acc": 0.5}})
-        roles, _ = self.drive(self.fresh_state(criteria_green=["acc"]),
-                              make_green=False)
+        roles, _ = self.drive(
+            self.fresh_state(criteria_green=["acc@results/out.json"]),
+            make_green=False)
         self.assertEqual(roles, ["generator", "generator", "evaluator"])
         self.assertIn("deferred", str(self.ledger()[0]["reason"]))
         self.assertFalse(any(e["event"] == "first_green"
@@ -3166,6 +3168,197 @@ class TestHookScratchCarveOut(unittest.TestCase):
                 2)
             self.assertEqual(
                 self.call("generator", str(Path(d) / "src" / "a.py"), d), 0)
+
+
+# ---------- v8.1.12: what a criterion IS, and when it is evidence ------
+
+class TestCriterionIdentity(DriverCase):
+    """A criterion was identified by its bare metric name, so two
+    measuring the same quantity in different files were one entry in
+    `criteria_green`. Live in three loops of the aibench deployment:
+    loop 2 carried six criteria under four names, loop 5 thirteen under
+    nine (`accuracy` and `n_samples` once per benchmark)
+    (journal/from-aibench-retro-20260818.md, failure class 2)."""
+
+    TWO_BENCHMARKS = [
+        {"metric": "acc", "op": ">", "value": 0.0,
+         "source": "results/a.json"},
+        {"metric": "acc", "op": ">", "value": 0.0,
+         "source": "results/b.json"},
+    ]
+
+    def test_same_metric_in_two_files_is_two_criteria(self):
+        self.results({"metrics": {"acc": 0.5}}, "results/a.json")
+        self.results({"metrics": {"acc": 0.5}}, "results/b.json")
+        _, crit = loop.check_criteria(
+            self.write_goal(criteria=self.TWO_BENCHMARKS))
+        self.assertEqual({loop.crit_key(r) for r in crit},
+                         {"acc@results/a.json", "acc@results/b.json"})
+
+    def test_one_going_red_is_visible_while_the_other_stays_green(self):
+        """The damage the collision hid: under bare names the green set
+        still contained `acc` from the healthy benchmark, so the
+        regression was invisible."""
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+        self.results({"metrics": {"acc": 0.5}}, "results/a.json")
+        self.results({"metrics": {"acc": 0.5}}, "results/b.json")
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":                 # breaks ONE of them
+                self.results({"metrics": {"acc": 0.0}}, "results/b.json")
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0,
+              "criteria_green": ["acc@results/a.json",
+                                 "acc@results/b.json"],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(
+            criteria=self.TWO_BENCHMARKS,
+            evaluation_cadence="final-pass"), st)
+        regressions = [e for e in self.events() if e["event"] == "regression"]
+        self.assertTrue(regressions)
+        self.assertIn("acc@results/b.json", regressions[0]["detail"])
+        self.assertNotIn("acc@results/a.json", regressions[0]["detail"])
+
+    def test_pre_8_1_12_state_never_manufactures_a_regression(self):
+        """A loop mid-flight over the upgrade has bare names in its
+        state file. Dropping them costs at most one extra audit; keeping
+        them would read as every criterion regressing at once."""
+        self.assertEqual(loop.green_set({"criteria_green": ["acc"]}), set())
+        self.assertEqual(
+            loop.green_set({"criteria_green": ["acc", "acc@results/a.json"]}),
+            {"acc@results/a.json"})
+
+
+class TestCriteriaDue(DriverCase):
+    """Loop 3 iteration 1 went first-green on `passed`/`failed` off loop
+    2's committed `results/test-summary.json`, while running a runtime
+    probe that writes no test summary. Loop 6 did the same and then paid
+    twice: the stale file was cleared, the guard read green->red and
+    forced a RETRY, and the Generator stopped to argue that the
+    criterion was not its evidence to produce -- on ticket 1 of 9, in
+    the loop that cost $70.89 and did not finish."""
+
+    PLAN_LATER_OWNER = """# Plan
+
+### Phase 1, Step 1: Runtime probe
+**Boundary:** src/probe.py
+**Run Command:** true
+
+### Phase 2, Step 2: Global regression test phase
+**Boundary:** results/out.json
+**Run Command:** pytest
+"""
+
+    def test_a_later_tickets_evidence_is_not_this_tickets_green(self):
+        due = loop.criteria_due(self.write_goal(), self.PLAN_LATER_OWNER,
+                                "Phase 1, Step 1")
+        self.assertEqual(due, [(False, "Phase 2, Step 2")])
+
+    def test_it_is_due_while_its_own_owner_runs(self):
+        due = loop.criteria_due(self.write_goal(), self.PLAN_LATER_OWNER,
+                                "Phase 2, Step 2")
+        self.assertEqual(due, [(True, "Phase 2, Step 2")])
+
+    def test_it_stays_due_once_its_owner_is_committed(self):
+        plan = self.PLAN_LATER_OWNER.replace(
+            "### Phase 2, Step 2:", "### Phase 2, Step 2 [x]:")
+        due = loop.criteria_due(self.write_goal(), plan, "Phase 3, Step 1")
+        self.assertEqual(due, [(True, "Phase 2, Step 2")])
+
+    def test_an_unowned_criterion_is_always_due(self):
+        """`experiment` goals: the DRIVER launches the trial, so its
+        metrics file is in no Boundary. Deferring those would stall
+        every correct experiment plan; evidence_gate() covers them."""
+        plan = "# Plan\n\n### Phase 1, Step 1: T\n**Boundary:** logs/\n"
+        self.assertEqual(loop.criteria_due(self.write_goal(), plan,
+                                           "Phase 1, Step 1"),
+                         [(True, None)])
+
+    def test_stale_evidence_neither_greens_nor_regresses(self):
+        """The whole loop-6 sequence, replayed end to end: a criterion
+        owned by a later ticket reads green off a pre-loop file, then
+        the file is cleared. Before v8.1.12 that was one false
+        `first_green` and one RETRY on a `criteria regression`."""
+        (self.tmp / "Plan.md").write_text(self.PLAN_LATER_OWNER)
+        loop.git_commit = lambda msg: "deadbee"
+        self.results({"metrics": {"acc": 0.9}})     # the stale artifact
+        cleared = {"n": 0}
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":
+                cleared["n"] += 1
+                if cleared["n"] == 1:               # the honest cleanup
+                    (self.tmp / "results" / "out.json").unlink()
+                else:
+                    self.results({"metrics": {"acc": 0.9}})
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        ev = self.events()
+        # ticket 1 never claims evidence it does not owe...
+        self.assertFalse([e for e in ev if e["event"] == "first_green"
+                          and e.get("ticket") in (None, "Phase 1, Step 1")
+                          and "acc" in e["detail"]
+                          and st["iteration"] == 1])
+        # ...and clearing the stale file is not a regression.
+        self.assertEqual([e for e in ev if e["event"] == "regression"], [])
+        self.assertFalse([r for r in self.ledger()
+                          if r["verdict"] == "RETRY"])
+        self.assertTrue([e for e in ev if e["event"] == "criterion"
+                         and e["detail"].startswith("pend")])
+
+
+class TestEvidenceGate(DriverCase):
+    """Loop 5 sat at its plan gate with four criteria already green off
+    loop 4's committed records -- which carried the very harness pin
+    that loop existed to replace. The control tower recorded that it
+    could not even delete them: under the old bare-name guard that would
+    have manufactured a regression and burned an iteration."""
+
+    def test_a_fresh_loop_refuses_evidence_it_did_not_produce(self):
+        cfg = self.write_goal()
+        self.results({"metrics": {"acc": 0.9}})
+        with self.assertRaises(SystemExit):
+            loop.evidence_gate(cfg)
+        self.assertTrue([e for e in self.events()
+                         if e["event"] == "evidence_predates_loop"])
+
+    def test_it_names_every_stale_source_once(self):
+        cfg = self.write_goal(criteria=[
+            {"metric": "passed", "op": ">=", "value": 1,
+             "source": "results/out.json"},
+            {"metric": "failed", "op": "==", "value": 0,
+             "source": "results/out.json"},
+        ])
+        self.results({"metrics": {"passed": 3, "failed": 0}})
+        with self.assertRaises(SystemExit):
+            loop.evidence_gate(cfg)
+        detail = [e for e in self.events()
+                  if e["event"] == "evidence_predates_loop"][0]["detail"]
+        self.assertEqual(detail, "results/out.json")
+
+    def test_a_clean_tree_passes_silently(self):
+        loop.evidence_gate(self.write_goal())
+        self.assertEqual(self.events(), [])
+
+    def test_a_unique_path_is_the_fix_the_message_asks_for(self):
+        """What the gate is FOR: a per-loop path cannot pre-exist, so
+        the check is free forever after."""
+        self.results({"metrics": {"acc": 0.9}},
+                     "results/20260814-run/out.json")
+        loop.evidence_gate(self.write_goal(criteria=[
+            {"metric": "acc", "op": ">", "value": 0.0,
+             "source": "results/20260818-run/out.json"}]))
+        self.assertEqual(self.events(), [])
 
 
 if __name__ == "__main__":

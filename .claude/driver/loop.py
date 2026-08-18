@@ -7,14 +7,17 @@ JSON artifacts, branches on verdicts, enforces budgets, and owns all
 long-running processes and git commits. LLM intelligence lives inside
 the sessions; control flow lives here, where it is auditable.
 
-v8.1 adds five deterministic gates, on the principle that anything
+v8.1 adds six deterministic gates, on the principle that anything
 rule-bound must never be handed to a probabilistic model:
 
   * machinery()      -- the loop's own parts are installed and wired
   * validate_goal()  -- the goal contract is well-formed
   * preflight()      -- environment preconditions, before any model call
+  * evidence_gate()  -- no criterion reads a file that already exists (8.1.12)
   * plan_problems()  -- one ticket owns each criterion's evidence (8.1.6)
-  * check_criteria() -- goal.json criteria, read straight off disk
+  * check_criteria() -- goal.json criteria, read straight off disk,
+                        and only once their owner has run (criteria_due,
+                        8.1.12)
 
 Usage:
     python3 .claude/driver/loop.py start      # worktree + tmux + go
@@ -444,8 +447,48 @@ def check_criteria(cfg: dict):
 
 def criteria_line(r: dict) -> str:
     return (f"{'ok  ' if r['ok'] else 'FAIL'} {r['metric']} {r['op']} "
-            f"{r['value']} (actual={r['actual']}"
+            f"{r['value']} [{r['source']}] (actual={r['actual']}"
             + (f"; {r['why']}" if r["why"] else "") + ")")
+
+
+def pending_line(r: dict, owner: str) -> str:
+    """A criterion whose evidence is not this loop's to have produced
+    yet. Deliberately not 'ok' and not 'FAIL' -- see criteria_due()."""
+    return (f"pend {r['metric']} {r['op']} {r['value']} [{r['source']}] "
+            f"-- {owner} has not run yet"
+            + (f"; the file on disk reads {r['actual']}"
+               if r["actual"] is not None else ""))
+
+
+def crit_key(r: dict) -> str:
+    """Identity of a criterion, for the green set and the regression
+    guard.
+
+    v8.1.12: this was the bare metric name (`loop.py:1177`), so two
+    criteria measuring the same quantity in different files collapsed
+    into one entry. Live in three loops of the aibench deployment: loop
+    2 carried six criteria under four names (`accuracy` and `n_samples`
+    once per benchmark), loop 5 thirteen under nine. Two consequences,
+    both silent: a regression in one of a colliding pair is invisible
+    while the other stays green, and `first_green` fires once for the
+    pair -- so under `final-pass` cadence the second criterion's first
+    green buys no provenance audit, which is the one moment v8.1.6 added
+    that rule to catch (journal/from-aibench-retro-20260818.md, failure
+    class 2).
+    """
+    return f"{r['metric']}@{r['source']}"
+
+
+def green_set(st: dict) -> set:
+    """`criteria_green` as keys, dropping anything written before
+    v8.1.12.
+
+    A loop mid-flight over the upgrade has bare metric names in its
+    state. Dropping them makes those criteria read as first-green again
+    -- at worst one extra audit, never a false regression, which is what
+    keeping them would produce on the very next iteration.
+    """
+    return {k for k in st.get("criteria_green", []) if "@" in k}
 
 
 def slug(cfg: dict) -> str:
@@ -632,6 +675,78 @@ def covers(entry: str, path: str) -> bool:
             or path.startswith(entry))
 
 
+def criterion_owners(cfg: dict, plan_text: str) -> list:
+    """Per criterion, the tickets whose Boundary admits writes to its
+    source: a list of (ticket_id, matching Boundary entries), in plan
+    order. Parallel to cfg["criteria"].
+
+    Extracted from plan_problems() in v8.1.12, which computed exactly
+    this and threw it away after counting it. The map is what
+    criteria_due() needs, and it is the only thing that knows which
+    ticket OWES a criterion its evidence.
+    """
+    out = []
+    for c in cfg.get("criteria", []):
+        src = str(c.get("source", "")).strip().replace("\\", "/").lower()
+        owners = []
+        if src:
+            for tid, _title, body, _done in tickets(plan_text):
+                hits = [e for e in boundary_paths(body) if covers(e, src)]
+                if hits:
+                    owners.append((tid, hits))
+        out.append(owners)
+    return out
+
+
+def criteria_due(cfg: dict, plan_text: str, current: str) -> list:
+    """Per criterion, (is its evidence this loop's to have produced yet?,
+    the ticket that owes it). Parallel to cfg["criteria"].
+
+    v8.1.12, from journal/from-aibench-retro-20260818.md failure class 2.
+    `check_criteria()` reads the file, not the run, so a criterion whose
+    evidence a LATER ticket produces reads green off whatever is on disk
+    -- and what is on disk is routinely a previous loop's committed
+    artifact. Loop 3 iteration 1 went first-green on `passed`/`failed`
+    off loop 2's `results/test-summary.json` while running a runtime
+    probe that writes no test summary. Loop 6 did the same at iteration
+    1, and then paid for it twice: the stale file was cleared, the
+    regression guard read green->red and forced a RETRY, and the
+    Generator stopped to say what this function now encodes --
+
+        "`results/test-summary.json` [is] owned solely by Phase 2,
+         Step 2 per `Plan.md`. This ticket's own Spec is fully
+         implemented [...] the rejected criterion is not this ticket's
+         evidence to produce [...] treat this as the guard defending
+         forged evidence rather than a true regression."
+
+    -- on ticket 1 of 9, in the loop that cost $70.89 and did not
+    finish.
+
+    A criterion that is not yet due is neither green NOR red: it is left
+    out of the green set and out of the regression comparison, so the
+    honest act of deleting stale evidence costs nothing. It becomes due
+    the moment its owner runs, and every criterion is due by the final
+    gate, which still requires all of them green.
+
+    No owner means no ticket's Boundary names the file. That is legal
+    and normal -- on an `experiment` goal the DRIVER launches the trial,
+    so its metrics file belongs in no Boundary (task-ticket-format.md).
+    Those are always due; staleness for them is caught before the loop
+    starts, by evidence_gate().
+    """
+    done = {tid for tid, _t, _b, d in tickets(plan_text) if d}
+    out = []
+    for owners in criterion_owners(cfg, plan_text):
+        if not owners:
+            out.append((True, None))
+            continue
+        # plan_problems() rejects a plan with more than one owner before
+        # any of this runs, so the first is the sole owner.
+        tid = owners[0][0]
+        out.append((tid == current or tid in done, tid))
+    return out
+
+
 def plan_problems(cfg: dict, plan_text: str) -> list:
     """Who may write each criterion's evidence? At most one ticket, and
     it must name the file.
@@ -654,15 +769,11 @@ def plan_problems(cfg: dict, plan_text: str) -> list:
     session and belongs in no Boundary.
     """
     problems = []
-    for c in cfg.get("criteria", []):
+    for c, owners in zip(cfg.get("criteria", []),
+                         criterion_owners(cfg, plan_text)):
         src = str(c.get("source", "")).strip().replace("\\", "/").lower()
         if not src:
             continue
-        owners = []
-        for tid, _title, body, _done in tickets(plan_text):
-            hits = [e for e in boundary_paths(body) if covers(e, src)]
-            if hits:
-                owners.append((tid, hits))
         if len(owners) > 1:
             problems.append(
                 f"{len(owners)} tickets can write '{c['source']}' "
@@ -679,6 +790,52 @@ def plan_problems(cfg: dict, plan_text: str) -> list:
                 f"test fixture, a stray default path -- write the "
                 f"evidence its own criterion is judged on.")
     return problems
+
+
+# ---------- gate 5: evidence that predates the loop --------------------
+
+def evidence_gate(cfg: dict) -> None:
+    """Nothing may already exist at a path a criterion reads its number
+    from. Runs once, on a FRESH loop, before the Planner.
+
+    v8.1.12, from journal/from-aibench-retro-20260818.md failure class 2.
+    check_criteria() reads a file; it cannot read a RUN. So a criterion
+    pointed at a path that survives across loops -- `results/<bench>/
+    latest.json`, `results/test-summary.json` -- reads the previous
+    loop's number as this loop's result. Loop 5 sat at its plan gate
+    with four criteria already green off loop 4's committed records,
+    which carried the very harness pin that loop existed to replace.
+
+    criteria_due() is the runtime net for evidence a later ticket owes.
+    This is the cheaper half: it fires before a model is dispatched, for
+    $0, and the fix it forces -- a path only this loop can write -- makes
+    the whole class impossible rather than merely detected. Skipped on
+    resume, where the evidence on disk is the loop's own.
+    """
+    stale, seen = [], set()
+    for c in cfg.get("criteria", []):
+        src = str(c.get("source", ""))
+        if src and src not in seen and (ROOT / src).exists():
+            seen.add(src)
+            stale.append(src)
+    if not stale:
+        return
+    event("evidence_predates_loop", detail=", ".join(stale))
+    die("Criteria read their numbers from files that ALREADY EXIST:\n"
+        + "".join(f"  - {x}\n" for x in stale)
+        + "Nothing has been planned and nothing has been spent. Whatever "
+          "is in those\n"
+          "files right now will be read as this loop's result -- and a "
+          "criterion that\n"
+          "is green before the work starts cannot be earned by it. "
+          "Either:\n"
+          "  * point each criterion at a path only THIS loop can write "
+          "(put the loop's\n"
+          "    id in it; a `latest.json` style pointer can never satisfy "
+          "this), or\n"
+          "  * remove the stale evidence and re-run.\n"
+          "Resuming an existing loop skips this check -- there, the "
+          "evidence is its own.")
 
 
 # ---------- budgets ----------------------------------------------------
@@ -1111,7 +1268,8 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             event("escalate", detail=f"budget exhausted: {reason}")
             return
         plan = (ROOT / "Plan.md")
-        all_tickets = list(tickets(plan.read_text()))
+        plan_text = plan.read_text()
+        all_tickets = list(tickets(plan_text))
         todo = [(i, t, b) for i, t, b, done in all_tickets if not done]
         # v8.1.4: "unreadable" and "finished" are not the same state.
         # todo was computed straight off tickets(), so a plan with no
@@ -1180,14 +1338,24 @@ def phase_iterate(cfg: dict, st: dict) -> None:
 
             # ---- deterministic criteria gate (free; every iteration) --
             _, crit = check_criteria(cfg)
-            prev_green = set(st.get("criteria_green", []))
-            now_green = {r["metric"] for r in crit if r["ok"]}
-            regressed = sorted(prev_green - now_green)
+            # v8.1.12: a criterion whose owner has not run is not yet
+            # evidence -- it is whatever happens to sit at that path.
+            # See criteria_due().
+            due = criteria_due(cfg, plan_text, tid)
+            prev_green = green_set(st)
+            now_green = {crit_key(r) for r, (d, _o) in zip(crit, due)
+                         if d and r["ok"]}
+            pending = {crit_key(r) for r, (d, _o) in zip(crit, due) if not d}
+            # A REPLAN can move ownership, so a green criterion can turn
+            # pending. Subtracting them keeps that from reading as a
+            # regression, which would RETRY a ticket for a plan edit.
+            regressed = sorted(prev_green - now_green - pending)
             first_green = sorted(now_green - prev_green)
             st["criteria_green"] = sorted(now_green)
             save(STATE, st)
-            for r in crit:
-                event("criterion", detail=criteria_line(r))
+            for r, (d, o) in zip(crit, due):
+                event("criterion", detail=criteria_line(r) if d
+                      else pending_line(r, o))
             if first_green:
                 event("first_green", detail=", ".join(first_green))
 
@@ -1868,7 +2036,7 @@ def main() -> None:
         phase_close(cfg, load(STATE, {}), "--force" in argv)
         return
 
-    # Five deterministic gates, cheapest first. Nothing is planned and
+    # Six deterministic gates, cheapest first. Nothing is planned and
     # nothing is spent until they pass; plan_problems() runs inside the
     # contract review, where a plan first exists to check.
     machinery()
@@ -1893,6 +2061,11 @@ def main() -> None:
         for r in crit:
             print("  " + criteria_line(r))
         print(f"\ncriteria gate: {'PASS' if ok else 'FAIL'}")
+        pre = sorted({c["source"] for c in cfg.get("criteria", [])
+                      if (ROOT / c["source"]).exists()})
+        if pre:
+            print("!! evidence already on disk, so a fresh `start` will "
+                  "refuse: " + ", ".join(pre))
         gap = notify_gap()
         if gap:
             print(f"!! {gap}")
@@ -1901,6 +2074,11 @@ def main() -> None:
     require_isolation(cfg, allow_here)
     preflight(cfg)
     ensure_gitignore()
+
+    # Before the state file exists, this loop has produced nothing -- so
+    # anything sitting at a criterion's source belongs to someone else.
+    if not STATE.exists():
+        evidence_gate(cfg)
 
     st = load(STATE, {"phase": "plan", "iteration": 0, "replans": 0,
                       "spent_usd": 0.0, "gpu_hours": 0.0,

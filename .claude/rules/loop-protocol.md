@@ -77,17 +77,19 @@ repo) and the tcocrai retro it cites.
    Crash-recovery with an identical config may reuse the trial ID; ANY
    parameter change = new trial ID via REPLAN, recorded in the ledger.
 6. **Anything rule-bound is decided by code, not by a model.** (v8.1)
-   The driver owns four deterministic gates and runs them before it
+   The driver owns five deterministic gates and runs them before it
    spends anything: `machinery()` (the loop's own parts are installed
    and the hook is wired), `validate_goal()` (the contract is
    well-formed and has at least one machine-checkable criterion),
-   `require_isolation()` (not the primary working tree), and
-   `preflight()` (the environment preconditions declared in `Goal.md`).
-   Once a plan exists, `plan_problems()` checks that at most one ticket
-   can write each criterion's `source` file and that it names the file
-   rather than its tree (v8.1.6) — a plan that fails goes back to the
-   Planner before a contract review is paid for. `check_criteria()`
-   then reads every criterion straight off disk. All fail CLOSED — a
+   `require_isolation()` (not the primary working tree), `preflight()`
+   (the environment preconditions declared in `Goal.md`), and
+   `evidence_gate()` (nothing already exists at a path a criterion
+   reads its number from — v8.1.12). Once a plan exists,
+   `plan_problems()` checks that at most one ticket can write each
+   criterion's `source` file and that it names the file rather than its
+   tree (v8.1.6) — a plan that fails goes back to the Planner before a
+   contract review is paid for. `check_criteria()` then reads every
+   criterion straight off disk. All fail CLOSED — a
    missing source file, an unparseable artifact or an absent metric is a
    failure, never a pass. Rationale: the Ask phase already forces every
    criterion into metric + op + value + source, so handing the
@@ -107,10 +109,34 @@ repo) and the tcocrai retro it cites.
    cadence — provenance is worth paying for at the moment the colour
    changes, not five committed tickets later.
 
+   **A criterion is identified by `metric@source`, and is evidence only
+   once its owner has run** (v8.1.12). Two rules, one failure class:
+
+   - The green set was keyed on the bare metric name, so two criteria
+     measuring the same quantity in different files were one entry —
+     six criteria under four names in one loop, thirteen under nine in
+     another. A regression in one of a colliding pair was invisible
+     while the other stayed green, and `first_green` fired once for the
+     pair, so the second criterion's first green bought no audit.
+   - `criteria_due()` defers a criterion whose `source` a LATER ticket
+     owns. Until that ticket runs, the file at that path is not this
+     loop's result; it is whatever was there before. Such a criterion
+     is neither green NOR red — out of the green set and out of the
+     regression comparison — so clearing stale evidence costs nothing.
+     Everything is due by the final gate, which still requires all of
+     it green.
+
+   Prefer to make the class impossible rather than detected: give each
+   criterion a `source` path only THIS loop can write. A stable pointer
+   (`results/<bench>/latest.json`) is the shape that fails — it is what
+   made one loop start with four criteria already green off the
+   previous loop's records, carrying the very harness pin that loop
+   existed to replace. `evidence_gate()` refuses such a start.
+
 ## The loop
 
 ```
-goal.json → [gates: machinery, contract shape, isolation, preflight]
+goal.json → [gates: machinery, contract shape, isolation, preflight, evidence]
           → Planner → Evaluator contract review (OK|REVISE, ≤2 rounds
                       AND ≤ half of max_usd)
           → HUMAN GATE (approve once; also after each REPLAN)
