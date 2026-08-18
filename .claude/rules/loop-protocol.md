@@ -47,6 +47,28 @@ repo) and the tcocrai retro it cites.
    leaves redirects to the precise target scan, which decides them
    exactly. Denying a command that merely NAMES a protected file is a
    defect, not caution.
+
+   **Decide on the resolved target, never on the token** (v8.1.11). The
+   same class recurred eight times across the aibench deployment's first
+   eight loops — 42% of every reason a loop stopped — because the net
+   kept judging syntax it had mistaken for a path: a bare `>`, a `>=`
+   comparison, a `>` inside a quoted `--format` string, a heredoc body,
+   a `git log` and a later bare `add` on another line of the same batch,
+   the listing forms of `tag`/`stash`/`worktree`, a redirect handed to
+   `cp`'s trailing-argument rule. Two rules follow from it: git is
+   decided by SUBCOMMAND, not by verb; and a redirect's own syntax is
+   never a target. Both directions matter — the same `cp` bug that
+   denied a read-only copy also LEAKED a write to `Architecture.md`,
+   because the trailing argument it decided was `/dev/null`.
+
+   **`/tmp` is scratch, and scratch is outside the matrix.** Every role
+   may write there through `Write` and through the shell alike; the
+   Evaluator's contract requires it, since reconstructing a prior state
+   is how a claim gets checked independently. Scratch is a TWO-sided
+   test on the resolved path: outside the repo AND under `/tmp`. A
+   symlink from `/tmp` back into the tree is decided as the file it
+   points at, and a project that itself lives under `/tmp` is not one
+   big carve-out.
 4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
    agent session may edit them — a loop that can move its own
    goalposts optimizes the wrong thing. Change of goal = user edits +

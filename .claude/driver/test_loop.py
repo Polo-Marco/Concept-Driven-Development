@@ -2999,6 +2999,175 @@ class TestHookArrowIsNotARedirect(HookCaller, unittest.TestCase):
             ["logs/run.log"])
 
 
+# ---------- v8.1.11: the eight aibench hotfixes, brought home ----------
+
+class TestHookFalsePositivesFromAibench(HookCaller, unittest.TestCase):
+    """Every case here denied a READ-ONLY action during loops 1-8 of the
+    aibench deployment (2026-08-02 .. 2026-08-18). That retro measured
+    the class: 8 of 19 escalations, 42% of every reason the loop stopped,
+    and most killed an Evaluator mid-audit -- so the loop paid for the
+    session twice (journal/from-aibench-retro-20260818.md, failure class
+    1; patches in journal/hotfixes/).
+
+    The fixes were written one live loop at a time and NONE of them
+    shipped with a test, which is why the class kept recurring after two
+    of them had already landed. Each test below pins the false positive
+    that was fixed AND the real denial next to it, because every one of
+    these fixes narrows a net that is load-bearing.
+    """
+
+    def bash(self, role, cmd, boundary=""):
+        return self.call(role, "Bash", {"command": cmd}, boundary)
+
+    # ---- 3d2271e: redirect syntax read as a write TARGET -------------
+
+    def test_bare_redirect_token_is_not_a_write_target(self):
+        """`tee logs/latest.log > /dev/null` -- a ticket's mandated Run
+        Command -- handed the bare `>` to the role decision as a file
+        named '>'."""
+        for cmd in ("pytest -q | tee logs/latest.log > /dev/null",
+                    "echo hi | tee logs/a.log >/dev/null 2>&1"):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+
+    def test_dev_null_is_never_a_target(self):
+        self.assertNotIn("/dev/null",
+                         hook.bash_write_targets("rm -f x > /dev/null"))
+
+    # ---- 2c51532: `>=` and heredoc bodies ---------------------------
+
+    def test_ge_comparison_is_not_a_redirect(self):
+        """A read-only Evaluator heredoc doing `if s['reward'] >= 1` was
+        denied as a shell write to '=1'."""
+        self.assertEqual(hook.bash_write_targets("if s['reward'] >= 1:"),
+                         [])
+        self.assertEqual(
+            self.bash("evaluator", "awk '$2 >= 1 {print}' logs/a.log"),
+            self.ALLOW)
+
+    def test_heredoc_body_is_data_not_shell(self):
+        """The docstring has always declared heredocs out of scope --
+        fail OPEN. Scanning their lines made them fail CLOSED instead:
+        the code contradicting its own contract."""
+        cmd = ("python3 - <<'PY'\n"
+               "open('Architecture.md').read()\n"
+               "x = 1 > 0\n"
+               "PY")
+        self.assertEqual(hook.bash_write_targets(cmd), [])
+
+    # ---- be7fe1b: a quoted `>` is literal ---------------------------
+
+    def test_quoted_span_holds_no_redirect(self):
+        """`git show --format='%an <%ae>%n...'` denied a read-only
+        Evaluator as a write to '%n%ad%n%s%n'."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      "git show -s --format='%an <%ae>%n%ad' HEAD"),
+            self.ALLOW)
+
+    def test_a_quoted_write_target_is_still_caught(self):
+        """The blanking is scoped to spans that CONTAIN shell
+        metacharacters, so quoting a target does not launder it."""
+        self.assertEqual(self.bash("generator", "tee 'Plan.md' < a"),
+                         self.DENY)
+
+    # ---- 975a946: the git net spanned LINES -------------------------
+
+    def test_git_net_does_not_span_lines(self):
+        """A read-only `git log` on one line and a bare `add` anywhere
+        later in the same multi-line Bash batch matched as one command.
+        Nine denials and a killed audit at loop 6, ticket 1."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      "git log --oneline -3\n"
+                      "echo 'now add up the rows'\n"
+                      "wc -l results/*.json"),
+            self.ALLOW)
+
+    def test_git_writes_still_denied_after_the_narrowing(self):
+        for cmd in ("git commit -m x", "git add -A", "git  checkout main",
+                    "cd /tmp && git push", "git tag v1.0",
+                    "git stash", "git worktree add ../x"):
+            self.assertEqual(self.bash("evaluator", cmd), self.DENY, cmd)
+
+    # ---- e7cd02b / 8cd5a8b: listing forms, redirect or not ----------
+
+    def test_git_listing_forms_are_reads(self):
+        for cmd in ("git tag", "git tag -l", "git tag -l 'v8.*'",
+                    "git tag -n1", "git stash list", "git stash show",
+                    "git worktree list", "git worktree list 2>&1",
+                    "git tag | head -5"):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+
+    # ---- 2bac8fd: redirects are not positional arguments ------------
+
+    def test_redirect_is_not_a_copy_destination(self):
+        """`cp -a a.log /tmp/b.log 2>/dev/null` handed `2>/dev/null` to
+        the trailing-argument rule as its destination."""
+        self.assertEqual(
+            self.bash("evaluator", "cp -a logs/a.log /tmp/b.log 2>/dev/null"),
+            self.ALLOW)
+
+    def test_stripping_redirects_did_not_leak_the_real_target(self):
+        """The same bug LEAKED in the other direction: in `cp a.txt
+        Architecture.md > /dev/null` the trailing argument was
+        `/dev/null`, so the write to a core file was never decided."""
+        self.assertEqual(
+            self.bash("generator", "cp a.txt Architecture.md > /dev/null"),
+            self.DENY)
+
+
+class TestHookScratchCarveOut(unittest.TestCase):
+    """dc16955 (hook hunk): `Write: /tmp/...` was denied while the same
+    write through the shell was allowed -- a rule that depends on which
+    tool you reach for is not a rule. It stopped a provenance audit on
+    the very iteration where five criteria first went green, because
+    cdd-evaluator.md REQUIRES reconstructing prior states in /tmp.
+
+    The two v8.1.11 corrections are pinned here: the carve-out is
+    decided on the RESOLVED path (the reviewing Evaluator's own
+    non-blocking finding F3), and it is two-sided, so a project rooted
+    in /tmp is not one big exemption.
+    """
+
+    def call(self, role, path, root):
+        env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": "",
+               "CLAUDE_PROJECT_DIR": root}
+        return subprocess.run(
+            [sys.executable, str(HOOK)], env=env, text=True,
+            input=json.dumps({"tool_name": "Write",
+                              "tool_input": {"file_path": path,
+                                             "content": "x"}}),
+            capture_output=True).returncode
+
+    def test_tmp_scratch_allowed_for_every_role(self):
+        with tempfile.TemporaryDirectory(dir=os.path.expanduser("~")) as d:
+            for role in ("evaluator", "generator", "planner"):
+                self.assertEqual(
+                    self.call(role, "/tmp/evaluator_recheck.py", d), 0, role)
+
+    def test_symlink_out_of_tmp_is_decided_on_the_target(self):
+        """F3, filed by the Evaluator that reviewed the carve-out:
+        `abspath` follows nothing, so /tmp/x -> <repo>/Architecture.md
+        read as scratch and was permitted."""
+        with tempfile.TemporaryDirectory(dir=os.path.expanduser("~")) as d:
+            (Path(d) / "Architecture.md").write_text("# arch\n")
+            link = Path(tempfile.mkdtemp()) / "sneaky"
+            link.symlink_to(Path(d) / "Architecture.md")
+            self.addCleanup(shutil.rmtree, link.parent, ignore_errors=True)
+            self.assertEqual(self.call("generator", str(link), d), 2)
+
+    def test_a_project_rooted_in_tmp_is_not_one_big_carve_out(self):
+        """Scratch means outside the REPO. The one-sided prefix check
+        exempted every core file of any tree living under /tmp -- a CI
+        checkout, or toy_project.sh pointed at /tmp -- and silently."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as d:
+            self.assertEqual(
+                self.call("generator", str(Path(d) / "Architecture.md"), d),
+                2)
+            self.assertEqual(
+                self.call("generator", str(Path(d) / "src" / "a.py"), d), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])
