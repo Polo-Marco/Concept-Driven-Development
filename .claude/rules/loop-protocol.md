@@ -74,6 +74,21 @@ repo) and the tcocrai retro it cites.
    running loop and cost the loop; this one ships with the
    reverse-order case in the test suite.
 
+   **A quoted span is data too** (v8.1.14). Same rule, last place it
+   was missing. The target scan blanks quoted spans carrying shell
+   metacharacters but keeps the rest, correctly — there a quoted span
+   may BE a target (`tee 'Plan.md'`). On the git net it can be nothing:
+   `git` is a command only where the shell would execute it. So
+   `echo "--- git worktree ---" && git worktree list` was denied on the
+   ECHO LABEL while the real listing next to it was scrubbed correctly,
+   and `grep "git commit" logs/x` was denied for naming what it was
+   searching for. It killed contract review round 3 of a loop; the
+   driver read the silence as REVISE, spent the last revision, and
+   escalated a plan nothing had reviewed. Sixth false positive of this
+   class. It fails OPEN on `sh -c "git push"`, which is an interpreter
+   escape and out of scope by the same docstring that has always said
+   so — asserted by a test, so the hole is visible rather than found.
+
    **A heredoc body is DATA on every scan, not just one** (v8.1.13). The
    truncation lived inside the target scan, so the git net and the loose
    net still read the body as shell — and a Planner writing the file it
@@ -198,6 +213,23 @@ FIRST review is always bought: skipping it would not bound a cost, it
 would delete the safety gate. The gate banner then states what it is
 handing you — reviewed OK, or review cut short — because a gate that
 misreports itself is worse than no gate.
+
+**The contract review EXECUTES one class of check** (v8.1.14). It was
+a document review by design, and the aibench deployment's every
+contract-review finding was one class: the plan reads a field, key or
+path that does not exist in the thing it reads from. A reader aimed at
+two different data shapes; a `doc_hash` that is one constant value
+across 900 rows; `sample_outcomes()` reading `repeat["harness"]` and a
+`domain` the declared record shape does not carry. Each cost minutes of
+careful reading, each falls out of one command in seconds, and reading
+missed one outright — it passed review and the Generator stopped six
+minutes after the human gate. The **Wired?** check therefore requires a
+pasted command and its output, not a conclusion. The v8.1.7 ceiling
+stands and gets its line drawn: EXISTENCE is a spot-check and is
+required, BEHAVIOUR is building and is forbidden — list the keys of a
+shape, never write the function that reads them. A probe that needs a
+fixture or a stub has crossed it, and the crossing is itself the
+finding.
 
 **The plan phase commits at its gate** (v8.1.7). The driver commits
 `git add -A`, so with nothing flushed between the Planner and ticket 1,

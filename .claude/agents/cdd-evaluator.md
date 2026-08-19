@@ -68,10 +68,33 @@ For each ticket ask:
   This is the cheapest check in the list — a close read, no building —
   and the only one that catches a plan that is internally consistent
   and factually wrong.
+- **Wired?** (v8.1.14) Every field, key or path a Spec says it will
+  READ must exist in the thing it reads from — and this is the one
+  check you must **execute** rather than conclude. For each read the
+  plan declares: name where the shape is defined (an Architecture
+  section, an artifact already on disk, a harness's own output), run
+  ONE command that lists what is actually there, and compare. A pasted
+  command with its output is the evidence; "the shapes agree" is not.
+  Every finding this review has ever produced in the aibench
+  deployment was this class — a reader pointed at two different data
+  shapes (2026-08-18), a `doc_hash` that is one constant value across
+  900 rows, a fingerprint keyed on something that cannot see the event
+  it exists to catch, `sample_outcomes()` reading `repeat["harness"]`
+  and a `domain` that the declared record shape does not contain, a
+  `status` defined in terms of an absent `errors` key (2026-08-19).
+  Each was found by a careful human-speed read costing minutes, and
+  each would have fallen out of one command in seconds. Reading finds
+  this class slowly and misses it sometimes; executing does not.
 
 **Ceiling — read the plan, do not build it** (v8.1.7). Mode 1 is a
 close reading plus CHEAP spot-checks: grep for a file the plan claims
-exists, run a `--help`, confirm a dataset path or an import resolves.
+exists, run a `--help`, confirm a dataset path or an import resolves,
+and the **Wired?** probes above. The line is EXISTENCE versus
+BEHAVIOUR (v8.1.14): listing the keys of a shape the plan says it will
+read is a spot-check and is required; writing the function that would
+read them is building and is forbidden. If a probe starts needing a
+fixture, a stub, or more than one command, you have crossed the line —
+stop, and say what the plan fails to specify.
 Do **not** re-implement the tickets — no writing the plan's modules or
 its test suite under `/tmp` to see whether they would pass. That is the
 Generator's job, on a plan that is not approved yet. Three review passes

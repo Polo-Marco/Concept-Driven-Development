@@ -453,7 +453,31 @@ def main() -> None:
         # so a read-only provenance batch ending `git tag | head` was
         # denied -- the second false positive of this class in one loop,
         # and it again ended an Evaluator audit mid-flight.
-        if GIT_WRITE.search(GIT_READONLY.sub(" ", cmd)):
+        #
+        # A QUOTED SPAN IS DATA TOO, and on this scan every one of them
+        # is (v8.1.14). The heredoc rule above is the same rule; the
+        # target scan already blanks the quoted spans that carry shell
+        # metacharacters (`QUOTED`, v8.1.9b). What was never blanked is
+        # a quoted span with no metacharacters, because there it may BE
+        # a target (`tee 'Plan.md'`). Here it cannot be anything: `git`
+        # is a command only where the shell would execute it, and inside
+        # quotes it is an argument. So a read-only Evaluator orienting
+        # itself with
+        #   ... && echo "--- git worktree ---" && git worktree list
+        # was denied "Git write commands are driver-only" on the ECHO
+        # LABEL -- the real `git worktree list` was scrubbed correctly by
+        # GIT_READONLY, and the decoration next to it was not
+        # (2026-08-19 06:17). It killed contract review round 3 of an
+        # aibench loop, which the driver then read as REVISE, which used
+        # up the last revision and escalated a plan nothing had reviewed.
+        # Sixth false positive of the decide-on-text class; `grep "git
+        # commit" logs/x` is the same shape and was equally denied.
+        #
+        # Fails OPEN on `sh -c "git push"` and `eval "git add -A"`. That
+        # is an interpreter escape, out of scope by the module docstring
+        # exactly like `python3 -c`, and it is asserted as a known hole
+        # in test_loop.py rather than left to be discovered.
+        if GIT_WRITE.search(GIT_READONLY.sub(" ", QUOTED.sub(" ", cmd))):
             deny("Git write commands are driver-only in loop mode.")
         # Loose net for the driver/user-owned files, kept alongside the
         # precise scan below for the cases quoting or expansion can hide

@@ -3106,6 +3106,48 @@ class TestHookFalsePositivesFromAibench(HookCaller, unittest.TestCase):
                     "git tag | head -5"):
             self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
 
+    # ---- v8.1.14: a quoted span is not a command --------------------
+
+    def test_echo_label_naming_git_is_not_a_git_command(self):
+        """The exact command that killed contract review round 3 of
+        aibench loop 11 (2026-08-19 06:17). Every part of it is
+        read-only; the real `git worktree list` is scrubbed by
+        GIT_READONLY and the ECHO LABEL next to it was not."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      'ls && echo "--- results/repro ---" '
+                      '&& ls -la results/repro 2>&1 | head '
+                      '&& echo "--- git worktree ---" '
+                      '&& git worktree list && pwd'),
+            self.ALLOW)
+
+    def test_a_quoted_git_write_as_an_argument_is_data(self):
+        """Same class, other shapes: grepping a log for a git command,
+        and a heading in single quotes."""
+        for cmd in ('grep -c "git commit" logs/driver.log',
+                    "echo '--- git add ---'",
+                    'printf "%s\n" "git push origin main"'):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+
+    def test_a_real_git_write_with_a_quoted_argument_is_still_denied(self):
+        """Blanking quoted spans must not blank the command itself."""
+        for cmd in ('git commit -m "wip: something"',
+                    "git commit -m 'wip'",
+                    'git checkout -b "loop/x"'):
+            self.assertEqual(self.bash("evaluator", cmd), self.DENY, cmd)
+
+    def test_interpreter_escape_in_quotes_is_knowingly_out_of_scope(self):
+        """ASSERTS A HOLE, so it is visible rather than discovered.
+
+        `sh -c "git push"` executes its quoted argument, so blanking
+        quoted spans fails OPEN on it. That is an interpreter escape --
+        out of scope by the module docstring exactly like `python3 -c`
+        -- and adversarial containment is the VM plus the worktree
+        (loop-protocol.md #3). If this test ever needs to flip, the fix
+        is to confine the process, not to grow a shell parser here."""
+        self.assertEqual(self.bash("evaluator", 'sh -c "git push"'),
+                         self.ALLOW)
+
     # ---- 2bac8fd: redirects are not positional arguments ------------
 
     def test_redirect_is_not_a_copy_destination(self):
