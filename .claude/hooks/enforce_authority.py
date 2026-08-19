@@ -266,12 +266,43 @@ REDIR_TOK = re.compile(r"^\d*>>?|^<")
 # its target is the NEXT token, which must be dropped too. `2>/dev/null`
 # carries its own and consumes nothing further.
 BARE_REDIR = re.compile(r"\d*>>?|<")
+# Literal shell assignments, resolved INCREMENTALLY as the segments are
+# walked. v8.1.13: the scan handed `$M` to the role decision, which read
+# it as a repo-relative file named `$m` and denied the Evaluator's
+# contractual /tmp reconstruction (`M=/tmp/eval-check; cp -r src "$M/"`,
+# 2026-08-19 03:55). That denial is what pushed a control tower into
+# patching this hook under a running loop, where its patch opened a
+# fail-open (journal/from-aibench-loop10-postmortem.md).
+#
+# POSITION IS THE WHOLE POINT, and is exactly what that patch got wrong:
+# it collected assignments with `finditer`, last-write-wins, so
+# `M=Architecture.md; echo x > $M; M=/tmp/ok` resolved the redirect
+# against an assignment that runs AFTER it, and ALLOWED a write to a
+# core file. Each segment is resolved against the assignments that
+# PRECEDE it, which is what the shell does; an assignment inside a
+# segment binds the command that segment prefixes (`M=/tmp/x cp a "$M"`).
+#
+# A target still containing `$` after resolution is DROPPED, not guessed
+# at. Expansion is out of scope per the module docstring, and that
+# contract says fail OPEN; `$(...)` and unset names land here. The loose
+# co-occurrence net in main() is what still guards the goal/ledger/state
+# files when a name reaches them by a road this cannot follow.
+ASSIGN = re.compile(r"(?:^|\s)([A-Za-z_]\w*)=([^\s;|&<>]*)")
+VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+
+def expand(tok: str, env: dict) -> str:
+    """Substitute the literal assignments seen so far. An unknown name
+    is left as it is, so the caller can drop it."""
+    return VAR.sub(
+        lambda m: env.get(m.group(1) or m.group(2), m.group(0)), tok)
 
 
 def bash_write_targets(cmd: str) -> list:
     """Best-effort list of paths this command would write. See the
     module docstring for what is intentionally out of scope."""
     out = []
+    env = {}
     m = HEREDOC.search(cmd)
     if m:
         cmd = cmd[:m.start()]
@@ -280,10 +311,13 @@ def bash_write_targets(cmd: str) -> list:
     for seg in SEGMENT.split(cmd):
         if not seg.strip():
             continue
-        out += REDIRECT.findall(seg)
+        for name, val in ASSIGN.findall(seg):
+            env[name] = expand(val, env)
+        hits = []                # this segment's targets, unexpanded
+        hits += REDIRECT.findall(seg)
         m = DD_OF.search(seg)
         if m:
-            out.append(m.group(1))
+            hits.append(m.group(1))
         # Redirects are not arguments. Strip them before ANY positional
         # reasoning (v8.1.9c). REDIR_TOK guarded only the ALL_ARG branch,
         # so `cp -a a.log /tmp/b.log 2>/dev/null` handed `2>/dev/null` to
@@ -307,15 +341,18 @@ def bash_write_targets(cmd: str) -> list:
             # sed -i / mv / cp / install / truncate: the destination or
             # edited file is the trailing argument.
             if toks[0] != "sed" or any(t.startswith("-i") for t in toks):
-                out.append(toks[-1])
+                hits.append(toks[-1])
         elif ALL_ARG_CMDS.match(seg):
             for t in toks[1:]:
                 if not t.startswith("-"):
-                    out.append(t)
+                    hits.append(t)
+        out += [expand(t, env) for t in hits]
     # /dev/null is a sink, writable by definition — never a target worth
-    # deciding (v8.1.9b, same incident as REDIR_TOK).
+    # deciding (v8.1.9b, same incident as REDIR_TOK). A token that still
+    # carries a `$` never resolved (v8.1.13); deciding it would decide a
+    # path that does not exist under any name the shell will use.
     return [t for t in (t.strip("'\"") for t in out)
-            if t and t != "/dev/null"]
+            if t and t != "/dev/null" and "$" not in t]
 
 
 def check_write(role: str, rel: str, boundary: list):
@@ -396,6 +433,19 @@ def main() -> None:
     # ---- Bash: block git mutations for every agent role -------------
     if tool == "Bash":
         cmd = tin.get("command", "")
+        # A heredoc BODY is data, not shell — for EVERY scan on this
+        # branch, not only the target scan. v8.1.13: the truncation
+        # lived inside bash_write_targets(), so the git net and the
+        # loose net still read the body as commands, and a Planner
+        # writing the file it owns with `cat > Plan.md <<'PLANEOF'` was
+        # denied "Git write commands are driver-only" because prose in
+        # the plan put `git` and a subcommand word on one line
+        # (2026-08-19 03:02). Same fail-closed-on-data defect v8.1.11
+        # fixed in one place and not the other; CALL_SUMMARY still
+        # carries the whole command, so the denial log is unchanged.
+        m = HEREDOC.search(cmd)
+        if m:
+            cmd = cmd[:m.start()]
         # Scrub the LISTING forms of subcommands whose names also name a
         # write, then test what is left. `git tag` with no argument
         # lists tags; `git tag v1.0` creates one. GIT_WRITE cannot tell

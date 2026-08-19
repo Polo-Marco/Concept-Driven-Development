@@ -65,6 +65,12 @@ DEFAULT_MODELS = {"planner": "opus", "generator": "sonnet",
 
 ROLES = ("planner", "generator", "evaluator", "monitor")
 
+# Pause before re-dispatching a session that died without output
+# (v8.1.13). The fault this exists for is an overloaded upstream, so an
+# instant retry is the one retry least likely to work. The offline suite
+# sets it to 0.
+SESSION_RETRY_SECONDS = 30
+
 OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le,
        "<": operator.lt, "==": operator.eq, "!=": operator.ne}
 
@@ -73,6 +79,12 @@ OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le,
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _tail(text: str, n: int = 200) -> str:
+    """The last n characters of a stderr, on one line, or nothing."""
+    t = " ".join((text or "").split())
+    return f" -- {t[-n:]}" if t else ""
 
 
 def load(path: Path, default):
@@ -585,16 +597,44 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     # cheapest heartbeat there is.
     event("session", detail=f"{role} ({model}) started")
     denials_before = denials_seen()
-    r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
-                       capture_output=True, timeout=timeout)
+    # v8.1.13: a session that DIED is not a session that returned a
+    # judgement, and one dispatch could not tell them apart. On
+    # 2026-08-18 17:10 the provenance Evaluator died on its first token
+    # with API Error 529 Overloaded and wrote nothing; the caller read
+    # the absent verdict.json as ESCALATE and stopped a loop whose 2.7h
+    # trial had already SUCCEEDED, costing a human, a hand-made commit
+    # and a restart -- and a restart costs an iteration
+    # (journal/from-aibench-retro-20260819.md, escalation 2). The retry
+    # is of the SESSION, never of the ticket: re-running the ticket is
+    # what would have re-run the trial.
+    out, r = None, None
+    for attempt in (1, 2):
+        r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
+                           capture_output=True, timeout=timeout)
+        try:
+            out = json.loads(r.stdout)
+            break
+        except (json.JSONDecodeError, AttributeError):
+            out = None
+        # getattr: the offline suite stubs subprocess.run with a bare
+        # stdout, and a crash HERE would be a driver defect invented by
+        # its own diagnostics.
+        why = (f"{role}: exit {getattr(r, 'returncode', '?')}, no usable "
+               f"output{_tail(getattr(r, 'stderr', ''))}")
+        if attempt == 1:
+            event("session_died", detail=f"{why} -- redispatching once")
+            if SESSION_RETRY_SECONDS:
+                time.sleep(SESSION_RETRY_SECONDS)
+        else:
+            event("session_died", detail=f"{why} -- giving up")
+    st["session_died"] = out is None
     new_denials = denials_seen() - denials_before
     if new_denials:
         event("hook_denials",
               detail=f"{role}: {new_denials} authority denial(s) -- "
                      f"see logs/denials.log")
-    try:
-        out = json.loads(r.stdout)
-    except (json.JSONDecodeError, AttributeError):
+    if out is None:
+        save(STATE, st)
         return r.stdout
     st["spent_usd"] = round(st.get("spent_usd", 0.0)
                             + out.get("total_cost_usd", 0.0), 4)
@@ -1410,8 +1450,19 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                               f"fixture, a stale artifact or a default "
                               f"output path." if first_green else "")
                            + " Write Evaluation.md and verdict.json.")
-                    v = load(VERDICT, {"verdict": "ESCALATE",
-                                       "reason": "missing verdict.json"})
+                    # v8.1.13: name which of the two it was. Both dead
+                    # sessions and a live session that wrote no verdict
+                    # arrive here, and they need different human moves:
+                    # the first leaves the ticket's work intact and
+                    # unjudged, the second is a protocol failure.
+                    v = load(VERDICT, {
+                        "verdict": "ESCALATE",
+                        "reason": ("evaluator session died twice without "
+                                   "output (see events.jsonl) -- the "
+                                   "ticket's work is intact and UNJUDGED; "
+                                   "nothing about the result was decided"
+                                   if st.get("session_died")
+                                   else "missing verdict.json")})
             # v8.1.6: a Generator that changed nothing, TWICE, is a
             # protocol failure and not a retryable one. Attempt 1 is
             # forgiven -- attempt 2 carries the verdict it never saw, so
@@ -1600,7 +1651,7 @@ def write_journal(cfg: dict, st: dict) -> Path:
     b = cfg.get("budgets", {})
     notable = ("escalate", "replan", "regression", "no_op_session",
                "first_green", "trial_killed", "commit_failed",
-               "plan_rejected", "goal_reached")
+               "plan_rejected", "goal_reached", "session_died")
     evs = []
     if EVENTS.exists():
         for line in EVENTS.read_text().splitlines():

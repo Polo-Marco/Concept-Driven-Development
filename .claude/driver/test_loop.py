@@ -212,8 +212,14 @@ class DriverCase(unittest.TestCase):
         # later suite silently inherited a gate that never blocks and
         # never emits -- the same leak this loop was written for.
         for _n in ("claude", "git_commit", "subprocess", "sh",
-                   "require_cli", "wait_approval", "flush_pregate"):
+                   "require_cli", "wait_approval", "flush_pregate",
+                   "SESSION_RETRY_SECONDS"):
             self.addCleanup(setattr, loop, _n, getattr(loop, _n))
+        # v8.1.13: the retry before a re-dispatch is a real 30s pause in
+        # production and must be zero here -- set for EVERY case, not
+        # only the ones about it, because any stub that returns
+        # unparseable output now costs that pause twice.
+        loop.SESSION_RETRY_SECONDS = 0
         # the suite is offline by contract; TestAuthGate exercises
         # the real probe with a stubbed subprocess.
         loop.require_cli = lambda: None
@@ -3359,6 +3365,218 @@ class TestEvidenceGate(DriverCase):
             {"metric": "acc", "op": ">", "value": 0.0,
              "source": "results/20260818-run/out.json"}]))
         self.assertEqual(self.events(), [])
+
+
+# ---------- v8.1.13: loop 9 and loop 10 -------------------------------
+
+class TestHookResolvesVariables(HookCaller, unittest.TestCase):
+    """The false positive that survived 8.1.11 and fired again in loop 10
+    (journal/from-aibench-retro-20260819.md), plus the fail-open that a
+    mid-loop patch of this same defect shipped -- pinned here because the
+    postmortem asks for it to be found by a test and not by a loop."""
+
+    def bash(self, role, cmd, boundary=""):
+        return self.call(role, "Bash", {"command": cmd}, boundary)
+
+    # ---- the denial that started it ---------------------------------
+
+    def test_evaluator_tmp_reconstruction_through_a_variable(self):
+        """2026-08-19 03:55. The Evaluator's contract REQUIRES rebuilding
+        a prior state under /tmp; the scan read `$M` as a repo-relative
+        file named '$m'. This denial is what pushed the control tower
+        into patching the hook under a running loop."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      'M=/tmp/eval-check; mkdir -p "$M"; cp -r src "$M/"'),
+            self.ALLOW)
+
+    def test_unresolvable_expansion_fails_open_as_documented(self):
+        """`$(...)` is not something a pattern matcher can follow. The
+        module docstring says expansion is out of scope and therefore
+        fails OPEN -- the code used to fail CLOSED on it."""
+        self.assertEqual(self.bash("evaluator",
+                                   "D=$(mktemp -d); echo x > $D/f"),
+                         self.ALLOW)
+
+    # ---- the real denials the fix must not lose ---------------------
+
+    def test_a_resolved_core_file_is_still_denied(self):
+        for role in ("generator", "evaluator"):
+            self.assertEqual(
+                self.bash(role, "M=Architecture.md; echo x > $M"),
+                self.DENY, role)
+
+    def test_a_resolved_boundary_breach_is_still_denied(self):
+        self.assertEqual(
+            self.bash("generator", "M=src/other.py; echo x > $M",
+                      boundary="src/mine.py"),
+            self.DENY)
+        self.assertEqual(
+            self.bash("generator", "M=src/mine.py; echo x > $M",
+                      boundary="src/mine.py"),
+            self.ALLOW)
+
+    def test_goal_json_through_a_variable_is_denied(self):
+        """Belt and braces: the resolution decides it, and the loose
+        co-occurrence net would have caught the name anyway."""
+        for role in ("planner", "generator", "evaluator", "monitor"):
+            self.assertEqual(self.bash(role, "M=goal.json; echo x > $M"),
+                             self.DENY, role)
+
+    # ---- the fail-open the mid-loop patch shipped -------------------
+
+    def test_a_later_reassignment_cannot_re_decide_an_earlier_write(self):
+        """THE regression case. The 2026-08-19 patch collected
+        assignments with finditer, last-write-wins, so this command --
+        which writes Architecture.md at runtime -- was ALLOWED because
+        the hook saw the trailing `/tmp/ok`. Resolution is per segment,
+        against what precedes it."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      "M=Architecture.md; echo x > $M; M=/tmp/ok"),
+            self.DENY)
+
+    def test_reverse_order_is_decided_the_same_way(self):
+        """Its mirror: the write really does land in /tmp, and a
+        reassignment after it does not make it a core-file write."""
+        self.assertEqual(
+            self.bash("evaluator",
+                      "M=/tmp/ok; echo x > $M; M=Architecture.md"),
+            self.ALLOW)
+
+    def test_resolution_is_incremental_not_global(self):
+        """Unit-level statement of the same rule, so a rewrite that keeps
+        the end-to-end cases green by accident still fails."""
+        self.assertEqual(
+            hook.bash_write_targets(
+                "M=Architecture.md; echo x > $M; M=/tmp/ok"),
+            ["Architecture.md"])
+        self.assertEqual(
+            hook.bash_write_targets("M=/tmp/a; cp x $M; M=/tmp/b; cp y $M"),
+            ["/tmp/a", "/tmp/b"])
+
+
+class TestHookHeredocBodyIsDataOnEveryScan(HookCaller, unittest.TestCase):
+    """2026-08-19 03:02: the Planner writing the file it OWNS with
+    `cat > Plan.md <<'PLANEOF'` was denied "Git write commands are
+    driver-only" -- prose in the plan body put `git` and a subcommand
+    word on one line. v8.1.11 truncated heredocs inside
+    bash_write_targets() only, so the git net and the loose net still
+    read the body as shell."""
+
+    def bash(self, role, cmd, boundary=""):
+        return self.call(role, "Bash", {"command": cmd}, boundary)
+
+    PLAN = ("cat > Plan.md <<'PLANEOF'\n"
+            "# Plan\n"
+            "Check the clone with git status and confirm it is clean.\n"
+            "Criteria are read from goal.json by the driver; tee the run\n"
+            "to logs/latest.log.\n"
+            "PLANEOF")
+
+    def test_planner_writes_its_own_file_through_a_heredoc(self):
+        self.assertEqual(self.bash("planner", self.PLAN), self.ALLOW)
+
+    def test_the_body_cannot_manufacture_a_goal_file_denial(self):
+        """The loose net reads `goal.json` and `tee` in the body. Denying
+        prose is the false positive; a real write is decided by target."""
+        self.assertEqual(
+            self.bash("planner", self.PLAN.replace("Plan.md", "Triage.md")),
+            self.ALLOW)
+
+    def test_a_real_git_write_before_the_heredoc_is_still_denied(self):
+        self.assertEqual(
+            self.bash("planner", "git add -A && " + self.PLAN), self.DENY)
+
+    def test_a_real_target_before_the_heredoc_is_still_denied(self):
+        self.assertEqual(
+            self.bash("generator",
+                      "echo x > Architecture.md; " + self.PLAN),
+            self.DENY)
+
+    def test_the_evaluator_still_cannot_write_a_plan(self):
+        """The heredoc body is data; the redirect in front of it is not."""
+        self.assertEqual(self.bash("evaluator", self.PLAN), self.DENY)
+
+
+class TestSessionDeathIsNotAVerdict(DriverCase):
+    """2026-08-18 17:10: the provenance Evaluator died on its first token
+    with API Error 529 Overloaded and wrote nothing. The driver read the
+    absent verdict.json as ESCALATE and stopped a loop whose 2.7h trial
+    had already SUCCEEDED -- a human, a hand-made commit and a restart,
+    and a restart costs an iteration
+    (journal/from-aibench-retro-20260819.md, escalation 2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_goal()
+
+    def stub_runs(self, *stdouts):
+        """One dispatch per argument, in order. An empty stdout is a
+        session that died: no output, non-zero exit."""
+        seen = []
+        real = loop.subprocess
+
+        def run(*a, **k):
+            out = stdouts[len(seen)] if len(seen) < len(stdouts) else ""
+            seen.append(out)
+            return types.SimpleNamespace(
+                stdout=out, returncode=0 if out else 1,
+                stderr="" if out else "API Error 529 Overloaded")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        return seen
+
+    def test_a_dead_session_is_redispatched_once(self):
+        ok = json.dumps({"total_cost_usd": 2.0, "result": "fine"})
+        seen = self.stub_runs("", ok)
+        st = {"spent_usd": 0.0}
+        self.assertEqual(loop.claude(st, "evaluator", "p"), "fine")
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(st["spent_usd"], 2.0)          # billed once
+        self.assertFalse(st["session_died"])
+        died = [e for e in self.events() if e["event"] == "session_died"]
+        self.assertEqual(len(died), 1)
+        self.assertIn("529", died[0]["detail"])
+
+    def test_two_deaths_are_recorded_as_a_dead_session(self):
+        seen = self.stub_runs("", "")
+        st = {"spent_usd": 0.0}
+        loop.claude(st, "evaluator", "p")
+        self.assertEqual(len(seen), 2)                  # and not a third
+        self.assertTrue(st["session_died"])
+        self.assertEqual(len([e for e in self.events()
+                              if e["event"] == "session_died"]), 2)
+
+    def test_a_live_session_is_never_marked_dead(self):
+        self.stub_runs(json.dumps({"total_cost_usd": 1.0, "result": "r"}))
+        st = {"spent_usd": 0.0}
+        loop.claude(st, "evaluator", "p")
+        self.assertFalse(st["session_died"])
+        self.assertEqual([e for e in self.events()
+                          if e["event"] == "session_died"], [])
+
+    def test_the_escalation_says_which_failure_it_was(self):
+        """A dead session leaves the ticket's work intact and unjudged; a
+        live session that wrote no verdict is a protocol failure. The
+        human's next move differs, so the reason must too."""
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+        self.results({"metrics": {"acc": 0.5}})
+
+        def dead(st, role, *a, **k):
+            st["session_died"] = role == "evaluator"
+            return ""
+        loop.claude = dead
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        self.assertTrue(any(e["event"] == "escalate" for e in self.events()))
+        reason = self.ledger()[-1]["reason"]
+        self.assertIn("died", reason)
+        self.assertNotIn("missing verdict.json", reason)
 
 
 if __name__ == "__main__":

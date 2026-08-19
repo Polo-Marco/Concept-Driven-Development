@@ -61,6 +61,27 @@ repo) and the tcocrai retro it cites.
    denied a read-only copy also LEAKED a write to `Architecture.md`,
    because the trailing argument it decided was `/dev/null`.
 
+   **A name the shell will expand is not a path** (v8.1.13). The same
+   rule one layer down: `$M` reached the role decision as a
+   repo-relative file called `$m`, so `M=/tmp/eval-check; cp -r src
+   "$M/"` — the Evaluator's contractual reconstruction — was denied.
+   Assignments are resolved INCREMENTALLY now, per shell segment,
+   against the ones that precede it; anything still carrying a `$` is
+   dropped, which is the fail-OPEN "expansion is out of scope" always
+   promised. Position IS the rule: a fix that resolved assignments
+   globally, last-write-wins, made `M=Architecture.md; echo x > $M;
+   M=/tmp/ok` fail OPEN on a core file. That fix was written under a
+   running loop and cost the loop; this one ships with the
+   reverse-order case in the test suite.
+
+   **A heredoc body is DATA on every scan, not just one** (v8.1.13). The
+   truncation lived inside the target scan, so the git net and the loose
+   net still read the body as shell — and a Planner writing the file it
+   OWNS (`cat > Plan.md <<'PLANEOF'`) was denied "Git write commands are
+   driver-only" because prose in the plan put `git` and a subcommand
+   word on one line. A rule applied in one of the three places that need
+   it is not shipped.
+
    **`/tmp` is scratch, and scratch is outside the matrix.** Every role
    may write there through `Write` and through the shell alike; the
    Evaluator's contract requires it, since reconstructing a prior state
@@ -192,6 +213,19 @@ each replan gate), so `feat(loop):` carries exactly one ticket
 failures (boundary breach, worker stop/death, unsatisfiable spec,
 missing artifact, doc contradiction) → ESCALATE immediately. Never
 burn trial budget on a defect no trial can fix.
+
+**A session that DIED is not a verdict** (v8.1.13). One dispatch could
+not tell "the auditor judged this unsalvageable" from "the auditor never
+ran": an Evaluator that died on its first token with API Error 529 wrote
+nothing, and the absent `verdict.json` was read as ESCALATE — stopping a
+loop whose 2.7h trial had already SUCCEEDED, for a human, a hand-made
+commit and a restart, which costs an iteration. `claude()` now checks
+the exit code and re-dispatches ONCE, after a pause, because the fault
+this exists for is an overloaded upstream. What is retried is the
+SESSION, never the ticket — re-running the ticket is exactly what would
+re-run the trial. A session that dies twice still escalates, but says
+so: the ticket's work is intact and UNJUDGED, which is a different human
+move from a live session that refused to write a verdict.
 
 ## Machine-readable artifacts (JSON — agents corrupt JSON less than MD)
 

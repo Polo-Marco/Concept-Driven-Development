@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.12
+version: 8.1.13
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -100,6 +100,31 @@ Two things a unique path buys beyond correctness: a loop can no longer
 be handed a green criterion it did not earn, and the run history stops
 being a single mutable file, so results accumulate instead of
 overwriting each other.
+
+**Never point a criterion at the answer** (v8.1.13). A criterion is a
+gate: the loop STOPS on it. So ask, per criterion:
+
+> if this number came back just under the bar, would I want the loop to
+> stop — or to record it and carry on?
+
+If the honest answer is *record it*, the criterion is `metric >= 0`
+(present and numeric — `check_criteria()` fails closed on an absent or
+NaN metric, so this still proves the quantity was measured), and the bar
+you care about lives in the analysis, the report, or your own reading of
+the result. A quantity the experiment exists to MEASURE must not also be
+its gate.
+
+Tripwires are different, and belong far from the measurement. On
+2026-08-18 a loop set `thinking_on_reasoning_coverage >= 0.90` as a
+tripwire meaning "the flag never reached the template", then escalated
+at 0.8978 — three calls short out of 1067, on the last ticket, eight
+hours after both arms had run clean and the science was finished. That
+bar's own stated justification ("a tool-call-only turn may legitimately
+emit no thought") covered 32 of the 109 misses; the real tripwire was
+`< 0.5`, and the contract review had already written that number down
+(`journal/from-aibench-retro-20260819.md`). Two criteria would have cost
+nothing: `>= 0` for the measurement, `>= 0.5` for the defect it was
+actually watching for.
 
 Also extract:
 

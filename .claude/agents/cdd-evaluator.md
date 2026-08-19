@@ -51,6 +51,23 @@ For each ticket ask:
   averaging method, units, `--limit` vs full run. Any semantic loss is
   a REVISE — the driver gates on the JSON, so a lossy translation
   silently redefines "done".
+- **Grounded?** (v8.1.13) `Goal.md` states facts the Ask phase already
+  established live — endpoint shapes, field names, versions, paths,
+  usually under a heading like "established, NOT to be re-derived".
+  Read every Spec against them. Does a step contradict one, or apply
+  one where it does not hold — the same reader used on two different
+  data shapes, a path verified in one artifact assumed in another, a
+  fact about the harness's output applied to the API's? On 2026-08-18
+  `Goal.md` said the live endpoint returns the reasoning at
+  `message["reasoning"]` and that a tau2 transcript nests the same
+  content under `raw_data.…`; the plan gave the live probe three read
+  paths, all of the nested shape, and reused one function for both. It
+  passed this review, and the Generator stopped six minutes after the
+  human gate because following the Spec exactly makes a working
+  passthrough report FAIL (`journal/from-aibench-retro-20260819.md`).
+  This is the cheapest check in the list — a close read, no building —
+  and the only one that catches a plan that is internally consistent
+  and factually wrong.
 
 **Ceiling — read the plan, do not build it** (v8.1.7). Mode 1 is a
 close reading plus CHEAP spot-checks: grep for a file the plan claims
