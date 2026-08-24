@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.1.14
+# Concept-Driven Development (CDD) 8.1.15
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode
@@ -120,7 +120,10 @@ never work around.
 4. Driver iterates tickets: Generator (bearings + smoke test → TDD) →
    trial launch + Monitor polling → Evaluator → `verdict.json` →
    PASS commit / RETRY ≤3 (each retry carries the verdict that
-   rejected the last attempt) / REPLAN (re-gated) / ESCALATE. Ledger
+   rejected the last attempt) / REPLAN (re-gated) / ESCALATE. A
+   Generator stop is adjudicated by an Evaluator session (REPLAN /
+   RETRY / ESCALATE, v8.1.15) rather than auto-escalated; the user can
+   also queue one with `loop.py replan "<reason>"`. Ledger
    appended every iteration. Budgets checked — and re-read — every
    iteration.
 5. Final evaluation verifies ALL `goal.json` criteria → done. The

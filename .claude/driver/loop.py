@@ -1135,6 +1135,11 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
 # ---------- phases ------------------------------------------------------
 
 def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
+    # v8.1.15: a `loop.py replan "<reason>"` queued by the user arrives
+    # via the state file -- main() passes nothing. Popped in memory
+    # only; on a crash before this phase saves, the state on disk still
+    # carries it and the resume re-pops it.
+    replan_reason = replan_reason or st.pop("replan_reason", "")
     ledger = LEDGER.read_text() if LEDGER.exists() else "(empty)"
     ev = (ROOT / "Evaluation.md")
     prompt = (
@@ -1142,7 +1147,8 @@ def phase_plan(cfg: dict, st: dict, replan_reason: str = "") -> None:
         f"skill for goal type '{cfg.get('type', 'modify')}'.\n"
         f"Trial ledger so far:\n{ledger}\n"
         + (f"\nThis is a REPLAN. Latest Evaluation.md:\n"
-           f"{ev.read_text()}\nReason: {replan_reason}\n" if replan_reason
+           f"{ev.read_text() if ev.exists() else '(none on disk)'}\n"
+           f"Reason: {replan_reason}\n" if replan_reason
            else ""))
     claude(st, "planner", prompt)
     plan = ROOT / "Plan.md"
@@ -1300,6 +1306,54 @@ def reload_budgets(cfg: dict) -> None:
         event("budgets_updated", detail=json.dumps(b, sort_keys=True))
 
 
+def adjudicate_stop(st: dict, tid: str, tail: str) -> dict:
+    """Route a Generator stop -- REPLAN, RETRY, or ESCALATE -- decided
+    by one bounded read-only Evaluator session, not by the driver.
+
+    v8.1.15. A Generator stop used to be an unconditional escalate, so
+    REPLAN -- fresh Planner + ledger + human re-gate, built for exactly
+    the "plan is defective" case -- fired ZERO times in fifteen deployed
+    loops: its only entrance was an Evaluator Mode-2 verdict, and a stop
+    returned before any Evaluator ran. Every plan defect the Generator
+    caught therefore woke a human to do what a Planner session does
+    (2026-08-18 12:23: a Spec contradicting a fact Goal.md declared
+    established; 2026-08-02: three consecutive escalations at tickets
+    7-8, all downstream of one under-tested setup ticket). The manual
+    pipeline already does this right: a mid-execution spec contradiction
+    goes to a Planner revision session and the human's only touch is a
+    `git revert` (journal/retro-20260824-aibench.md, rec 3).
+
+    The old routing's rationale -- "never burn trial budget on a defect
+    no trial can fix" -- argues against RETRY, not against replanning: a
+    REPLAN burns no trial budget. The human still approves every replan
+    at its gate; the touchpoint changes shape from diagnosis to
+    approval. Fail-CLOSED: an adjudicator that died or wrote junk
+    decides nothing, and the stop escalates exactly as it always did.
+    """
+    if VERDICT.exists():
+        VERDICT.unlink()                  # never read a stale verdict
+    claude(st, "evaluator",
+           f"Mode 3 -- stop adjudication. The Generator stopped on "
+           f"ticket '{tid}' and reported:\n\n{tail}\n\n"
+           f"Read Plan.md, Goal.md, goal.json and the trial ledger per "
+           f"your instructions, and decide where the defect lives. "
+           f"verdict.json's verdict MUST be one of: REPLAN (the plan is "
+           f"defective and a fresh plan could fix it), RETRY (the plan "
+           f"is executable as written and the Generator misread it -- "
+           f"say exactly what it missed), or ESCALATE (the defect "
+           f"implicates Goal.md/goal.json, authority, or anything no "
+           f"replan can fix). Write Evaluation.md and verdict.json.")
+    v = load(VERDICT, {})
+    if v.get("verdict") not in ("REPLAN", "RETRY", "ESCALATE"):
+        v = {"verdict": "ESCALATE",
+             "reason": f"generator stopped: {tail} -- and the stop "
+                       f"adjudication returned no usable verdict",
+             "evidence": []}
+    event("stop_adjudicated",
+          detail=f"{tid}: {v['verdict']} -- " + str(v.get("reason", "")))
+    return v
+
+
 def phase_iterate(cfg: dict, st: dict) -> None:
     while True:
         reload_budgets(cfg)
@@ -1371,9 +1425,26 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 tail = rep[-400:]
                 if len(rep) > 400:
                     tail = tail.split(" ", 1)[-1]
-                event("escalate",
-                      detail=f"{tid} generator stopped: " + tail.strip())
-                return
+                # v8.1.15: adjudicated, not auto-escalated -- see
+                # adjudicate_stop(). RETRY re-enters the attempt loop, so
+                # the next dispatch carries what the Generator missed
+                # (the v8.1.6 retry-carries-why mechanism); REPLAN and
+                # ESCALATE take the post-loop routing every other verdict
+                # takes, so a replan is gated and ledgered identically.
+                v = adjudicate_stop(st, tid, tail.strip())
+                LEDGER.open("a").write(json.dumps(
+                    {"ts": now(), "iteration": st["iteration"],
+                     "ticket": tid, "attempt": attempt,
+                     "verdict": v.get("verdict"),
+                     "reason": v.get("reason"),
+                     "evidence": v.get("evidence", []),
+                     "stopped": True}) + "\n")
+                verdict = v.get("verdict")
+                if verdict == "RETRY" and attempt < 3:
+                    event("retry", detail=f"{tid} attempt {attempt}: "
+                          + str(v.get("reason", "")))
+                    continue
+                break
             trial_ok = run_trial(tid, body, st, cfg, attempt)
 
             # ---- deterministic criteria gate (free; every iteration) --
@@ -2050,7 +2121,7 @@ def main() -> None:
     allow_here = "--here" in argv
     args = [a for a in argv if not a.startswith("-")]
 
-    if args and args[0] in ("status", "approve", "close"):
+    if args and args[0] in ("status", "approve", "close", "replan"):
         elsewhere = find_loop()
         if elsewhere != ROOT:
             print(f"(the loop is in {elsewhere})")
@@ -2076,6 +2147,33 @@ def main() -> None:
         APPROVALS.mkdir(exist_ok=True)
         (APPROVALS / f"{gate}.approved").touch()
         print(f"approved: {gate}")
+        return
+    if args and args[0] == "replan":
+        # v8.1.15: the user-initiated half of the REPLAN route.
+        # Recommended by two consecutive retros before it shipped; the
+        # workaround on record is a control tower hand-editing
+        # loop-state.json mid-loop (journal/retro-20260824-aibench.md,
+        # rec 4). Queues a fresh plan phase: the next driver start
+        # re-plans with the reason, re-reviews, and waits at the gate.
+        # It counts against max_replans -- budgets are hot-reloadable,
+        # so raise the cap in the worktree's goal.json if you need to.
+        reason = " ".join(args[1:]).strip()
+        if not reason:
+            die('usage: loop.py replan "<reason>" -- the reason seeds '
+                'the fresh Planner and the ledger; it cannot be empty')
+        st = load(STATE, None)
+        if not isinstance(st, dict):
+            die("no readable loop-state.json here -- nothing to replan")
+        st["replans"] = st.get("replans", 0) + 1
+        st["phase"] = "plan"
+        st["replan_reason"] = reason
+        save(STATE, st)
+        event("replan", detail=f"user-initiated: {reason}",
+              n=st["replans"])
+        print(f"replan #{st['replans']} queued -- restart the driver to "
+              f"re-plan, re-review and gate. If a driver is still "
+              f"running, stop it first: its next state save would "
+              f"overwrite this.")
         return
 
     cfg = load(GOAL, None)

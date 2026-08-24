@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.13
+version: 8.1.15
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -125,6 +125,25 @@ emit no thought") covered 32 of the 109 misses; the real tripwire was
 (`journal/from-aibench-retro-20260819.md`). Two criteria would have cost
 nothing: `>= 0` for the measurement, `>= 0.5` for the defect it was
 actually watching for.
+
+**A stopping bar names where its number was measured** (v8.1.15). The
+stop-or-record question filters intent; this filters evidence. For
+every criterion the user answers "stop" to, ask one more:
+
+> when was this quantity last measured, and where is that number?
+
+A bar nobody has measured is a guess, and a guess used as a gate is a
+tripwire placed ON the measurement: the 2026-08-18 `>= 0.90` above had
+never been measured — its justification was a plausible sentence whose
+premise the final audit falsified, and the contract review predicted
+the escalation band in round 1 with no lever to change a frozen
+criterion (`journal/retro-20260824-aibench.md`, gap A/B). If no
+measurement exists, the honest contract is: THIS loop's criterion is
+`>= 0` (measure and record), and the bar graduates to the NEXT loop's
+goal justified by this loop's number. Record the provenance in
+`Goal.md` next to the criterion ("0.90: measured 0.94 in loop 9's
+baseline, results/…") so the Evaluator's contract review can check the
+bar is grounded rather than aspirational.
 
 Also extract:
 

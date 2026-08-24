@@ -242,9 +242,36 @@ each replan gate), so `feat(loop):` carries exactly one ticket
 (governance.md §1).
 
 **Verdict routing:** metric-based failures → RETRY/REPLAN. Protocol
-failures (boundary breach, worker stop/death, unsatisfiable spec,
-missing artifact, doc contradiction) → ESCALATE immediately. Never
-burn trial budget on a defect no trial can fix.
+failures (boundary breach, worker death, missing artifact) → ESCALATE
+immediately. Never burn trial budget on a defect no trial can fix.
+
+**A Generator stop is adjudicated, not auto-escalated** (v8.1.15).
+REPLAN — fresh Planner + ledger + human re-gate, built for exactly the
+"plan is defective" case — fired ZERO times in fifteen deployed loops,
+because its only entrance was an Evaluator Mode-2 verdict and a
+Generator stop returned before any Evaluator ran. Every plan defect
+the Generator caught woke a human to do what a Planner session does:
+a Spec contradicting a fact `Goal.md` declared established
+(2026-08-18 12:23), three consecutive escalations at tickets 7–8 all
+downstream of one under-tested setup ticket (2026-08-02), and the
+"Boundary excludes the root cause" stops of loops 6–7 — while the
+manual pipeline handled the same event the same week with a Planner
+revision session whose only human touch was a `git revert`
+(journal/retro-20260824-aibench.md). The old routing's rationale —
+never burn trial budget on a defect no trial can fix — argues against
+RETRY, not against replanning: a REPLAN burns no trial budget. So on
+`STATUS: stopped` the driver now dispatches one bounded read-only
+Evaluator session (Mode 3, `cdd-evaluator.md`) over the stop report,
+`Plan.md`, `Goal.md` and the ledger, and routes its verdict: **REPLAN**
+(plan defect — the existing path: ledger, fresh Planner, contract
+review, human re-gate) / **RETRY** (the Generator misread an executable
+spec; the retry carries what it missed, per the v8.1.6 mechanism) /
+**ESCALATE** (the defect implicates the goal contract, authority, or
+anything no replan can fix). Fail-CLOSED: an adjudicator that died or
+wrote junk decides nothing, and the stop escalates with the
+Generator's own report, exactly as before. The human still approves
+every replan at its gate — the touchpoint changes shape from diagnosis
+to approval, and `max_replans` still bounds the spend.
 
 **A session that DIED is not a verdict** (v8.1.13). One dispatch could
 not tell "the auditor judged this unsalvageable" from "the auditor never
@@ -309,6 +336,23 @@ restrict it — it acts only on your instruction.
 **Push (optional):** `.claude/driver/notify.sh` — see
 `notify.sh.example` (ntfy/Telegram). Allowlist your device on any
 command topic; keep secrets out of digests (governance.md §2).
+
+**Replanning is a command, not a state-file edit** (v8.1.15):
+
+```bash
+python3 .claude/driver/loop.py replan "<reason>"
+```
+
+The user-initiated half of the same REPLAN route: it queues a fresh
+plan phase with your reason, and the next driver start re-plans
+(handing the Planner the reason plus any `Evaluation.md` on disk),
+re-reviews, and waits at the gate. Stop a running driver first — its
+next state save would overwrite the queue. It counts against
+`max_replans`; budgets are hot-reloadable if you need to raise the cap.
+Recommended by two consecutive retros before it shipped: the recorded
+workaround was a control tower hand-editing `loop-state.json` under a
+running loop (L5), which is the class of intervention the loop 10
+postmortem exists to warn against.
 
 ## Housekeeping (driver responsibility, not memory)
 

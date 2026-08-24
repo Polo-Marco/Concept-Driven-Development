@@ -3621,6 +3621,179 @@ class TestSessionDeathIsNotAVerdict(DriverCase):
         self.assertNotIn("missing verdict.json", reason)
 
 
+class TestStopAdjudication(DriverCase):
+    """v8.1.15. A Generator stop is adjudicated by one Evaluator
+    session instead of auto-escalating. REPLAN fired zero times in
+    fifteen deployed loops because its only entrance was a Mode-2
+    verdict and a stop returned before any Evaluator ran
+    (journal/retro-20260824-aibench.md, rec 3)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+        loop.wait_approval = lambda st, name, detail: None
+        loop.flush_pregate = lambda what: "deadbee"
+        self.results({"metrics": {"acc": 0.5}})
+
+    def iterate_state(self):
+        return {"phase": "iterate", "iteration": 0, "replans": 0,
+                "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+                "started_epoch": loop.time.time()}
+
+    def test_adjudicated_replan_reaches_the_replan_path(self):
+        """Stop -> Mode 3 REPLAN -> fresh plan, contract review, gate --
+        the same route an Evaluator Mode-2 REPLAN has always taken."""
+        state = {"stopped_once": False}
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":
+                if not state["stopped_once"]:
+                    state["stopped_once"] = True
+                    return "STATUS: stopped — spec contradicts Goal.md"
+                return "done"
+            if "Mode 3" in prompt:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "REPLAN",
+                     "reason": "the plan reads a shape that is not there",
+                     "evidence": ["Goal.md:15 vs Plan.md P1S1 Spec"]}))
+            elif "Mode 1" in prompt:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "OK", "reason": "reviewed"}))
+            elif "Mode 2" in prompt:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok",
+                     "evidence": ["pytest: 3 passed"]}))
+            return "done"
+        loop.claude = fake
+        st = self.iterate_state()
+        loop.phase_iterate(self.write_goal(), st)
+        self.assertEqual(st["replans"], 1)
+        self.assertEqual(st["phase"], "final_eval",
+                         "the loop continues after the gated replan")
+        self.assertTrue(any(e["event"] == "replan" for e in self.events()))
+        self.assertTrue(any(e["event"] == "stop_adjudicated"
+                            and "REPLAN" in e["detail"]
+                            for e in self.events()))
+        rows = [r for r in self.ledger() if r.get("stopped")]
+        self.assertEqual(len(rows), 1, "the stop is a ledger row")
+        self.assertEqual(rows[0]["verdict"], "REPLAN")
+
+    def test_adjudicated_retry_carries_what_was_missed(self):
+        """Stop -> Mode 3 RETRY -> the next Generator dispatch carries
+        the adjudicator's reason (the v8.1.6 retry-carries-why path)."""
+        prompts = []
+        state = {"stopped_once": False}
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":
+                prompts.append(prompt)
+                if not state["stopped_once"]:
+                    state["stopped_once"] = True
+                    return "STATUS: stopped — thinks the spec is circular"
+                return "done"
+            if "Mode 3" in prompt:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "RETRY",
+                     "reason": "step 2's input is written by step 1; "
+                               "re-read the Depends On field"}))
+            else:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok", "evidence": []}))
+            return "done"
+        loop.claude = fake
+        st = self.iterate_state()
+        loop.phase_iterate(self.write_goal(), st)
+        self.assertEqual(st["replans"], 0)
+        self.assertIn("re-read the Depends On field", prompts[1],
+                      "attempt 2 must carry the adjudicator's reason")
+        self.assertEqual(st["phase"], "final_eval")
+
+    def test_adjudicated_escalate_reaches_the_user(self):
+        def fake(_st, role, prompt, *a, **k):
+            if role == "generator":
+                return "STATUS: stopped — goal.json itself is wrong"
+            if "Mode 3" in prompt:
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "ESCALATE",
+                     "reason": "the defect implicates the goal contract"}))
+            return "done"
+        loop.claude = fake
+        st = self.iterate_state()
+        loop.phase_iterate(self.write_goal(), st)
+        self.assertTrue(any(e["event"] == "escalate"
+                            and "goal contract" in e["detail"]
+                            for e in self.events()))
+        self.assertNotIn("[x]", (self.tmp / "Plan.md").read_text())
+
+    def test_dead_or_junk_adjudication_fails_closed(self):
+        """An adjudicator that wrote nothing decides nothing: the stop
+        escalates exactly as it did before v8.1.15 -- including the
+        Generator's own stop report, which is the human's evidence."""
+        loop.claude = lambda _st, role, *a, **k: (
+            "STATUS: stopped — needs an architectural decision"
+            if role == "generator" else "")
+        st = self.iterate_state()
+        loop.phase_iterate(self.write_goal(), st)
+        ev = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertTrue(ev)
+        self.assertIn("needs an architectural decision", ev[0]["detail"])
+        self.assertEqual(st["replans"], 0)
+
+
+class TestReplanCLI(DriverCase):
+    """v8.1.15. `loop.py replan "<reason>"` -- the user-initiated half
+    of the REPLAN route. L5 hand-edited loop-state.json for lack of it;
+    two retros recommended it before it shipped."""
+
+    def replan(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(HERE / "loop.py"), "replan", *extra],
+            env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.tmp)},
+            capture_output=True, text=True)
+
+    def test_queues_a_plan_phase_with_the_reason(self):
+        loop.save(loop.STATE, {"phase": "iterate", "replans": 0})
+        r = self.replan("hook denied the run command")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        st = loop.load(loop.STATE, {})
+        self.assertEqual(st["phase"], "plan")
+        self.assertEqual(st["replans"], 1)
+        self.assertEqual(st["replan_reason"],
+                         "hook denied the run command")
+        self.assertTrue(any(e["event"] == "replan"
+                            and "user-initiated" in e["detail"]
+                            for e in self.events()))
+
+    def test_empty_reason_is_refused(self):
+        loop.save(loop.STATE, {"phase": "iterate"})
+        r = self.replan()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usage", r.stderr)
+        self.assertEqual(loop.load(loop.STATE, {})["phase"], "iterate")
+
+    def test_no_state_file_is_refused(self):
+        r = self.replan("anything")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("nothing to replan", r.stderr)
+
+    def test_phase_plan_pops_the_queued_reason(self):
+        """main() passes nothing -- the reason rides the state file, and
+        an absent Evaluation.md must not crash the prompt build."""
+        (self.tmp / "Plan.md").write_text(PLAN)
+        prompts = []
+        loop.claude = (lambda _st, role, prompt, *a, **k:
+                       prompts.append(prompt) or "done")
+        cfg = self.write_goal()
+        st = {"phase": "plan", "replans": 1,
+              "replan_reason": "the smoke bar was wrong"}
+        loop.phase_plan(cfg, st)
+        self.assertIn("This is a REPLAN", prompts[0])
+        self.assertIn("the smoke bar was wrong", prompts[0])
+        self.assertIn("(none on disk)", prompts[0])
+        self.assertNotIn("replan_reason", st)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])
