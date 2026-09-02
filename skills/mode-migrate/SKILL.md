@@ -14,9 +14,9 @@ Concept.md, a layered Architecture.md, and bespoke skills that match
 existing conventions.
 
 This is a **Planner-only mode.** There is no Generator session and
-no Plan.md. After migration, the user uses `[/modify]` for actual
+no Plan.md. After migration, the user uses `[modify]` for actual
 changes — features and bug fixes alike (Modify has a bug-investigation
-sub-flow; there is no separate `[/debug]` mode).
+sub-flow; there is no separate `[debug]` mode).
 
 Operates under Global Governance (`.claude/rules/governance.md`) and
 Core Principles (`.claude/rules/principles.md`).
@@ -121,8 +121,8 @@ Core Principles (`.claude/rules/principles.md`).
 - Append the Planner record to `journal/` (`.claude/rules/governance.md §6`).
 - STOP: "Migration complete. The codebase is now under the framework.
   Review Concept.md, Architecture.md, README.md, skills, and docs/.
-  Use `[/modify]` to add features, fix tech debt, or investigate bugs
-  (Modify handles all three). Use `[/discuss]` to align on direction
+  Use `[modify]` to add features, fix tech debt, or investigate bugs
+  (Modify handles all three). Use `[discuss]` to align on direction
   first."
 
 ---
@@ -136,15 +136,15 @@ Core Principles (`.claude/rules/principles.md`).
 - Does NOT restructure files or rename things.
 
 Migration is observation and documentation only. All changes to the
-codebase happen through `[/modify]` after migration is complete.
+codebase happen through `[modify]` after migration is complete.
 
 ## Post-Migration: First Task
 
-After migration, the user should start with a small `[/modify]` task
+After migration, the user should start with a small `[modify]` task
 to verify the framework understands the codebase correctly:
 
 ```
-[/modify] Add input validation to the /users endpoint
+[modify] Add input validation to the /users endpoint
 ```
 
 If the Generator produces code that clashes with existing conventions,

@@ -25,13 +25,13 @@ Modify has two entry intents. Detect which from the request:
   the latest run log and fix it") → run the **Bug-Investigation
   Sub-Flow** first. Work order is `Triage.md`.
 
-There is no separate `[/debug]` mode; the bug sub-flow below absorbs it.
+There is no separate `[debug]` mode; the bug sub-flow below absorbs it.
 Only one work order (`Plan.md` OR `Triage.md`) exists at a time.
 
-## Audit-Finding Fast Path — `[/modify] @Evaluation.md` (v8.1.16)
+## Audit-Finding Fast Path — `[modify] @Evaluation.md` (v8.1.16)
 
 The cheapest legitimate route from an Evaluator's findings to a fix.
-Four manual `[/modify]` loops in under three hours for a two-line fix
+Four manual `[modify]` loops in under three hours for a two-line fix
 (rated **bad**) were long because each ran the full Ask/Spec preamble
 on findings that already carried a reproduced root cause, and each
 plan shipped the next audit's class
@@ -162,7 +162,7 @@ If the change is pure code (no new deps), skip this step.
 
 ## Bug-Investigation Sub-Flow (bug requests)
 
-This absorbs the former `[/debug]` mode. Use `Triage.md`, not `Plan.md`.
+This absorbs the former `[debug]` mode. Use `Triage.md`, not `Plan.md`.
 
 ### Ask Phase (Bug)
 

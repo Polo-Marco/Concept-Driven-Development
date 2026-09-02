@@ -28,12 +28,12 @@ Core Principles (`.claude/rules/principles.md`), and Phase Authority
 
 Discuss is the ONLY agent session (besides the user) permitted to edit
 `docs/`. It never writes a work order and never edits code. When the
-plan is clear, it hands off to `[/build]` or `[/modify]`.
+plan is clear, it hands off to `[build]` or `[modify]`.
 
 ## Trigger
 
-User types `[/discuss] [topic]` — e.g.
-`[/discuss] should we switch the annotation store to Parquet?`
+User types `[discuss] [topic]` — e.g.
+`[discuss] should we switch the annotation store to Parquet?`
 
 ## Protocol
 
@@ -72,8 +72,8 @@ Read, as relevant to the topic:
 - Summarize what was decided and what remains open.
 - If docs changed, optionally commit: `docs: [summary of decision]`.
 - Recommend the next mode:
-  - New capability from scratch → `[/build]`.
-  - Change to existing code → `[/modify]`.
+  - New capability from scratch → `[build]`.
+  - Change to existing code → `[modify]`.
   - Still undecided → stay in discussion; nothing is committed to build.
 
 ## Hard Rules

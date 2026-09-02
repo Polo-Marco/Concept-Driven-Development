@@ -88,7 +88,7 @@ expensive pipelines.
 - TDD is the automated sanity check. It catches regressions and proves
   basic functionality.
 - The user is the final evaluator. TDD does not replace human judgment.
-  The optional `[/evaluate]` session produces a checklist; the user
+  The optional `[evaluate]` session produces a checklist; the user
   still signs off.
 - **No permanent test reads the live loop contract** (`goal.json`,
   `Goal.md`) or any other ephemeral loop artifact (v8.1.16). A test
@@ -106,19 +106,19 @@ expensive pipelines.
 | `README.md` | Persistent, evolving | User-facing: install, run, test, use |
 | `Plan.md` | **Ephemeral** — deleted after full loop | Task tickets |
 | `Triage.md` | **Ephemeral** — deleted after full loop | Bug hypotheses |
-| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[/merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
+| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** — deleted after user signs off | Evaluator verdict + audits |
 | `Goal.md` + `goal.json` | **Ephemeral** — frozen at loop start, deleted after sign-off | User-owned goal contract (v8.0) |
 | `ledger.jsonl` | **Ephemeral** — summarized into `journal/` at loop end, then deleted | Trial memory for REPLANs (driver-written) |
 | `loop-state.json` / `events.jsonl` | Ephemeral, gitignored | Driver state (crash resume) + event feed |
 | `verdict.json` | **Ephemeral** | Machine verdict (Evaluator → driver) |
-| `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[/retro]`) |
+| `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[retro]`) |
 | `journal/traces/*.jsonl` | Persistent, gitignored | Full raw session transcripts (Tier 2, Claude Code hook) |
 | `skills/` | Persistent, evolving | Execution patterns and rules |
 | `**/CLAUDE.md` (nested) | Persistent, evolving | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | Persistent, user-maintained | External reference docs (immutable to agents) |
 | `docs/DEVIATIONS.md` | Persistent, planner-appendable | Tracked departures from reference docs |
-| `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted into Concept/docs via `[/discuss]` |
+| `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted into Concept/docs via `[discuss]` |
 | `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr (see run-logging.md) |
 | `logs/denials.log` | Ephemeral, gitignored | Every PreToolUse authority denial (hook-written; the driver counts it into a `hook_denials` event) |
 
@@ -133,10 +133,10 @@ successfully, the user deletes the work order file and any
 
 The `journal/` directory records the *development process itself* — not
 the code — so the user can later re-evaluate how a project was built and
-improve the framework (via `[/retro]`). It has two tiers:
+improve the framework (via `[retro]`). It has two tiers:
 
 **Tier 1 — curated summary (`journal/*.md`, primary).**
-A short, agent-written record per loop. This is what `[/retro]` reasons
+A short, agent-written record per loop. This is what `[retro]` reasons
 over. It is NOT a full trace — it captures decisions, not every tool
 call.
 
@@ -161,7 +161,7 @@ Code only).**
 The complete session transcript — every tool call, input, output, and
 decision — captured automatically by the `SessionEnd` hook in
 `.claude/settings.json` (script: `.claude/hooks/archive_transcript.py`).
-Use it to dissect a loop you flagged "bad"; `[/retro]` drills into it on
+Use it to dissect a loop you flagged "bad"; `[retro]` drills into it on
 demand. Cursor has no equivalent, so Tier 2 is Claude-Code-only; Tier 1
 works in both tools.
 

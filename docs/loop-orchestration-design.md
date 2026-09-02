@@ -59,28 +59,28 @@ monitors, evaluates, and replans by itself until it produces an answer
 
 | Command | Role | What it does |
 |---|---|---|
-| `[/discuss]` | Think | Unchanged from 7.0. |
-| `[/loop] <goal>` | Do | Ask phase → writes `Goal.md` → Planner writes `Plan.md` → **user approves once** → driver runs Generate → Monitor → Evaluate → (Replan) until `PASS` / `ESCALATE` / budget exhaustion. |
-| `[/retro]` | Improve | Unchanged from 7.0. |
+| `[discuss]` | Think | Unchanged from 7.0. |
+| `[loop] <goal>` | Do | Ask phase → writes `Goal.md` → Planner writes `Plan.md` → **user approves once** → driver runs Generate → Monitor → Evaluate → (Replan) until `PASS` / `ESCALATE` / budget exhaustion. |
+| `[retro]` | Improve | Unchanged from 7.0. |
 
 ### Where the 7.0 modes go
 
-- `[/build]`, `[/modify]`, `[/migrate]`, `[/merge]` → **goal types** in
+- `[build]`, `[modify]`, `[migrate]`, `[merge]` → **goal types** in
   `Goal.md` (`build | modify | experiment | migrate | merge`). The
   Planner skill branches on type; merge keeps reverse-engineer-first,
   modify keeps the Triage sub-flow. The `mode-*` skills become an
   internal library.
 - `start execution` → issued by the driver after plan approval; no
   longer a user command.
-- `[/evaluate]` → the Evaluator agent, dispatched by the driver each
+- `[evaluate]` → the Evaluator agent, dispatched by the driver each
   iteration. Skill remains manually invocable as an escape hatch.
 - `check the latest run log` → absorbed by the Monitor step.
 
 Manual 7.0-style operation remains possible: the driver calls the same
 skills a user would. Zero new concepts on the fallback path.
 
-**Hold the line:** no `[/monitor]`, no `[/batch]` commands. Monitoring
-is a driver duty; batch is `[/loop]` over a queue of goals. A fourth
+**Hold the line:** no `[monitor]`, no `[batch]` commands. Monitoring
+is a driver duty; batch is `[loop]` over a queue of goals. A fourth
 command must be demanded by a retro, not anticipated.
 
 ## 4. The loop
@@ -179,7 +179,7 @@ its output and logs only name + exit code (governance §2).
 **Environment:** [VM / GPU / paths — what the Planner's env audit checks]
 ```
 
-**Machine mirror (`goal.json`).** The `[/loop]` Ask phase writes the
+**Machine mirror (`goal.json`).** The `[loop]` Ask phase writes the
 success criteria, preflight checks, budgets, and cadence into a
 `goal.json` the driver parses and the PreToolUse hook write-protects.
 Rationale: models are measurably less likely to inappropriately edit
@@ -295,7 +295,7 @@ dirty the main tree. Merge-back after the loop closes:
 - **v8.0:** driver merges fast-forward/clean merges; ANY conflict →
   ESCALATE to the user. One loop at a time (batch = sequential queue).
 - **v8.1 (deferred):** concurrent loops; conflicted merge-back via a
-  merge session using `[/merge]`'s reverse-engineer-first discipline.
+  merge session using `[merge]`'s reverse-engineer-first discipline.
 
 ## 11. Monitor step
 
@@ -327,12 +327,12 @@ remembered).
 took several tuning rounds (few-shot graded examples, reading
 evaluator logs, fixing judgment divergences) before their evaluator
 graded acceptably (§14). Budget the same for `cdd-evaluator`; the
-`[/retro]` loop is where divergences surface.
+`[retro]` loop is where divergences surface.
 
 **Harness staleness review (new retro item).** Every harness component
 encodes an assumption about what the model can't do on its own; those
 assumptions go stale as models improve (§14). On each new model
-generation, `[/retro]` should ask: which loop components are still
+generation, `[retro]` should ask: which loop components are still
 load-bearing? Strip candidates one at a time — never in batches.
 
 **v8.1 (earn it first):** concurrent loops + merge automation;
@@ -352,7 +352,7 @@ anything a retro demands.
 4. ~~Notification channel for ESCALATE/PASS.~~ **Resolved 2026-07-14
    → §16 (remote control).** Remaining choice: ntfy.sh vs Telegram
    bot as the concrete channel.
-5. Does `[/loop]`'s Ask phase run interactively in the user's session
+5. Does `[loop]`'s Ask phase run interactively in the user's session
    (likely yes — it needs the user) while everything after approval is
    headless?
 6. Driver crash-resume: persist loop state (iteration count, budgets
@@ -433,7 +433,7 @@ clean.
 Rationale for the order: M1 is the afternoon of work the tcocrai retro
 already demanded and everything else assumes it; M2 delivers the
 actual user value (goal-in, answer-out); M3 is containment and
-throughput. Each milestone ends with a `[/retro]` before the next
+throughput. Each milestone ends with a `[retro]` before the next
 starts — the framework should be built the way it tells others to
 build.
 
@@ -441,7 +441,7 @@ build.
 
 Two layers, matching the two halves of the pipeline:
 
-**Interactive half — Claude Code Remote Control.** The `[/loop]` Ask
+**Interactive half — Claude Code Remote Control.** The `[loop]` Ask
 phase runs as an interactive Claude Code session in tmux on the VM
 with Remote Control enabled (research preview, 2026-02). The user can
 define the goal and approve the plan from the phone. Limits: one

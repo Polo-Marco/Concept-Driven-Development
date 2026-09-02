@@ -1,6 +1,6 @@
 # Loop Protocol (v8.1)
 
-The `[/loop]` pipeline: a deterministic driver orchestrates fresh
+The `[loop]` pipeline: a deterministic driver orchestrates fresh
 Planner / Generator / Evaluator / Monitor sessions until the goal's
 success criteria are verifiably met — or the loop escalates to the
 user. Full rationale: `docs/loop-orchestration-design.md` (framework
@@ -346,7 +346,7 @@ move from a live session that refused to write a verdict.
 
 | File | Writer | Reader |
 |---|---|---|
-| `goal.json` | `[/loop]` Ask phase (user-confirmed), then frozen | driver, all agents (read-only) |
+| `goal.json` | `[loop]` Ask phase (user-confirmed), then frozen | driver, all agents (read-only) |
 | `verdict.json` | Evaluator | driver |
 | `ledger.jsonl` | driver only | Planner (REPLAN memory), Retro |
 | `loop-state.json` | driver only | driver (crash resume), status |
@@ -486,8 +486,8 @@ crash loop can defeat.
 - Batch = sequential queue of goals; one loop at a time in v8.0.
 - Worktree-per-loop is recommended for experiment goals (runaway
   containment); merge conflicts always escalate — no auto-resolution.
-- No `[/monitor]` or `[/batch]` commands. A fourth user command must
+- No `[monitor]` or `[batch]` commands. A fourth user command must
   be demanded by a retro, not anticipated.
-- On each new model generation, `[/retro]` stress-tests which loop
+- On each new model generation, `[retro]` stress-tests which loop
   components are still load-bearing (every component encodes an
   assumption about what the model can't do; assumptions go stale).

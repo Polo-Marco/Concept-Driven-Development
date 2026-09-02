@@ -8,7 +8,7 @@ journal summaries, as journal/traces/<timestamp>-<session>.jsonl.
 
 This is Tier 2 of the session journal (see .claude/rules/governance.md
 §6): the curated `journal/*.md` summary is the primary artifact for
-`[/retro]`; this raw trace is the forensic drill-down for loops you flag
+`[retro]`; this raw trace is the forensic drill-down for loops you flag
 "bad". Claude Code only — Cursor has no equivalent transcript path.
 
 Never blocks session end: any error exits 0 silently.

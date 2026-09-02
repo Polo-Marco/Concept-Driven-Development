@@ -37,7 +37,7 @@ Usage:
 driver under tmux and prints where to watch. Running loop.py bare is the
 same driver in the foreground -- what `start` puts inside tmux.
 
-Requires: goal.json (written by the [/loop] Ask phase), Claude Code
+Requires: goal.json (written by the [loop] Ask phase), Claude Code
 CLI on PATH, git. Python 3.9+, stdlib only.
 """
 import hashlib
@@ -65,8 +65,24 @@ AGENTS = ROOT / ".claude" / "agents"
 SETTINGS = ROOT / ".claude" / "settings.json"
 NOTIFY = ROOT / ".claude" / "driver" / "notify.sh"  # optional plug-in
 
-DEFAULT_MODELS = {"planner": "opus", "generator": "sonnet",
-                  "evaluator": "opus", "monitor": "haiku"}
+# v8.1.16: FULL model IDs, version included -- never a bare tier alias.
+# An alias ("opus") resolves to whatever the CLI considers current on
+# the day, so two loops a month apart ran different models under one
+# name and the journal could not say which. The Ask phase asks the user
+# for each role's model and writes the answer into goal.json `models`;
+# validate_goal() refuses an alias. These are the fallbacks the Ask
+# phase proposes, and the tiering follows the retros: the Evaluator is
+# the component that pays for itself, the Monitor runs every few
+# minutes and must be cheap (journal/from-agentrl-retro-20260902.md,
+# rec 8).
+DEFAULT_MODELS = {"planner": "claude-opus-5",
+                  "generator": "claude-sonnet-5",
+                  "evaluator": "claude-opus-5",
+                  "monitor": "claude-haiku-4-5"}
+# A full model ID: family, then a version -- `claude-opus-5`,
+# `claude-fable-5-1`, `claude-haiku-4-5`. `opus`, `sonnet`, `haiku`,
+# `claude-opus` and `default` are aliases and are rejected.
+MODEL_ID = re.compile(r"^claude-[a-z]+-\d[\w-]*$")
 
 ROLES = ("planner", "generator", "evaluator", "monitor")
 
@@ -347,7 +363,7 @@ def machinery() -> None:
 def validate_goal(cfg: dict) -> None:
     """A loop with no machine-checkable criteria cannot know it is done.
 
-    goal.json is a MACHINE MIRROR of Goal.md, written by the [/loop] Ask
+    goal.json is a MACHINE MIRROR of Goal.md, written by the [loop] Ask
     phase and audited by the Evaluator's contract review (Faithful?).
     The driver only checks that it is well-formed -- never what it means.
     """
@@ -375,6 +391,23 @@ def validate_goal(cfg: dict) -> None:
     for c in cfg.get("preflight", []):
         if not isinstance(c, dict) or "run" not in c or "name" not in c:
             problems.append(f"preflight entry needs 'name' and 'run': {c}")
+    # v8.1.16: every role names its model, in full, in the contract. The
+    # Ask phase asks the user; the driver refuses a missing role or a
+    # tier alias, so "which model ran this loop" is always answerable
+    # from goal.json rather than from what the CLI resolved that day.
+    models = cfg.get("models")
+    if not isinstance(models, dict):
+        problems.append("models: missing -- name a full model ID per role "
+                        f"({', '.join(ROLES)}), e.g. "
+                        + json.dumps(DEFAULT_MODELS))
+    else:
+        for role in ROLES:
+            m = models.get(role)
+            if not isinstance(m, str) or not MODEL_ID.match(m):
+                problems.append(
+                    f"models.{role}: {m!r} is not a full model ID with a "
+                    f"version (e.g. {DEFAULT_MODELS[role]!r}; bare tiers "
+                    f"like 'opus' are aliases and are refused)")
     if problems:
         die("goal.json is not a usable contract:\n  - "
             + "\n  - ".join(problems))
@@ -2084,7 +2117,7 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
     print(f"  journal   {rec.relative_to(ROOT)}")
     if FEEDBACK_BLOCK.splitlines()[1] in rec.read_text():
         print("            !! Feedback block is still the template -- "
-              "fill it in; [/retro] reads it")
+              "fill it in; [retro] reads it")
 
     removed = []
     for f in EPHEMERAL:
@@ -2482,7 +2515,7 @@ def main() -> None:
 
     cfg = load(GOAL, None)
     if cfg is None:
-        die("goal.json not found or unreadable -- run the [/loop] Ask "
+        die("goal.json not found or unreadable -- run the [loop] Ask "
             "phase first.")
 
     if args and args[0] == "close":

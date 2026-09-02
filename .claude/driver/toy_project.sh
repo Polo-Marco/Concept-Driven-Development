@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up a throwaway CDD project for a real end-to-end [/loop] test.
+# Set up a throwaway CDD project for a real end-to-end [loop] test.
 #
 #   ./toy-loop.sh [framework-repo] [target-dir]
 #
@@ -112,8 +112,8 @@ time spent waiting at the plan gate costs nothing.
 
 ## Notes
 This is a smoke test of the pipeline, not a product. Planner and
-Evaluator are pinned to sonnet to keep the run cheap; delete the
-`models` block in goal.json to use the v8.1 defaults (opus).
+Evaluator are pinned to claude-sonnet-5 to keep the run cheap; edit the
+`models` block in goal.json to use stronger models (full IDs with a version only).
 EOF
 
 cat > goal.json <<'EOF'
@@ -135,8 +135,8 @@ cat > goal.json <<'EOF'
   "preflight": [
     {"name": "python3 on PATH", "run": "python3 -V"}
   ],
-  "models": {"planner": "sonnet", "generator": "sonnet",
-             "evaluator": "sonnet", "monitor": "haiku"},
+  "models": {"planner": "claude-sonnet-5", "generator": "claude-sonnet-5",
+             "evaluator": "claude-sonnet-5", "monitor": "claude-haiku-4-5"},
   "monitor": {"interval_min": 5},
   "evaluation_cadence": "per-iteration"
 }

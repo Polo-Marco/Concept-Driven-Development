@@ -68,12 +68,12 @@ forbidden to edit.
 
 ### The Loop (the default path since 8.0)
 
-`[/loop]` turns a goal into a contract, then hands it to
+`[loop]` turns a goal into a contract, then hands it to
 `.claude/driver/loop.py` — a state machine, not a model — which spawns a
 fresh, short, headless session per phase:
 
 ```
-[/loop] <goal>
+[loop] <goal>
   │
   ├─ Ask phase (interactive): interrogate until every success criterion
   │  is metric + comparison + threshold + the file carrying the number
@@ -112,15 +112,15 @@ driver runtime) are circuit breakers that bite without you watching.
 
 ### The Sessions Inside It
 
-Inside a loop the driver issues these transitions itself; `[/discuss]`
-and `[/retro]` stay yours to call. Typed by hand — the 7.0 escape hatch,
+Inside a loop the driver issues these transitions itself; `[discuss]`
+and `[retro]` stay yours to call. Typed by hand — the 7.0 escape hatch,
 still fully supported — the same pipeline looks like this:
 
 ```
 Discuss (opt)      Planner            Generator          Evaluator (opt)    Retro (opt)
 ──────────────     ───────────        ─────────────      ───────────────    ──────────
-[/discuss]         [/build]/[/modify] start execution    [/evaluate]        [/retro]
-                   [/migrate]/[/merge]
+[discuss]         [build]/[modify] start execution    [evaluate]        [retro]
+                   [migrate]/[merge]
 
 Align on docs      Ask: interrogate   Read Overview      Independently       Read journal/
 Edit Concept/docs  Env audit          Load ticket        audit: run code,    Find patterns
@@ -132,7 +132,7 @@ STOP               STOP               STOP               STOP (no commit)    (no
 
   ↓                    ↓                   ↓                  ↓                  ↓
 Docs aligned      Review plan        Run tests          Act on verdict     Improve the
-                  Place [Halt here]  Run [/evaluate]    Fill journal         framework
+                  Place [Halt here]  Run [evaluate]    Fill journal         framework
                                                         feedback
 ```
 
@@ -208,12 +208,12 @@ ticket.
 
 | Command | Persona | Purpose |
 |---|---|---|
-| `[/discuss]` | The Thinking Partner | Think. Align direction; edit docs/Concept. No code. |
-| `[/loop]` | The Goal Setter | Do. Measurable goal in → driver-orchestrated Plan/Generate/Monitor/Evaluate → answer out. |
-| `[/retro]` | The Coach | Improve. Review journals; tune framework + habits. |
+| `[discuss]` | The Thinking Partner | Think. Align direction; edit docs/Concept. No code. |
+| `[loop]` | The Goal Setter | Do. Measurable goal in → driver-orchestrated Plan/Generate/Monitor/Evaluate → answer out. |
+| `[retro]` | The Coach | Improve. Review journals; tune framework + habits. |
 
 Everything else is internal machinery. Build/modify/migrate/merge are
-**goal types** inside `[/loop]`; `[/evaluate]` is the loop's Evaluator
+**goal types** inside `[loop]`; `[evaluate]` is the loop's Evaluator
 agent; `start execution` is issued by the driver. The 7.0 mode skills
 remain in `skills/` and stay directly invocable as an escape hatch —
 the driver calls the same files you would, under the same authority
@@ -233,17 +233,17 @@ Answering an empirical question with trials
   (SFT gates, ablations, probes)? ..................... experiment
 ```
 
-And the two commands that are not `[/loop]`:
+And the two commands that are not `[loop]`:
 
 ```
-Want to think / redirect before changing anything? ... [/discuss]
-Want to improve how you build, from logged facts? .... [/retro]
+Want to think / redirect before changing anything? ... [discuss]
+Want to improve how you build, from logged facts? .... [retro]
 ```
 
-**Your typical life:** one `[/loop]` with a `build` goal to go 0→1, then
+**Your typical life:** one `[loop]` with a `build` goal to go 0→1, then
 repeated `modify` loops as you add features and fix bugs on top. Reach
-for `[/discuss]` when a new paper or idea makes you want to redirect,
-and `[/retro]` every few loops to tune the process.
+for `[discuss]` when a new paper or idea makes you want to redirect,
+and `[retro]` every few loops to tune the process.
 
 ### Always-On Principles
 
@@ -305,14 +305,14 @@ worktree and the VM, not a pattern matcher.
 | `README.md` | Persistent | User-facing: install, run, test, use |
 | `Plan.md` | **Ephemeral** | Task tickets — deleted after the loop |
 | `Triage.md` | **Ephemeral** | Bug hypotheses — deleted after the loop |
-| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** | `[/merge]` per-source models + conflict map |
+| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** | `[merge]` per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** | Evaluator verdict — deleted after sign-off |
 | `journal/*.md` | Persistent | Per-loop session records + your feedback (Tier 1) |
 | `journal/traces/*.jsonl` | Persistent, gitignored | Full raw transcripts (Tier 2, Claude Code hook) |
 | `skills/` | Persistent | Execution patterns, rules, conventions |
 | `**/CLAUDE.md` (nested) | Persistent | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | User-maintained | External reference docs (immutable to agents) |
-| `docs/inbox.md` | Discuss-appendable | Raw idea capture, promoted via `[/discuss]` |
+| `docs/inbox.md` | Discuss-appendable | Raw idea capture, promoted via `[discuss]` |
 | `docs/DEVIATIONS.md` | Planner-appendable | Tracked departures from reference docs |
 | `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr |
 
@@ -334,7 +334,7 @@ Git history replaces `CHANGELOG.md`.
 
 ## What's New in 8.0
 
-### 1. `[/loop]` — the pipeline runs itself
+### 1. `[loop]` — the pipeline runs itself
 A deterministic driver (`.claude/driver/loop.py`) spawns a fresh headless
 session per phase, parses the JSON each returns, branches on it, enforces
 budgets, owns long-running processes, and is the only thing that commits.
@@ -402,10 +402,10 @@ approval flag when you say `approve`. Optional push
 Every Run Command tees to `logs/latest.log` via
 `<cmd> 2>&1 | tee logs/latest.log`. When something breaks, say
 **"check the latest run log and fix it"** — the agent reads the log,
-finds the error, and routes the fix through `[/modify]`. No more pasting
+finds the error, and routes the fix through `[modify]`. No more pasting
 terminal walls of text. See `.claude/rules/run-logging.md`.
 
-### 2. `[/discuss]` mode — a phase to think
+### 2. `[discuss]` mode — a phase to think
 A thinking-partner session that reads `Concept.md`/`Architecture.md`/
 `docs/`, debates direction, and (with your confirmation) edits
 `Concept.md` and `docs/`. It's the only agent session allowed to edit
@@ -413,7 +413,7 @@ A thinking-partner session that reads `Concept.md`/`Architecture.md`/
 docs. Writes no plan, no code.
 
 ### 3. Debug folded into Modify
-`[/debug]` is removed. `[/modify]` now handles features, refactors, and
+`[debug]` is removed. `[modify]` now handles features, refactors, and
 bug fixes. When the request is "X is broken," Modify runs a
 bug-investigation sub-flow (Triage, 1–3 hypotheses, Tier-1 permanent
 tests vs Tier-2 throwaway sandboxes) — debug's machinery, one fewer
@@ -425,16 +425,16 @@ it; modify keeps it accurate when a change affects install/run/test/use;
 the Evaluator's context audit checks it. So you can always test and use
 the project correctly.
 
-### 5. Session Journal + `[/retro]` coach (two tiers)
+### 5. Session Journal + `[retro]` coach (two tiers)
 Each pipeline loop writes a **Tier-1 curated summary** to `journal/`
 (what was planned, built, evaluated) and you fill a **Feedback** block
-(rating + what went well + any instruction not followed). `[/retro]`
+(rating + what went well + any instruction not followed). `[retro]`
 reads these across loops and recommends concrete improvements — to the
 framework and to your own habits — grounded in logged facts.
 
 Optionally, a **Tier-2 full raw trace** (every tool call and decision)
 is archived to `journal/traces/*.jsonl` by a Claude Code `SessionEnd`
-hook (`.claude/settings.json`). The curated summary is what `[/retro]`
+hook (`.claude/settings.json`). The curated summary is what `[retro]`
 reasons over; the raw trace is the forensic drill-down for loops you
 flag "bad". Tier 2 is Claude-Code-only (Cursor has no transcript path);
 Tier 1 works in both tools. Traces are gitignored (large + sensitive);
@@ -469,7 +469,7 @@ sequentially, exactly as before. See
 - Layered `Architecture.md` with selective loading.
 - Environment audit baked into the Planner.
 - Reference docs in `docs/` with `DEVIATIONS.md` for tracked drift.
-- Nested `CLAUDE.md`, always-on principles, `[/merge]` architecture-first,
+- Nested `CLAUDE.md`, always-on principles, `[merge]` architecture-first,
   the independent Auditor, opt-in process logging for expensive pipelines.
 
 ## Layered Architecture.md (selective loading)
@@ -495,13 +495,13 @@ Use `Full` to load the entire document.
 
 A `docs/` directory holds external specs the agents must respect — API
 contracts, design systems, SDK manuals. Originals are immutable to
-agents (only you, and `[/discuss]` with your confirmation, edit them).
+agents (only you, and `[discuss]` with your confirmation, edit them).
 
 ```
 docs/
 ├── api-contract.md
 ├── design-system.md
-├── inbox.md             ← raw idea capture (promoted via [/discuss])
+├── inbox.md             ← raw idea capture (promoted via [discuss])
 └── DEVIATIONS.md        ← Planner-appendable
 ```
 
@@ -532,7 +532,7 @@ your-project/
 │   │   ├── enforce_authority.py    ← PreToolUse: denies out-of-role writes (8.0)
 │   │   └── archive_transcript.py   ← SessionEnd: copies transcript → journal/traces/
 │   └── rules/
-│       ├── loop-protocol.md        ← The [/loop] pipeline, gates, budgets (8.0)
+│       ├── loop-protocol.md        ← The [loop] pipeline, gates, budgets (8.0)
 │       ├── principles.md           ← Simplicity, Surgical change, Think-first
 │       ├── governance.md           ← Git-as-changelog, security, logging, TDD, journal
 │       ├── run-logging.md          ← logs/latest.log capture
@@ -580,7 +580,7 @@ your-project/
 - Git initialized in your project, with `user.name` / `user.email` set —
   in a loop the driver is the only committer, and a commit that fails
   for want of an identity fails quietly
-- For `[/loop]` only: **Python 3** (standard library only — the driver
+- For `[loop]` only: **Python 3** (standard library only — the driver
   has no dependencies), **tmux**, and a git version with `worktree`
 
 ### Install (both tools, same files)
@@ -595,7 +595,7 @@ mkdir my-project && cd my-project && git init
 printf 'logs/\njournal/traces/\n' >> .gitignore
 ```
 
-**Copy all three, not just `.claude/`.** `[/loop]` refuses to start when
+**Copy all three, not just `.claude/`.** `[loop]` refuses to start when
 any of the driver, the four agent definitions, the authority hook,
 `loop-protocol.md`, or the `PreToolUse` wiring in `.claude/settings.json`
 is missing — and it refuses loudly rather than falling back to a manual
@@ -642,7 +642,7 @@ documented at the top of the script.
 ### Running a loop
 
 ```
-You:     [/loop] Get the eval harness running against our endpoint and
+You:     [loop] Get the eval harness running against our endpoint and
          report accuracy on the social-science split.
 
 Agent:   [Verifies the loop machinery is installed. Classifies: build.]
@@ -688,7 +688,7 @@ you — phase, iteration, spend, which criteria are green.
 ### Discussing direction (before you build)
 
 ```
-You:     [/discuss] A new paper suggests we chunk PDFs semantically
+You:     [discuss] A new paper suggests we chunk PDFs semantically
          instead of by page. Does that fit our Concept?
 
 Agent:   [Reads Concept.md, Architecture Overview, docs/. Weighs
@@ -699,7 +699,7 @@ Agent:   "Proposal: add this to Concept.md §Scope and a note in
 You:     yes
 
 Agent:   [Edits Concept.md + docs, commits `docs: semantic chunking
-          direction`. Recommends [/modify] when you're ready to build.]
+          direction`. Recommends [modify] when you're ready to build.]
 ```
 
 ### Driving the phases by hand (the escape hatch)
@@ -713,7 +713,7 @@ as a machine-checkable criterion.
 #### Building a new project
 
 ```
-You:     [/build] A FastAPI app that uploads PDFs, extracts text, and
+You:     [build] A FastAPI app that uploads PDFs, extracts text, and
          summarizes them with an LLM. React frontend.
 Agent:   [Writes Concept.md, asks about stack and edge cases]
 You:     proceed to spec
@@ -733,14 +733,14 @@ Agent:   "Generator session complete. Ready for your evaluation."
 
 ```
 # Feature
-You:     [/modify] Add batch upload with concurrent PDF processing
+You:     [modify] Add batch upload with concurrent PDF processing
 Agent:   "Warning: current pipeline is synchronous. Options: ..."
 You:     proceed to spec
 Agent:   [Updates Architecture + Overview + README surgically, writes
           fresh Plan.md with regression tests]
 
 # Bug (same mode — bug sub-flow)
-You:     [/modify] Extraction returns empty text for scanned PDFs
+You:     [modify] Extraction returns empty text for scanned PDFs
 Agent:   [Creates Triage.md with 1–3 hypotheses, Tier-1/Tier-2 tests,
           Architecture sections per hypothesis]
 You:     start execution
@@ -748,13 +748,13 @@ You:     start execution
 # Bug from a failing run
 You:     check the latest run log and fix it
 Agent:   [Reads logs/latest.log, identifies the error, opens a
-          [/modify] bug sub-flow to fix it]
+          [modify] bug sub-flow to fix it]
 ```
 
 #### Evaluating, signing off, and improving
 
 ```
-You:     [/evaluate]
+You:     [evaluate]
 Agent:   [Runs tests + app, checks Concept/Arch/docs/README consistency,
           simplicity, context; writes Evaluation.md + journal]
 Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
@@ -762,7 +762,7 @@ Agent:   "Evaluation complete. Verdict: PASS WITH ISSUES."
 You:     [act on fixes; delete Plan.md + Evaluation.md; fill the
           Feedback block in journal/]
 
-You:     [/retro]
+You:     [retro]
 Agent:   [Reads journal/ across loops] "3 of the last 5 modify loops
           flagged Boundary overreach. Recommend tightening the Boundary
           rule; and you tend to skip [Halt here] on large plans."
@@ -831,7 +831,7 @@ The Planner does NOT place halt flags. You place them after reviewing
 the work order, wherever you want the Generator to pause.
 
 **This applies only to the manual `start execution` escape hatch.**
-Loop mode (`[/loop]`) has no mid-loop halt gate: it would ask you to
+Loop mode (`[loop]`) has no mid-loop halt gate: it would ask you to
 guess, before seeing any output, which ticket you will want to inspect.
 Loop mode has exactly three gates — plan approval, every replan, every
 escalation — all event-driven, plus the deterministic criteria and
@@ -844,7 +844,7 @@ budget gates that stop the loop when something is actually wrong.
   not a model; fail-closed, so a missing file or an absent metric is a
   failure. It also acts as a regression guard on every ticket.
 - **Layer 3 — Manual Verification.** Each ticket lists what to inspect.
-- **Layer 4 — Auditor (`[/evaluate]`, the loop's Evaluator).**
+- **Layer 4 — Auditor (`[evaluate]`, the loop's Evaluator).**
   Independent *execution* + consistency + simplicity + context/README
   audits, with a verdict. Layer 2 proves a number met its threshold; only
   this layer can tell you the number was earned. Keep both — the cheap
@@ -865,7 +865,7 @@ Recommended workflow:
   repo. Push to GitLab. On any machine: `git clone` / `git pull`.
 - Capture away-from-repo ideas (a new paper, an aha moment) in
   `docs/inbox.md` (or a notes app as scratchpad), then **promote** them
-  into `Concept.md`/`docs/` during a `[/discuss]` session.
+  into `Concept.md`/`docs/` during a `[discuss]` session.
 - Source of truth for anything that touches development = git. Drive/
   Notion at most a scratchpad.
 
@@ -873,7 +873,7 @@ Recommended workflow:
 
 The framework repo is itself a CDD project: retro summaries and
 personal feedback from real projects are copied into `journal/`,
-`[/retro] all` surfaces cross-project patterns, and a Maintainer
+`[retro] all` surfaces cross-project patterns, and a Maintainer
 session applies accepted recommendations, bumps the version, and tags
 a release. Deployed projects upgrade by diffing tags
 (`git diff v8.1.15..v8.1.16 -- CLAUDE.md .claude/ skills/`) and
@@ -887,7 +887,7 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 - **Federated subsystems.** For big projects with loosely-coupled parts
   (annotation, preprocessing), one monorepo where each subsystem has its
   own `Concept.md`/`Architecture.md`/`skills/`, and modes scope to the
-  active subsystem (`[/modify] @annotation ...`) so other subsystems'
+  active subsystem (`[modify] @annotation ...`) so other subsystems'
   docs don't distract the agent.
 
 ## Version History
@@ -900,10 +900,10 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 | 4.1–4.2 | Dynamic skills. Programmable `[Halt here]`. |
 | 5.0–5.3 | Personas via mode commands. Phase-based authority. |
 | 5.5–5.6 | Session-based dev. Git checkpoints. Dual-tool (Claude Code + Cursor). |
-| 6.0 | Layered Architecture. Environment audit. `[/evaluate]`. Reference docs + DEVIATIONS. |
-| 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[/merge]`. Independent Auditor. Process logging. |
-| **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[/discuss]` mode. `[/debug]` folded into `[/modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[/retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
-| **8.0** | **Loop orchestration: 3-command surface (`[/discuss]`/`[/loop]`/`[/retro]`); deterministic driver (`.claude/driver/loop.py`); hook-ENFORCED phase authority (PreToolUse deny); Goal.md/goal.json contracts; experiment tickets + trial ledger + Monitor agent; Evaluator contract review pre-gate; JSON machine state; control-tower remote control (phone). Design: docs/loop-orchestration-design.md.** |
+| 6.0 | Layered Architecture. Environment audit. `[evaluate]`. Reference docs + DEVIATIONS. |
+| 6.2 | Renamed to Concept-Driven Development. `.claude/rules/`. Always-on principles. Nested `CLAUDE.md`. `[merge]`. Independent Auditor. Process logging. |
+| **7.0** | **Parallel Generator (Planner-declared `Depends On:` / `Parallel Group:`, fan-out/fan-in). Run-log capture (`logs/latest.log`). `[discuss]` mode. `[debug]` folded into `[modify]`. Planner-maintained `README.md`. Two-tier session journal (curated summaries + optional full-trace `SessionEnd` hook) + `[retro]` coach. Git history replaces `CHANGELOG.md`. Doc-sync guidance (git over Drive).** |
+| **8.0** | **Loop orchestration: 3-command surface (`[discuss]`/`[loop]`/`[retro]`); deterministic driver (`.claude/driver/loop.py`); hook-ENFORCED phase authority (PreToolUse deny); Goal.md/goal.json contracts; experiment tickets + trial ledger + Monitor agent; Evaluator contract review pre-gate; JSON machine state; control-tower remote control (phone). Design: docs/loop-orchestration-design.md.** |
 | **8.1** | **Deterministic gates: `check_criteria()` reads `goal.json` criteria straight off disk (fail-closed) as the per-ticket regression guard and the final stop condition; `preflight()` verifies environment preconditions declared in `Goal.md` before any model call; `machinery()` refuses to start when the loop's own parts are missing instead of degrading to a manual relay; `validate_goal()` rejects a contract with no machine-checkable criteria. USD budget enforced; GPU-hours billed against trial start (was reset every Monitor poll); a killed trial no longer gets evaluated; contract review fails closed. Evaluator must execute rather than read, and audits provenance. `Goal.md` is the source of truth with `goal.json` a derived mirror, audited by contract review (Faithful?/Sourced?). Driver refuses the primary working tree. `[Halt here]` removed from loop mode. Motivated by journal/feedback-inbox.md 2026-07-17 + from-ccd-ai-bench-retro-20260715.md.** |
 | **8.1.1–8.1.3** | **First real loop runs. 8.1.1–8.1.2: trial exit code checked, spend actually accumulated (so `max_usd` bites), multi-line ticket fields kept whole, `approve` targets the pending gate, Planner may write a nested `CLAUDE.md`, a PASS that never reached git escalates; `loop.py start` (worktree + tmux), `status` for humans, unauthenticated-CLI gate, per-session heartbeat events. 8.1.3: a Boundary written as markdown (the form the Planner actually emits) still matches real paths — before this, every entry kept its backticks and matched nothing, so the first end-to-end loop denied every Generator write and escalated on ticket 1; the same field habit on `**Trial:**` was command substitution under `shell=True`. Motivated by journal/from-tmmluplus-eval-retro-20260730.md + journal/feedback-inbox.md 2026-07-30.** |
 | **8.1.4** | **The loop's first COMPLETED run. Plan parsing accepts a ticket heading at any level and marks it back at that level (a `##` plan parsed as zero tickets); an unparseable plan escalates instead of reporting `all_tickets_done` with nothing built; contract review reviews every revision it pays for (reviews = revisions + 1) rather than escalating while holding an unreviewed plan; the Planner must check that some ticket's Run Command WRITES each criterion's source file; the human gate prints the absolute path to Plan.md and `status` never truncates an escalation. Toy harness re-budgeted from measurement and its traces gitignored. Four end-to-end runs, journal/feedback-inbox.md 2026-07-30.** |
@@ -912,17 +912,17 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 | **8.1.7** | **What the first toy `build` loop on 8.1.6 charged for. `max_wall_hours` meters DRIVER RUNTIME, not the calendar: the clock stops at every human gate and between runs, and a crashed run is credited only to its last recorded event — a loop that sat 3.6h at the plan gate used to escalate `budget exhausted` the instant the approval landed, before one ticket ran, with $0 spent since resume, which contradicted the framework's own approve-from-your-phone gate. Contract review is bounded by MONEY as well as rounds (it stops buying rounds past half of `max_usd`, always buys the first review, and the gate banner says which), and `cdd-evaluator` Mode 1 now has a ceiling: read the plan, do not re-implement it — three passes that each rebuilt a four-ticket plan cost 59% of a loop's spend before ticket 1. The PreToolUse shell scanner no longer reads the `>` of a Python return annotation as a redirect, which was the rare case of it failing CLOSED on legal work. The plan phase commits at its gate (`plan(loop):`), so a `feat(loop):` commit carries exactly one ticket and a per-ticket Boundary audit is a check that can pass. Journal: journal/retro-20260731-toy-816.md.** |
 | **8.1.8** | **The toy becomes a faithful deployment, and the contradiction that hid behind it. Both scaffolders now copy `CLAUDE.md` and `skills/` alongside `.claude/` — until now the smoke test copied `.claude/` alone, so the Planner used its documented fallback and the harness never once exercised the mode-skill path, the part that shapes tickets: it proved the driver, not the framework. That exposed a live conflict: the 7.0 mode skills open with an INTERACTIVE Ask phase ending in "STOP. Loop until the user says 'proceed to spec'", which a headless loop Planner cannot follow. `cdd-planner.md` now states the rule (skip the Ask/Halt step; `Goal.md` IS the Ask phase's output; unanswered questions become Assumptions in `Plan.md`; a genuine blocker is stated, never guessed around), and every halting mode skill points at it — with a test that keeps them pointing. `machinery()` reports a thin deployment as an event rather than aborting, because the Planner's fallback is legal and the choice is the user's. Journal: journal/retro-20260731-toy-816.md problem 5.** |
 | **8.1.9** | **The cost of a wrong denial and of a reverted budget — the first deployment loop the framework did not itself run. The PreToolUse shell net no longer denies by CO-OCCURRENCE: it matched the `>` of `2>&1` as a write to any protected file the command merely NAMED, killing a read-only Evaluator audit mid-loop, and a legal Run Command that passed `goal.json` as an argument and teed to `logs/` was denied for every role. Redirects are decided by the precise target scan (which already denied `echo x > goal.json`) and the loose net tests per shell segment. Every denial now lands in `logs/denials.log` and a `hook_denials` event, because a false positive used to cost a transcript dig. `start` SEEDS `Goal.md`/`goal.json` into a worktree once and never overwrites: re-copying the primary tree's copy on resume reverted an approved budget raise twice in one loop, and since a restart itself consumes an iteration, each repair round paid for the failure it was repairing (three spurious `max_iterations` escalations for a finished loop). A `Preflight` check must EXERCISE a pinned third-party harness's runtime path, not just install it (three of that loop's seven interruptions were this class, each surfacing alone at tickets 7–8), with a Planner self-check as the second net. A Hard Rule about a pinned tool must cite where it was verified against that version — one such rule shipped as the exact inverse of the harness's behaviour. The journal record separates calendar time from driver runtime, so "too many human interruptions" has a number. MAINTENANCE.md gains a hotfix inbox: both fixes here were live in a deployed project for days with no path home. Journal: journal/from-aibench-retro-20260802.md.** |
-| **8.1.10** | **The v8.0 line released as the mainline, and the docs made to match it. The README was still a 7.0 document with 8.x rows bolted onto its version table: it opened on the manual session pipeline, routed users to `[/build]`/`[/modify]` as primary commands, described `[/loop]` nowhere in Usage, and its file tree predated the driver, the agents and the authority hook. Rewritten around the loop — how it works, what the four gates buy, what the hook enforces and what it knowingly does not, the loop's own ephemeral files, an install that names the `[/loop]` prerequisites and a way to verify them, and a walkthrough of a real run. Two dangling pointers to `v8.0-draft/INSTALL.md` — a path that never shipped — removed, including the one in `machinery()`, which is the single message a half-deployed project ever sees. `docs/loop-orchestration-design.md` no longer claims to be an unimplemented draft and names where the shipped loop diverged from it. Version History reordered chronologically. Prompted by the release itself, not by a retro.** |
+| **8.1.10** | **The v8.0 line released as the mainline, and the docs made to match it. The README was still a 7.0 document with 8.x rows bolted onto its version table: it opened on the manual session pipeline, routed users to `[build]`/`[modify]` as primary commands, described `[loop]` nowhere in Usage, and its file tree predated the driver, the agents and the authority hook. Rewritten around the loop — how it works, what the four gates buy, what the hook enforces and what it knowingly does not, the loop's own ephemeral files, an install that names the `[loop]` prerequisites and a way to verify them, and a walkthrough of a real run. Two dangling pointers to `v8.0-draft/INSTALL.md` — a path that never shipped — removed, including the one in `machinery()`, which is the single message a half-deployed project ever sees. `docs/loop-orchestration-design.md` no longer claims to be an unimplemented draft and names where the shipped loop diverged from it. Version History reordered chronologically. Prompted by the release itself, not by a retro.** |
 | **8.1.11** | **Eight PreToolUse hotfixes brought home from a deployed project, plus the two corrections importing them revealed. The aibench deployment ran eight loops on 8.1.9 and patched its own copy of `enforce_authority.py` seven times to keep going; that retro then measured the class it was patching — **8 of 19 escalations, 42% of every reason a loop stopped**, most of them killing an Evaluator mid-audit, so the loop paid for the session twice. Every one denied a read-only or out-of-tree action the agent contract requires: redirect syntax taken as a write target (`tee x.log > /dev/null` read as a file named `>`), `>=` read as a redirect, a `>` inside a quoted `--format` string, heredoc BODIES scanned as shell (the code contradicting its own documented fail-open contract), the git-write net spanning newlines so a read-only `git log` and a later bare `add` matched as one command, the listing forms `git tag -l` / `stash list` / `worktree list` denied on the verb, a redirect handed to `cp`'s trailing-argument rule as its destination — which also LEAKED, since `cp a.txt Architecture.md > /dev/null` then decided `/dev/null` and never the core file — and `Write` to `/tmp` denied while the same write through the shell was allowed, on the one iteration where five criteria first went green, to an Evaluator whose contract REQUIRES /tmp reconstruction. None of the eight shipped with a test, which is why the class kept recurring after two of them had already landed; 14 regression tests now pin each false positive next to the real denial it narrows. Two corrections on import: the scratch carve-out is decided on the RESOLVED path (the reviewing Evaluator's own non-blocking finding F3 — `abspath` follows nothing, so `/tmp/x -> <repo>/goal.json` read as scratch), and it is two-sided, because a one-sided prefix check silently exempted every core file of any tree rooted in `/tmp`. Journal: journal/from-aibench-retro-20260818.md; patches in journal/hotfixes/.** |
 | **8.1.12** | **What a criterion IS, and when a number on disk counts as this loop's result. Same retro, failure class 2 — the second-largest reason a loop stopped. Three changes, all deterministic. (1) A criterion is identified by `metric@source`, not by its bare metric name: two criteria measuring the same quantity in different files were ONE entry in the green set — six criteria under four names in one loop, thirteen under nine in another — so a regression in one of a colliding pair was invisible while the other stayed green, and `first_green` fired once for the pair, meaning the second criterion's first green bought no provenance audit under `final-pass`. (2) `criteria_due()`: a criterion whose `source` a LATER ticket owns is neither green nor red until that ticket runs. `plan_problems()` already computed the owner map and threw it away. One loop went first-green on `passed`/`failed` off the previous loop's committed `results/test-summary.json` while running a probe that writes no test summary; another did the same and then paid twice — the stale file was cleared, the guard read green→red and forced a RETRY, and the Generator stopped to argue that the criterion was not its evidence to produce, on ticket 1 of 9 in the loop that cost $70.89 and did not finish. Deferred criteria stay out of the regression comparison, so clearing stale evidence is free. (3) `evidence_gate()`, a fifth pre-Planner gate: a fresh loop whose criteria read files that ALREADY EXIST refuses to start, for $0, and says the fix — give each `source` a path only this loop can write. A loop had sat at its plan gate with four criteria green off the previous loop's records, carrying the very harness pin it existed to replace, and the control tower recorded that it could not even delete them: under the bare-name guard that would have manufactured a regression and burned an iteration. `mode-loop`'s Ask phase now requires a per-loop evidence path and names `latest.json` as the shape that fails. 12 tests. Journal: journal/from-aibench-retro-20260818.md.** |
 | **8.1.13** | **The first two 8.1.12 loops, and the four things that stopped them — one escalation per two iterations, up from one per three. Four causes, only one of them in the state machine, so the fix is four small ones. (1) **A dead session is not a verdict.** `claude()` never looked at the exit code, so an Evaluator that died on its first token with API Error 529 and wrote nothing was read as "missing verdict.json" → ESCALATE — stopping a loop whose 2.7h trial had already SUCCEEDED, and costing a human, a hand-made commit and a restart, which costs an iteration. The SESSION is now re-dispatched once (never the ticket: re-running the ticket is what would re-run the trial), and if it dies twice the escalation says so, because "the work is intact and unjudged" and "the auditor refused to write a verdict" need different human moves. (2) **The hook resolves variables, incrementally.** `$M` was decided as a repo-relative file named `$m`, which denied the Evaluator's contractual `/tmp` reconstruction — and that denial is what pushed a control tower into patching this hook under a running loop, where its patch (`finditer`, last-write-wins, no position awareness) opened a fail-open that allowed `M=Architecture.md; echo x > $M; M=/tmp/ok`. Assignments now bind per shell segment, against what precedes them; a target still carrying an unresolved `$` is dropped, which is the fail-OPEN the module docstring always promised for expansion. Both directions pinned by test, including reverse order. (3) **A heredoc body is data on EVERY scan.** 8.1.11 truncated heredocs inside the target scan only, so the git net and the loose net still read the body as shell: a Planner writing the file it OWNS with `cat > Plan.md <<'PLANEOF'` was denied "Git write commands are driver-only" because prose in the plan put `git` and a subcommand word on one line. (4) Two authoring rules for the layer where the other two escalations were born: the contract review gains a **Grounded?** check — does any Spec contradict a fact `Goal.md` declares established? (a plan reused one reader across two data shapes the goal explicitly distinguishes, passed review, and the Generator stopped six minutes after the human gate) — and the Ask phase gains **never point a criterion at the answer**: a loop escalated on `coverage >= 0.90` at 0.8978, three calls short of 1067, on the last ticket, hours after the science was finished. 17 tests. Journal: journal/from-aibench-retro-20260819.md.** |
 | **8.1.14** | **What stopped the loop that was launched an hour after 8.1.13 shipped, and the review layer it exposed. (1) **A quoted span is data.** The last place the decide-on-text class was still live: `echo "--- git worktree ---" && git worktree list` was denied on the ECHO LABEL while the real listing beside it was scrubbed correctly, and `grep "git commit" logs/x` was denied for naming what it searched for. `git` is a command only where the shell would execute it, so quoted spans are blanked before the git net — while the TARGET scan keeps the ones without metacharacters, where a quoted span may still BE a target (`tee 'Plan.md'`). Sixth false positive of this class, and the most expensive: it killed contract review round 3, the driver read the silence as REVISE, spent the last revision and escalated a plan nothing had reviewed. Fails OPEN on `sh -c "git push"` — an interpreter escape, out of scope by the module docstring, and now asserted by a test so the hole is visible rather than discovered. (2) **The contract review executes one class of check.** It was a document review by design, and every finding it has ever produced in a real deployment was the same class: the plan reads a field, key or path that does not exist in the thing it reads from — a reader aimed at two data shapes, a `doc_hash` that is one constant value across 900 rows, `sample_outcomes()` reading `repeat["harness"]` and a `domain` the declared record shape does not carry. Minutes of careful reading each, one command each, and one of them was missed outright — it passed review and the Generator stopped six minutes after the human gate. The new **Wired?** check demands a pasted command and its output rather than a conclusion, and the v8.1.7 'do not build it' ceiling gets its line drawn: EXISTENCE is a spot-check and is required, BEHAVIOUR is building and is forbidden. 250 tests. Journal: journal/from-aibench-loop11-contract-review.md.** |
 | **8.1.15** | **The route that never fired, and the bar that was never measured — the 2026-08-24 retro over fifteen deployed loops. (1) **A Generator stop is adjudicated, not auto-escalated.** REPLAN — fresh Planner + ledger + human re-gate, built for exactly the "plan is defective" case — fired ZERO times in fifteen loops, because its only entrance was an Evaluator Mode-2 verdict and a stop returned before any Evaluator ran; every plan defect the Generator caught woke a human to do what a Planner session does, and the manual pipeline handled the same event the same week with a Planner revision session whose only human touch was a `git revert`. On `STATUS: stopped` the driver now dispatches one bounded read-only Evaluator session (Mode 3) that routes REPLAN (plan defect — gated and ledgered like every replan) / RETRY (the Generator misread; the retry carries what it missed) / ESCALATE (implicates the goal contract, or anything no replan can fix); fail-CLOSED, so a dead adjudicator escalates with the stop report exactly as before. The human still approves every replan — the touchpoint changes shape from diagnosis to approval. (2) **`loop.py replan "<reason>"`** — the user-initiated half of the same route, recommended by two consecutive retros while the workaround on record was hand-editing `loop-state.json` under a running loop. (3) **A stopping bar names where its number was measured.** A never-measured `>= 0.90` escalated at 0.8978 hours after the science was finished, and the contract review had predicted the band with no lever to move a frozen criterion: the Ask phase now requires provenance for any bar above presence (no measurement → this loop records `>= 0`, the bar graduates to the next loop's goal), and the review gains an **Earnable?** check that puts a labelled `CRITERIA CONCERN:` line where the user will see it at the gate. 258 tests. Journal: journal/retro-20260824-aibench.md.** |
-| **8.1.16** | **What two deployments' 2026-09-02 retros charged the framework for — thirteen loops, $1,878, and three classes behind most of the cost. (1) **The hook decides where the shell would write.** A `cd` is tracked per segment exactly as assignments are (v8.1.13), so `cd /tmp && echo x > notes.txt` is scratch and `cd src/pkg && echo x > ../../Architecture.md` is a core-file write — it used to be ALLOWED; the loose net blanks quoted spans before looking for a verb, so a `grep` pattern containing `rm` is not a removal; an escaped `\"` no longer ends a double-quoted span; the listing forms take their options. ~110 denials across twelve loops, five sessions killed, one plan reshaped to route around the net; each fix pinned beside the real denial it must not loosen. (2) **A ticket PASSes only with its outputs on disk.** Before any audit is bought the driver checks every Output path the Boundary covers, that a Run Command left a log under this dispatch, and that no criterion the ticket OWNS reads red — three tickets had PASSed having produced nothing. The same check exempts an abandoned run from the no-op backstop: a Generator's Bash call is capped at 600 s, eight 20–35 minute runs were abandoned in two loops, and no rule mentioned the cap — now three do, and a Trial runs under bash rather than dash. (3) **The Monitor has a memory.** Five of six kills across two campaigns were healthy trials; the Monitor is handed its last three verdicts and the driver overrules a kill whose quoted evidence sat in a window a prior poll judged HEALTHY. Also: the retry cap is adjudicated once (three converging attempts were stopped by the counter; attempt 4 passed), `max_gpu_hours: 0` is no cap, `.env` and the venv are seeded into the worktree, a contract review is remembered with the plan it reviewed, `loop.py note` records a manual change when it is made, denials are counted as records and finally shown in the journal. Ask phase: three questions per criterion (can it fail for its reason; is the metric name emitted; do numerator and denominator come from different objects), every number carries its command, a recorder writes `null`. Planner self-check: grep consumers, `Disk:` per iteration, banked evidence survives until its replacement has measured. `[/modify] @Evaluation.md` fast path. 297 tests. Journals: journal/from-agentrl-retro-20260902.md, journal/from-aibench-retro-20260902.md.** |
+| **8.1.16** | **What two deployments' 2026-09-02 retros charged the framework for — thirteen loops, $1,878, and three classes behind most of the cost. (1) **The hook decides where the shell would write.** A `cd` is tracked per segment exactly as assignments are (v8.1.13), so `cd /tmp && echo x > notes.txt` is scratch and `cd src/pkg && echo x > ../../Architecture.md` is a core-file write — it used to be ALLOWED; the loose net blanks quoted spans before looking for a verb, so a `grep` pattern containing `rm` is not a removal; an escaped `\"` no longer ends a double-quoted span; the listing forms take their options. ~110 denials across twelve loops, five sessions killed, one plan reshaped to route around the net; each fix pinned beside the real denial it must not loosen. (2) **A ticket PASSes only with its outputs on disk.** Before any audit is bought the driver checks every Output path the Boundary covers, that a Run Command left a log under this dispatch, and that no criterion the ticket OWNS reads red — three tickets had PASSed having produced nothing. The same check exempts an abandoned run from the no-op backstop: a Generator's Bash call is capped at 600 s, eight 20–35 minute runs were abandoned in two loops, and no rule mentioned the cap — now three do, and a Trial runs under bash rather than dash. (3) **The Monitor has a memory.** Five of six kills across two campaigns were healthy trials; the Monitor is handed its last three verdicts and the driver overrules a kill whose quoted evidence sat in a window a prior poll judged HEALTHY. Also: the retry cap is adjudicated once (three converging attempts were stopped by the counter; attempt 4 passed), `max_gpu_hours: 0` is no cap, `.env` and the venv are seeded into the worktree, a contract review is remembered with the plan it reviewed, `loop.py note` records a manual change when it is made, denials are counted as records and finally shown in the journal. Ask phase: three questions per criterion (can it fail for its reason; is the metric name emitted; do numerator and denominator come from different objects), every number carries its command, a recorder writes `null`. Planner self-check: grep consumers, `Disk:` per iteration, banked evidence survives until its replacement has measured. `[modify] @Evaluation.md` fast path. **Models by full ID:** every role's model is named in `goal.json` `models` with its version (`claude-opus-5`, `claude-fable-5-1`, `claude-haiku-4-5`…) — the Ask phase asks the user per role, and the driver refuses a bare tier alias, so the journal can always say which model ran a loop. **Mode tags are `[loop]`, `[discuss]`, `[retro]` …** — the leading slash is gone, so a tag no longer collides with a Claude Code slash command. 300 tests. Journals: journal/from-agentrl-retro-20260902.md, journal/from-aibench-retro-20260902.md.** |
 
 ## Tips
 
-- **Discuss before big pivots.** A `[/discuss]` that prevents a bad
+- **Discuss before big pivots.** A `[discuss]` that prevents a bad
   build is cheaper than the build.
 - **Spend the Ask phase.** Every minute making a criterion checkable
   buys back an hour of auditing prose later. If you can't say which file
@@ -938,11 +938,11 @@ Full playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
   command you run, not the thing you remember.
 - **Say "check the latest run log."** Let the agent read the error
   instead of pasting it.
-- **Fill the journal feedback.** `[/retro]` is only as good as the
+- **Fill the journal feedback.** `[retro]` is only as good as the
   honest ratings you log — especially "instruction not followed."
 - **Approve the SessionEnd hook** (Claude Code) if you want full raw
   traces to dissect bad loops; otherwise Tier-1 summaries alone still
-  power `[/retro]`.
+  power `[retro]`.
 - **Keep the Architecture Overview tight.** It's the only always-loaded
   section.
 - **Keep nested `CLAUDE.md` to rules, not data.**

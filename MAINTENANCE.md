@@ -12,7 +12,7 @@ Deployed projects never copy it. This repo is two things at once:
 
 ```
 capture      →   review        →   decide   →   apply           →   version + ship
-(journal/)       ([/retro] all)    (user)       (Maintainer          (commit, tag,
+(journal/)       ([retro] all)    (user)       (Maintainer          (commit, tag,
                                                  session)             push)
 ```
 
@@ -54,9 +54,9 @@ Three inboxes, by input type:
   files is still not the fix (see *Upgrading a Deployed Project*) — it
   is the emergency, and this is how the emergency gets home.
 
-### 2. Review — `[/retro] all`
+### 2. Review — `[retro] all`
 
-Run `[/retro] all` in this repo. The Coach reads everything in
+Run `[retro] all` in this repo. The Coach reads everything in
 `journal/` — imported project retros, `feedback-inbox.md`, and any
 patches in `hotfixes/` — looks
 for cross-project patterns ("Boundary overreach flagged in 3 of 4
@@ -121,4 +121,4 @@ comment that traces to it.
 
 This does NOT change the template rule: in a deployed project
 `journal/*.md` is committed and persistent (`governance.md` §6) — it is
-that project's own record, and `[/retro]` reads it there.
+that project's own record, and `[retro]` reads it there.

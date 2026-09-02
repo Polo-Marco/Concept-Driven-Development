@@ -48,6 +48,6 @@ approves one plan instead of typing every transition.
 
 - Retros across projects show *decreasing* repeat findings
   version-over-version.
-- A new project goes 0→1 with one `[/loop]` (`build` goal) and no
+- A new project goes 0→1 with one `[loop]` (`build` goal) and no
   framework friction.
 - Every framework change cites the feedback that motivated it.

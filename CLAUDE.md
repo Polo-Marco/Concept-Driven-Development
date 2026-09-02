@@ -32,8 +32,8 @@ In loop mode, only the driver commits.
 ## Pipeline Architecture (v8.0)
 
 ```
-                    ┌────────────── [/loop] ───────────────┐
-[/discuss]          │  Ask → Goal.md + goal.json (frozen)  │   [/retro]
+                    ┌────────────── [loop] ───────────────┐
+[discuss]          │  Ask → Goal.md + goal.json (frozen)  │   [retro]
  think              │  driver: Planner → contract review   │   improve
  (docs only)        │        → HUMAN GATE (approve once)   │   (journal
                     │  per ticket: Generator → Trial ←     │    only)
@@ -45,16 +45,16 @@ In loop mode, only the driver commits.
 
 Three commands. Everything else is internal machinery:
 
-- **`[/discuss]`** — thinking partner. Reads Concept/Architecture/docs,
+- **`[discuss]`** — thinking partner. Reads Concept/Architecture/docs,
   debates direction, edits `Concept.md`/`docs/` only with user
   confirmation. No plan, no code.
-- **`[/loop] <goal>`** — the Goal Setter (Ask phase) turns the goal
+- **`[loop] <goal>`** — the Goal Setter (Ask phase) turns the goal
   into `Goal.md` + `goal.json`, then the driver
   (`.claude/driver/loop.py`) orchestrates fresh Planner / Generator /
   Evaluator / Monitor sessions per `.claude/rules/loop-protocol.md`.
   Goal types: `build | modify | experiment | migrate | merge` — the
   Planner loads the matching internal mode skill.
-- **`[/retro]`** — the Coach. Reads `journal/` across loops, surfaces
+- **`[retro]`** — the Coach. Reads `journal/` across loops, surfaces
   patterns, recommends framework/skill changes. Includes the harness
   staleness check on new model generations.
 - **You (the user)** — approve the plan gate, answer escalations, sign
@@ -66,9 +66,9 @@ Dormant until the user invokes a command.
 
 | Command | Session | Action |
 |---|---|---|
-| `[/discuss] [topic]` | Discuss | Read `@skills/mode-discuss/SKILL.md` |
-| `[/loop] [goal]` | Goal Setter → driver | Read `@skills/mode-loop/SKILL.md` |
-| `[/retro]` | Retro | Read `@skills/mode-retro/SKILL.md` |
+| `[discuss] [topic]` | Discuss | Read `@skills/mode-discuss/SKILL.md` |
+| `[loop] [goal]` | Goal Setter → driver | Read `@skills/mode-loop/SKILL.md` |
+| `[retro]` | Retro | Read `@skills/mode-retro/SKILL.md` |
 
 ### Escape hatch (manual 7.0-style operation)
 
@@ -77,9 +77,9 @@ same skills you would. Authority rules apply identically.
 
 | Command | Session | Action |
 |---|---|---|
-| `[/build]` `[/modify]` `[/migrate]` `[/merge]` | Planner | Read the matching `@skills/mode-*/SKILL.md` |
+| `[build]` `[modify]` `[migrate]` `[merge]` | Planner | Read the matching `@skills/mode-*/SKILL.md` |
 | `start execution` | Generator | `.claude/rules/generator-protocol.md` |
-| `[/evaluate]` | Evaluator | Read `@skills/mode-evaluate/SKILL.md` |
+| `[evaluate]` | Evaluator | Read `@skills/mode-evaluate/SKILL.md` |
 | `check the latest run log` | (any) | Read `logs/latest.log`, diagnose, route to a `modify` goal |
 
 ## Phase-Based File Authority (hook-enforced in loop mode)
@@ -104,7 +104,7 @@ never work around.
 
 ## Session Lifecycle
 
-### `[/loop]` (the default "do" path)
+### `[loop]` (the default "do" path)
 1. Goal Setter interrogates until every success criterion is
    machine-checkable; writes `Goal.md` + `goal.json`; user confirms;
    files freeze.
@@ -150,7 +150,7 @@ at session start); parallel groups follow
   Feedback block. In loop mode the driver writes the record (tickets,
   iterations, verdicts, criteria, notable events) on every terminal
   exit and never overwrites the Feedback block; in manual sessions each
-  session appends its own. Primary artifact for `[/retro]`.
+  session appends its own. Primary artifact for `[retro]`.
 - **Tier 2 (`journal/traces/*.jsonl`):** full transcripts via the
   `SessionEnd` hook. Gitignored. Claude Code only.
 

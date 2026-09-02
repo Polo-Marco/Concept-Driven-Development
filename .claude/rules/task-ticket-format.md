@@ -257,7 +257,7 @@ by the user after reviewing Plan.md. When the Generator encounters
 a ticket with `[Halt here]`, it commits current work and stops.
 
 **Loop mode ignores these flags** (v8.1). The driver never reads them —
-it never did — and `[/loop]` no longer asks you to place them. A
+it never did — and `[loop]` no longer asks you to place them. A
 pre-placed pause requires guessing which ticket will need inspection
 before any output exists; loop mode replaces that with event-driven
 stops (deterministic criteria gate, regression guard, budget caps,

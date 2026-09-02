@@ -41,7 +41,7 @@ through a fresh Planner → Generator cycle.
 
 ## Trigger
 
-User types `[/evaluate]` after a Generator session completes.
+User types `[evaluate]` after a Generator session completes.
 
 ## Protocol
 
@@ -144,7 +144,7 @@ Evaluation complete. Verdict: [PASS | PASS WITH ISSUES | FAIL].
 Review Evaluation.md.
 - If satisfied: delete Plan.md/Triage.md and Evaluation.md, then fill
   the Feedback block in this loop's journal/ entry.
-- If issues: start a new Planner session ([/modify] handles both
+- If issues: start a new Planner session ([modify] handles both
   features and bug fixes) to address the prioritized fixes.
 ```
 

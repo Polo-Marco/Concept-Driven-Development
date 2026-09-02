@@ -242,7 +242,8 @@ class DriverCase(unittest.TestCase):
                              "source": "results/out.json"}],
                "budgets": {"max_iterations": 8, "max_usd": 10},
                "evaluation_cadence": "per-iteration",
-               "monitor": {"interval_min": 1}}
+               "monitor": {"interval_min": 1},
+               "models": dict(loop.DEFAULT_MODELS)}
         cfg.update(over)
         loop.GOAL.write_text(json.dumps(cfg))
         return cfg
@@ -374,11 +375,33 @@ class TestValidateGoal(DriverCase):
                          "budgets": {"max_usd": 1},
                          "preflight": [{"run": "true"}]}, "preflight")
 
+    VALID = {"criteria": [{"metric": "a", "op": ">", "value": 1,
+                           "source": "s"}],
+             "budgets": {"max_usd": 1},
+             "preflight": [{"name": "n", "run": "true"}],
+             "models": {"planner": "claude-fable-5-1",
+                        "generator": "claude-sonnet-5",
+                        "evaluator": "claude-opus-5",
+                        "monitor": "claude-haiku-4-5"}}
+
     def test_accepts_valid_contract(self):
-        loop.validate_goal({"criteria": [{"metric": "a", "op": ">",
-                                          "value": 1, "source": "s"}],
-                            "budgets": {"max_usd": 1},
-                            "preflight": [{"name": "n", "run": "true"}]})
+        loop.validate_goal(self.VALID)
+
+    # v8.1.16: every role names its model by FULL ID, version included.
+    def test_rejects_missing_models(self):
+        cfg = {k: v for k, v in self.VALID.items() if k != "models"}
+        self.assertDies(cfg, "models")
+
+    def test_rejects_a_tier_alias(self):
+        for alias in ("opus", "sonnet", "haiku", "claude-opus", "default"):
+            cfg = dict(self.VALID, models=dict(self.VALID["models"],
+                                               generator=alias))
+            self.assertDies(cfg, "models.generator")
+
+    def test_every_role_must_be_named(self):
+        models = {r: m for r, m in self.VALID["models"].items()
+                  if r != "monitor"}
+        self.assertDies(dict(self.VALID, models=models), "models.monitor")
 
 
 # ---------- gate 3: preflight -----------------------------------------
@@ -2743,7 +2766,7 @@ class TestPlannerGoalTypeMapping(unittest.TestCase):
 
     REPO = HERE.parent.parent
     PLANNER = REPO / ".claude" / "agents" / "cdd-planner.md"
-    # the goal types [/loop] accepts, per CLAUDE.md and mode-loop/SKILL.md
+    # the goal types [loop] accepts, per CLAUDE.md and mode-loop/SKILL.md
     GOAL_TYPES = ("build", "modify", "experiment", "migrate", "merge")
 
     def mapping(self):

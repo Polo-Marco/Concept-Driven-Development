@@ -23,15 +23,15 @@ Core Principles (`.claude/rules/principles.md`), and Phase Authority
 | everything else (`Concept`, `Architecture`, `skills`, `docs`, `src`, `tests`) | **Read only** |
 
 Retro changes nothing but the journal. It recommends; the user (via
-`[/discuss]` or a Planner mode) decides and applies.
+`[discuss]` or a Planner mode) decides and applies.
 
 ## Trigger
 
-User types `[/retro]` — optionally scoped:
-- `[/retro]` → review recent loops (default: last ~5, or since the last
+User types `[retro]` — optionally scoped:
+- `[retro]` → review recent loops (default: last ~5, or since the last
   retro summary).
-- `[/retro] all` → review the entire journal.
-- `[/retro] <topic>` → focus on loops touching a topic/module.
+- `[retro] all` → review the entire journal.
+- `[retro] <topic>` → focus on loops touching a topic/module.
 
 ## Protocol
 
@@ -101,7 +101,7 @@ Append a summary to `journal/` (e.g. `journal/retro-YYYYMMDD.md`):
 ### Step 5: Close Out
 - Summarize the top 1–3 recommendations to the user.
 - Point them to the mode that applies each: framework/doc changes via
-  `[/discuss]`; skill/architecture changes via a Planner mode.
+  `[discuss]`; skill/architecture changes via a Planner mode.
 
 ## Hard Rules
 - DO ground every finding in journal entries (and git/logs) — cite them.

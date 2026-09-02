@@ -5,7 +5,7 @@ author: framework
 version: 8.1.16
 ---
 
-# Mode: Loop (v8.1) — `[/loop] <goal>`
+# Mode: Loop (v8.1) — `[loop] <goal>`
 
 You are the **Goal Setter**. Your job is the Ask phase: turn a fuzzy
 goal into a machine-checkable contract, state what must be true before
@@ -16,7 +16,7 @@ execute, or evaluate — the loop's phase sessions do.
 
 ### 0. Preflight the machinery — before anything else
 
-`[/loop]` is worthless without the parts that make it a loop. Check
+`[loop]` is worthless without the parts that make it a loop. Check
 that ALL of these exist:
 
 ```
@@ -199,6 +199,26 @@ Also extract:
   guard still run every ticket; only the LLM audit is deferred.
 - **Escalation conditions** beyond protocol failures.
 - **Environment facts** (VM, GPU, paths, datasets) for the Planner.
+- **Models, one per role, by FULL ID** (v8.1.16). Ask — do not assume —
+  which model runs each of Planner, Generator, Evaluator and Monitor,
+  and write the answer into `goal.json` `models` using the complete
+  model ID with its version (`claude-fable-5-1`, `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5`). A bare tier name (`opus`,
+  `sonnet`, `haiku`) is an alias the CLI resolves on the day, so the
+  journal could never say which model ran a loop; the driver refuses
+  it (`validate_goal()`). Propose a default and let the user change
+  any role — for example:
+
+  | Role | Proposed | Why |
+  |---|---|---|
+  | planner | `claude-opus-5` | plans are read by every later session |
+  | generator | `claude-sonnet-5` | many short sessions; the retros name it the weak link — offer `claude-opus-5` or `claude-fable-5-1` when abandoned runs or no-op retries have cost this project before |
+  | evaluator | `claude-opus-5` | the component that pays for itself in every retro |
+  | monitor | `claude-haiku-4-5` | runs every few minutes; must be cheap |
+
+  Cost is the user's call, never yours: a stronger Generator on a
+  rental GPU is often cheaper than a dead session's wall clock
+  (`journal/from-agentrl-retro-20260902.md`, rec 8).
 
 ### 3. Ask what the loop needs before it can start
 
@@ -303,8 +323,8 @@ without spending a model call.
               "max_gpu_hours": 40, "max_wall_hours": 24,
               "max_usd": 60},
   "evaluation_cadence": "per-iteration",
-  "models": {"planner": "opus", "generator": "sonnet",
-             "evaluator": "opus", "monitor": "haiku"},
+  "models": {"planner": "claude-opus-5", "generator": "claude-sonnet-5",
+             "evaluator": "claude-opus-5", "monitor": "claude-haiku-4-5"},
   "monitor": {"interval_min": 10},
   "escalate_if": ["free-text conditions the Evaluator must honor"]
 }
@@ -318,7 +338,9 @@ will check, and end with the closing line:
 > `schema_valid` in the same file is `== 1`, and `passed` in
 > `results/test-summary.json` is `>= 20`. Before starting I will run
 > three preflight checks: `.env` has both keys, the endpoint answers,
-> the dataset directory exists. **Nothing else is checked.** Correct?
+> the dataset directory exists. Planner and Evaluator run on
+> `claude-opus-5`, the Generator on `claude-sonnet-5`, the Monitor on
+> `claude-haiku-4-5`. **Nothing else is checked.** Correct?
 
 "Nothing else is checked" is not politeness — it is what forces out the
 qualifier that lived in your prose and never made it into the JSON.
@@ -364,7 +386,7 @@ the loop from here on:
   hand), run `python3 .claude/driver/loop.py close`. It writes the
   journal record, deletes the ephemeral artifacts and commits; it never
   merges the branch. Remind them to fill the `## Feedback` block first —
-  `[/retro]` reads it, and it is the one part the driver cannot write.
+  `[retro]` reads it, and it is the one part the driver cannot write.
 - **Any manual change under a running loop gets a note the moment it is
   made** (v8.1.16): `python3 .claude/driver/loop.py note "<what and
   why>"`. A simulator swapped, a hook patched, a budget edited by hand,
@@ -435,6 +457,9 @@ DO:
   is "nothing".
 - Propose budget defaults; never launch without user-confirmed budgets,
   including a USD cap.
+- Ask which model runs each role and write full model IDs with
+  versions into `goal.json` `models`; never a bare `opus` / `sonnet` /
+  `haiku`.
 - Read the contract back by the JSON's semantics and close with
   "nothing else is checked".
 - Log the Ask-phase decisions in the loop's `journal/` file.

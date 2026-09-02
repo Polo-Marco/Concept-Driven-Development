@@ -40,7 +40,7 @@ running log", "read the log and fix it", or similar):
 1. Read `logs/latest.log`.
 2. Identify the error: the failing stage, stack trace, or assertion.
 3. Report the root cause concisely.
-4. Route the fix through `[/modify]` (its bug-investigation sub-flow) —
+4. Route the fix through `[modify]` (its bug-investigation sub-flow) —
    do NOT edit `src/` outside a proper Planner → Generator cycle.
 
 If `logs/latest.log` is missing, tell the user to re-run with the

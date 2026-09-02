@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up a throwaway CDD project for a real end-to-end [/loop] test of
+# Set up a throwaway CDD project for a real end-to-end [loop] test of
 # the EXPERIMENT path -- the half `toy_project.sh` never touches.
 #
 #   ./toy_experiment.sh [framework-repo] [target-dir]
@@ -40,7 +40,7 @@
 # $7.66 and 32 minutes wall clock for the whole run -- 2 iterations, 3
 # Generator sessions, 1 REPLAN (fresh Planner + second contract review),
 # 2 contract reviews, 3 per-iteration Evaluator audits, 1 final
-# provenance audit, and 7 Monitor sessions (haiku, pennies). Trials burn
+# provenance audit, and 7 Monitor sessions (claude-haiku-4-5, pennies). Trials burn
 # 10 minutes of wall clock and no tokens at all.
 #
 # The cap below is 15, roughly 2x measured: `max_replans: 2` permits one
@@ -318,7 +318,7 @@ time spent waiting at the plan gate costs nothing.
 This is a smoke test of the pipeline's experiment path, not research.
 `bench/train.py` is a declared stub with a synthetic loss curve and one
 deliberately injected cold-start fault (see Architecture.md). Planner,
-Generator and Evaluator are pinned to sonnet and the Monitor to haiku to
+Generator and Evaluator are pinned to claude-sonnet-5 and the Monitor to claude-haiku-4-5 to
 keep the run cheap; delete the `models` block in goal.json to use the
 v8.1 defaults.
 EOF
@@ -343,8 +343,8 @@ cat > goal.json <<'EOF'
     {"name": "python3 on PATH", "run": "python3 -V"},
     {"name": "toybench harness present", "run": "test -f bench/train.py"}
   ],
-  "models": {"planner": "sonnet", "generator": "sonnet",
-             "evaluator": "sonnet", "monitor": "haiku"},
+  "models": {"planner": "claude-sonnet-5", "generator": "claude-sonnet-5",
+             "evaluator": "claude-sonnet-5", "monitor": "claude-haiku-4-5"},
   "monitor": {"interval_min": 1},
   "evaluation_cadence": "per-iteration"
 }

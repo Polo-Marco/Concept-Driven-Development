@@ -2,7 +2,7 @@
 
 Scraps, paper links, aha moments about where the framework should go.
 No structure required — one line is fine. Promoted into `Concept.md` /
-`docs/` during a `[/discuss]` session, then deleted from here.
+`docs/` during a `[discuss]` session, then deleted from here.
 
 ---
 
@@ -43,7 +43,7 @@ eight manual steps:
 
 ### What the user actually wants as the entry point
 
-> 手動開啟一個 session，跟 Claude 說 `[/loop]`，Claude 就開始執行 loop。
+> 手動開啟一個 session，跟 Claude 說 `[loop]`，Claude 就開始執行 loop。
 > 不需要我開啟 driver，也不需要手動 `python run approve`。
 
 **This is not a new component — it is the control tower promoted from
@@ -66,7 +66,7 @@ the two share a word.
 - **A — `loop.py start`:** a CLI subcommand that creates the worktree,
   launches under tmux, tees the log, and prints one line. Session
   independent, unit-testable, works headless and in CI.
-- **B — the `[/loop]` skill:** the session does it conversationally.
+- **B — the `[loop]` skill:** the session does it conversationally.
   No new CLI surface, but only works while a session is alive.
 
 Recommendation: **A, with B calling it.** Orchestration logic belongs in
@@ -119,7 +119,7 @@ is not a new layer — it is making batch persistent.
 - **`roadmap.json` entries are thin:** id, one-line intent, depends-on,
   status. **Not** a pre-written goal contract — writing criteria for
   milestone 5 today is guessing, and earlier milestones change what
-  should be measured. `[/loop]`'s Ask phase expands the one-liner into
+  should be measured. `[loop]`'s Ask phase expands the one-liner into
   `goal.json` when the milestone is actually about to run.
 - **The driver writes milestone status** (consistent with it owning
   `loop-state.json` and `ledger.jsonl`). Agents stay read-only on
@@ -226,13 +226,13 @@ with Claude" (loop-readiness check + permission ladder).
 verification, persistence and handoff strongly; discovery and
 scheduling are absent. Decision: **keep them absent.** The paper
 describes a *maintenance* loop (perpetual, discovery-driven, cron-fired,
-no terminal state); `[/loop]` is a *goal* loop (finite contract,
+no terminal state); `[loop]` is a *goal* loop (finite contract,
 terminates when criteria are met). The paper itself distinguishes these
 — "one should not confuse /goal with /loop, which merely reruns on an
 interval." Discovery is the Ask phase, deliberately human-held because
 that is where judgment lives; the stop condition is goal satisfaction,
-not a timer. Bolting cron onto `[/loop]` would be cargo-culting. Record
-this so a future `[/retro]` does not "find the gap" and fix it.
+not a timer. Bolting cron onto `[loop]` would be cargo-culting. Record
+this so a future `[retro]` does not "find the gap" and fix it.
 
 **What did transfer (all shipped in v8.1):**
 
@@ -259,7 +259,7 @@ ladder — the plan gate plus replan/escalate gates already are the
 paper's "one door open", and grading autonomy into six levels is a
 config surface with no current goal behind it.
 
-**Open for a later `[/discuss]`:** the paper's structural fix for
+**Open for a later `[discuss]`:** the paper's structural fix for
 prompt-cache thrash (feedback-inbox item #6) is moving the driver from
 `claude -p` to the Agent SDK. Still an optimisation, not correctness —
 but it is also the only way to get real per-call cost data feeding the
