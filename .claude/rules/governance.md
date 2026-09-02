@@ -90,6 +90,12 @@ expensive pipelines.
 - The user is the final evaluator. TDD does not replace human judgment.
   The optional `[/evaluate]` session produces a checklist; the user
   still signs off.
+- **No permanent test reads the live loop contract** (`goal.json`,
+  `Goal.md`) or any other ephemeral loop artifact (v8.1.16). A test
+  that reads the current goal passes or fails with the loop it was
+  written in and is meaningless in the next; fixtures carry their own
+  copy. (rebuild-v2's `tests/CLAUDE.md` rule 1, promoted per
+  `journal/from-agentrl-retro-20260902.md` rec 6.)
 
 ## 5. Core File Lifecycle
 

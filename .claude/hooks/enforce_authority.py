@@ -65,9 +65,15 @@ def log_denial(msg: str) -> None:
         d = os.path.join(root, "logs")
         os.makedirs(d, exist_ok=True)
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        # v8.1.16: ONE LINE PER RECORD. A multi-line Bash command put
+        # its newlines into the log, and the driver's denials_seen()
+        # counts lines -- so one denial of a three-line batch was
+        # reported as three (journal/from-agentrl-retro-20260902.md,
+        # problem 9).
+        summary = CALL_SUMMARY[:300].replace("\n", "\\n")
         with open(os.path.join(d, "denials.log"), "a") as fh:
             fh.write(f"{stamp}\t{os.environ.get('CDD_ROLE', '-')}\t"
-                     f"{msg}\t{CALL_SUMMARY[:300]}\n")
+                     f"{msg}\t{summary}\n")
     except Exception:
         pass
 
@@ -114,8 +120,15 @@ GIT_READONLY = re.compile(
     r"\bgit\s+(?:"
     r"tag(?:\s+(?:-n\d*|--sort\s*=\s*\S+"
     r"|(?:-l|--list)(?:\s+(?:'[^']*'|\"[^\"]*\"|[^-\s|;&][^\s|;&]*))?))*"
-    r"|stash\s+(?:list|show)"
-    r"|worktree\s+list"
+    # v8.1.16: the listing forms take OPTIONS. `git worktree list
+    # --porcelain` and `git stash show -p` failed the end-of-segment
+    # lookahead and fell through to GIT_WRITE -- the agentRl train-v1
+    # loop was denied `git worktree list` as a git write
+    # (journal/from-agentrl-retro-20260902.md, problem 1). An argument
+    # cannot turn either listing into a mutation, so any run of
+    # non-separator tokens is admitted after them.
+    r"|stash\s+(?:list|show)(?:\s+[^\s|;&]+)*"
+    r"|worktree\s+list(?:\s+-[-\w]+)*"
     r")"
     # A trailing redirect does not turn a listing into a write. Without
     # this, `git worktree list 2>&1` -- the Evaluator's standard
@@ -247,7 +260,14 @@ HEREDOC = re.compile(r"<<-?\s*['\"]?\w")
 # metacharacters are blanked before the scan (they cannot be operators);
 # spans WITHOUT metacharacters stay, so a quoted write target
 # (`tee 'Plan.md'`) is still caught.
-QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+#
+# v8.1.16: a backslash-escaped quote does not END a double-quoted span.
+# `python3 -c "print(f\"{x:>5}\")"` paired the first `"` with the
+# escaped one, so the span closed early and the `>` of the format spec
+# leaked out as a redirect to `5}` (journal/from-aibench-retro-20260902.md,
+# problem 2b). The shell's own rule is the one applied: inside double
+# quotes `\"` is a character, and a single-quoted span has no escapes.
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 _META = re.compile(r"[|;&<>]")
 LAST_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(sed|mv|cp|install|truncate)\b")
 ALL_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(rm|tee|shred)\b")
@@ -300,9 +320,28 @@ def expand(tok: str, env: dict) -> str:
 
 def bash_write_targets(cmd: str) -> list:
     """Best-effort list of paths this command would write. See the
-    module docstring for what is intentionally out of scope."""
+    module docstring for what is intentionally out of scope.
+
+    v8.1.16: a relative target is resolved against the segment's own
+    working directory, tracked through `cd` INCREMENTALLY, per segment,
+    exactly as assignments are (v8.1.13). Before this every relative
+    path was decided against the repo root, so `cd /tmp && echo x >
+    notes.txt` -- the Evaluator's contractual scratch reconstruction --
+    was denied as a write to `<repo>/notes.txt`. Seven denials in one
+    rebuild-v2 session, five aibench loops, and one plan that dropped
+    its /tmp workflow to route around the net
+    (journal/from-agentrl-retro-20260902.md problem 1,
+    journal/from-aibench-retro-20260902.md problem 2a). Position is the
+    rule, as it is for assignments: `echo x > Plan.md; cd /tmp` still
+    decides Plan.md in the repo. A `cd` the hook cannot follow -- no
+    argument, `-`, `~`, an unresolved `$` -- makes every LATER relative
+    target undecidable, and those are dropped: the fail-OPEN the module
+    docstring promises for expansion, asserted by a test.
+    """
     out = []
     env = {}
+    cwd = None              # None: repo root; "?": unknown after a cd
+    root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
     m = HEREDOC.search(cmd)
     if m:
         cmd = cmd[:m.start()]
@@ -313,6 +352,18 @@ def bash_write_targets(cmd: str) -> list:
             continue
         for name, val in ASSIGN.findall(seg):
             env[name] = expand(val, env)
+        words = seg.split()
+        head = words[0].lstrip("(") if words else ""
+        if head in ("cd", "pushd"):
+            args = [w for w in words[1:] if not w.startswith("-")]
+            arg = expand(args[0], env).strip("'\"") if args else ""
+            if not arg or arg.startswith("~") or "$" in arg:
+                cwd = "?"
+            elif os.path.isabs(arg):
+                cwd = arg
+            elif cwd != "?":
+                cwd = os.path.join(cwd or root, arg)
+            continue
         hits = []                # this segment's targets, unexpanded
         hits += REDIRECT.findall(seg)
         m = DD_OF.search(seg)
@@ -346,7 +397,13 @@ def bash_write_targets(cmd: str) -> list:
             for t in toks[1:]:
                 if not t.startswith("-"):
                     hits.append(t)
-        out += [expand(t, env) for t in hits]
+        for t in hits:
+            t = expand(t, env).strip("'\"")
+            if cwd and t and not os.path.isabs(t):
+                if cwd == "?":
+                    continue           # undecidable cwd: fail OPEN
+                t = os.path.join(cwd, t)
+            out.append(t)
     # /dev/null is a sink, writable by definition — never a target worth
     # deciding (v8.1.9b, same incident as REDIR_TOK). A token that still
     # carries a `$` never resolved (v8.1.13); deciding it would decide a
@@ -501,7 +558,18 @@ def main() -> None:
         # Over-denial is still the safe direction, but it is not free:
         # each false positive costs a whole paid session and reads to
         # the loop as a failure (journal/from-aibench-retro-20260802.md).
-        for seg in SEGMENT.split(cmd.lower()):
+        #
+        # v8.1.16: quoted spans are DATA here too, as on the git net
+        # (v8.1.14). This net tested the raw string, so a read-only
+        # `grep -n "rm -rf\|shutil\." ... loop-state.json` was denied
+        # because its SEARCH PATTERN contains `rm` -- and the `|` inside
+        # the pattern had split the segment as well. It stopped the
+        # agentRl train-v1 loop at iteration 11
+        # (journal/from-agentrl-retro-20260902.md, problem 1). Nothing is
+        # lost: a quoted TARGET (`tee "goal.json"`) is decided by the
+        # precise scan below, which keeps the quoted spans that can be
+        # one.
+        for seg in SEGMENT.split(QUOTED.sub(" ", cmd).lower()):
             if any(p in seg for p in PROTECTED_ALWAYS) and re.search(
                     r"(\btee\b|\bsed\s+-i|\bmv\b|\brm\b|\bcp\b)", seg):
                 deny("Goal/ledger/state files are user- or driver-owned.")

@@ -96,6 +96,13 @@ For each ticket ask:
   Each was found by a careful human-speed read costing minutes, and
   each would have fallen out of one command in seconds. Reading finds
   this class slowly and misses it sometimes; executing does not.
+  **One paste is required per criterion** (v8.1.16): the writer's
+  output keys — or the line that builds them — with the criterion's
+  `metric` string in them. On 2026-09-01 a criterion named a key the
+  harness structurally cannot emit; three rounds of reading passed it,
+  and it was unsatisfiable from the approved plan on
+  (`journal/from-agentrl-retro-20260902.md`, problem 2). No paste, no
+  OK.
 
 **Ceiling — read the plan, do not build it** (v8.1.7). Mode 1 is a
 close reading plus CHEAP spot-checks: grep for a file the plan claims
@@ -215,6 +222,20 @@ Mode 1's ceiling applies: read and spot-check, do not build. The human
 still approves every replan at its gate — you are not bypassing the
 user, you are changing what they are handed from a raw stop report to
 a reviewed plan.
+
+**The retry cap takes the same route** (v8.1.16). When a ticket's
+three attempts were all rejected, the driver dispatches you once with
+the ledger's three verdicts instead of escalating on the counter. On
+2026-08-25 three attempts each fixed a real, precisely diagnosed defect
+and were converging; the counter stopped them, a human said "try
+again" an hour later, and attempt 4 passed
+(`journal/from-aibench-retro-20260902.md`, problem 4). Read the three
+verdicts and `git log` for the attempts' `wip(loop):` bodies. Are they
+converging on one defect, or circling? **RETRY** here means "one more
+attempt is warranted — and here is exactly what it must do
+differently"; it is granted once, and a bare "try again" is the counter
+you were dispatched to replace. **REPLAN** and **ESCALATE** mean what
+they mean above.
 
 ## Hard limits (hook-enforced)
 

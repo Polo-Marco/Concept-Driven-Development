@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.15
+version: 8.1.16
 ---
 
 # Mode: Loop (v8.1) — `[/loop] <goal>`
@@ -144,6 +144,45 @@ goal justified by this loop's number. Record the provenance in
 `Goal.md` next to the criterion ("0.90: measured 0.94 in loop 9's
 baseline, results/…") so the Evaluator's contract review can check the
 bar is grounded rather than aspirational.
+
+**Three more questions, per criterion, before it enters the JSON**
+(v8.1.16). The criteria the user writes are the one defect class that
+recurred in every loop of both 2026-09-02 retros — six defects in four
+agentRl loops, five frozen contracts in nine aibench loops — and each
+was one of three shapes the questions above do not catch
+(`journal/from-agentrl-retro-20260902.md` problem 2,
+`journal/from-aibench-retro-20260902.md` problem 5):
+
+1. **Can this bar fail for the reason I am invoking it?** Name the
+   failure it would show, and name a control that should NOT trip it.
+   A criterion that read 1.0 on the greedy arm it was meant to
+   discriminate from cannot discriminate anything.
+2. **Does the writer emit this metric NAME?** Not "will compute" —
+   emit, as a key, spelled this way. Paste the writer's output keys (or
+   the `f"{prefix}_..."` line) with the string in them. A criterion
+   named a key the harness structurally cannot emit and was
+   unsatisfiable from the approved plan on; ten seconds here would
+   have caught it at revision 1. The contract review's **Wired?**
+   check now demands the same paste.
+3. **Do the numerator and denominator come from different objects?**
+   A counter that reads both sides from one list — `len(tripwire)`
+   against an `iterations_completed` seeded from the same list —
+   cannot fail. If it cannot fail, it is a recorder (`>= 0`), not a
+   bar.
+
+**Every number in a criterion carries the command that produced it.**
+A floor, a count, a model name, a source path: paste the command and
+its output next to the number in `Goal.md`, the same EXISTENCE line
+the contract review draws for itself. A number that was READ off a
+README badge, a previous report or memory — 53 tasks where the manifest
+said 147; a floor of 234 against a 1158 suite with the 982 figure in
+view — is a guess, and a guess does not enter `goal.json`.
+
+**A recorder's writer emits `null`, never a numeric sentinel, on its
+failure path.** A `>= 0` recorder read `0.0` green off an exception
+path; `check_criteria()` fails closed on `null`/NaN, so `null` is what
+makes "the measurement did not happen" visible instead of passing.
+Write the rule into the ticket's Spec for every recorder.
 
 Also extract:
 
@@ -326,6 +365,19 @@ the loop from here on:
   journal record, deletes the ephemeral artifacts and commits; it never
   merges the branch. Remind them to fill the `## Feedback` block first —
   `[/retro]` reads it, and it is the one part the driver cannot write.
+- **Any manual change under a running loop gets a note the moment it is
+  made** (v8.1.16): `python3 .claude/driver/loop.py note "<what and
+  why>"`. A simulator swapped, a hook patched, a budget edited by hand,
+  checkpoints deleted — each of these was done without one in the
+  agentRl loops, and each later surfaced as "the record does not match
+  the run" (`journal/from-agentrl-retro-20260902.md`, problem 4). Run
+  it yourself when the user tells you what they changed.
+- **When the loop stops at an escalation, let the audit finish before
+  anything it is reading is touched.** An Evaluator was auditing
+  `train.json` while it was deleted and `iterations.jsonl` while it was
+  hand-edited. Relaunching the writer regenerates a clean artifact in
+  under a second and leaves provenance intact; a hand-edit never does.
+  Say this to the user before relaying the escalation, not after.
 
 Tell the user:
 

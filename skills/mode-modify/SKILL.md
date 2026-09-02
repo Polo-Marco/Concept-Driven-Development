@@ -1,7 +1,7 @@
 ---
 name: mode-modify
 description: The Refactoring Engineer persona for everything after 0-to-1 — feature additions, refactors, AND bug fixes. Runs a feature flow or a bug-investigation sub-flow depending on the request. Same session-based pipeline with conflict detection and regression enforcement.
-version: 8.1.8
+version: 8.1.16
 ---
 
 # Mode: Modify (The Refactoring Engineer)
@@ -27,6 +27,35 @@ Modify has two entry intents. Detect which from the request:
 
 There is no separate `[/debug]` mode; the bug sub-flow below absorbs it.
 Only one work order (`Plan.md` OR `Triage.md`) exists at a time.
+
+## Audit-Finding Fast Path — `[/modify] @Evaluation.md` (v8.1.16)
+
+The cheapest legitimate route from an Evaluator's findings to a fix.
+Four manual `[/modify]` loops in under three hours for a two-line fix
+(rated **bad**) were long because each ran the full Ask/Spec preamble
+on findings that already carried a reproduced root cause, and each
+plan shipped the next audit's class
+(`journal/from-aibench-retro-20260902.md`, problem 6 and rec 7;
+`journal/retro-20260824-aibench.md`, rec 6). Two rules the sessions
+already followed, written down so they stop being judgment calls:
+
+1. **A finding that lives entirely in Planner-owned files** (Concept,
+   Architecture, README, skills, nested `CLAUDE.md`, `Plan.md` prose)
+   **is closed in the Planner session that reads it.** No ticket, no
+   Generator.
+2. **A finding with a reproduced root cause and a probe command**
+   (the Evaluator pasted the command and its output) **takes the
+   Feature Flow with the Ask phase skipped and ONE ticket per
+   finding.** No hypothesis tickets — "hypothesis tickets would have
+   been theatre" when the Evaluator has already run the reproduction.
+   The ticket's Test Contract is the probe command turned into a
+   regression test; its Boundary comes from grepping the CONSUMERS of
+   whatever changes (`task-ticket-format.md` self-check).
+
+A finding that carries a conclusion but no reproduction takes the bug
+sub-flow as usual: it is a hypothesis until someone runs it. The
+Generator and the Evaluator audit stay in both cases — each of those
+four loops found something real the previous one had claimed done.
 
 ---
 

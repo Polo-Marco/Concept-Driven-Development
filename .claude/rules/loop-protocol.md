@@ -97,6 +97,22 @@ repo) and the tcocrai retro it cites.
    word on one line. A rule applied in one of the three places that need
    it is not shipped.
 
+   **A relative path is decided where the shell would write it, and a
+   quoted span is data on EVERY net** (v8.1.16). Two shapes were behind
+   nearly all of ~110 denials across twelve loops in the two
+   2026-09-02 retros — five sessions killed, one plan reshaped to
+   route around the net. A `cd` is now tracked per segment, exactly as
+   assignments are, so `cd /tmp && echo x > notes.txt` is scratch and
+   `cd src/pkg && echo x > ../../Architecture.md` is a core-file write
+   (it used to be ALLOWED: `../../` against the repo root resolved
+   outside it). A `cd` the hook cannot follow drops the later relative
+   targets — the documented fail-OPEN. And the loose co-occurrence net
+   blanks quoted spans before it looks for a verb, so a `grep` pattern
+   containing `rm` is not a removal; an escaped `\"` no longer ends a
+   double-quoted span; and the listing forms take their options
+   (`git worktree list --porcelain`). Each pinned by a test beside the
+   real denial it must not loosen.
+
    **`/tmp` is scratch, and scratch is outside the matrix.** Every role
    may write there through `Write` and through the shell alike; the
    Evaluator's contract requires it, since reconstructing a prior state
@@ -273,6 +289,46 @@ Generator's own report, exactly as before. The human still approves
 every replan at its gate — the touchpoint changes shape from diagnosis
 to approval, and `max_replans` still bounds the spend.
 
+**A ticket PASSes only with its outputs on disk** (v8.1.16). The
+verdict chain tested `trial_ok` and `regressed` and nothing else, so a
+ticket could PASS having produced nothing — three times in two aibench
+loops: both owned criteria printing FAIL, two of four Output files never
+written, stage 3 of a Run Command never run — each caught one iteration
+and one opus audit later. Before any Evaluator is paid for, the driver
+now checks that every **Output:** path the ticket's Boundary covers
+exists, that a ticket with a Run Command left a log written during
+this dispatch, and that no criterion this ticket OWNS reads red. A miss
+is a RETRY carrying exactly what is missing; no audit is bought. It is
+also the exemption the no-op backstop needed: a Generator that
+abandoned a long run changed nothing because the run never finished,
+and "change nothing, run it again" is precisely that retry.
+
+**The retry cap is adjudicated, not merely hit** (v8.1.16). Three
+attempts on one ticket each fixed a real defect and were converging;
+the counter stopped them, and attempt 4 passed on a human's say-so an
+hour later. A ticket that exhausts its attempts now takes the v8.1.15
+route once, with the ledger's three verdicts: REPLAN / ESCALATE as for
+a stop, or RETRY meaning one more attempt carrying what it must do
+differently — granted once. Fail-closed as before.
+
+**The Monitor has a memory, and the driver checks it** (v8.1.16). Five
+of six Monitor kills across two campaigns were healthy trials — a
+per-call cost line read HEALTHY for five polls and as a crash on the
+sixth. The Monitor is handed its last three verdicts, and the driver
+overrules any INTERVENE / KILL_ESCALATE whose quoted evidence appeared
+in a window a prior poll judged HEALTHY (`monitor_overruled`). The
+Profile-side rules — enumerate benign noise, define `stall` by
+last-write time — live in `task-ticket-format.md`, where the one loop
+that followed them killed nothing healthy.
+
+**A contract review is remembered with the plan it reviewed**
+(v8.1.16). The round counter lived in the driver's local scope, so a
+restart mid-review re-bought the review of an unchanged plan and reset
+the revision cap. `loop-state.json` now carries the hash of the
+`Plan.md` a verdict was written for; on resume an unchanged plan gets
+its verdict back, and the round count continues. Within one run every
+revision is still reviewed.
+
 **A session that DIED is not a verdict** (v8.1.13). One dispatch could
 not tell "the auditor judged this unsalvageable" from "the auditor never
 ran": an Evaluator that died on its first token with API Error 529 wrote
@@ -353,6 +409,22 @@ Recommended by two consecutive retros before it shipped: the recorded
 workaround was a control tower hand-editing `loop-state.json` under a
 running loop (L5), which is the class of intervention the loop 10
 postmortem exists to warn against.
+
+**A manual change under a running loop is noted when it is made**
+(v8.1.16):
+
+```bash
+python3 .claude/driver/loop.py note "<what you changed and why>"
+```
+
+One event in `events.jsonl`, shown under the journal's Notable events.
+Every loop of the agentRl deployment had a hand in it — a simulator
+swapped, a hook patched, `max_replans` edited, checkpoints deleted —
+and each later surfaced as "the record does not match the run" because
+nothing recorded it at the moment it happened. And when the loop stops
+at an escalation, let the audit finish before touching anything it is
+reading: relaunching a writer regenerates a clean artifact in under a
+second; a hand-edit breaks the claim the loop needs to make next.
 
 ## Housekeeping (driver responsibility, not memory)
 

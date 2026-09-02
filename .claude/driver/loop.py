@@ -18,12 +18,17 @@ rule-bound must never be handed to a probabilistic model:
   * check_criteria() -- goal.json criteria, read straight off disk,
                         and only once their owner has run (criteria_due,
                         8.1.12)
+  * output_gaps()    -- a ticket's Output files, its Run Command's log
+                        and the criteria it owns are on disk before any
+                        audit is bought (8.1.16)
 
 Usage:
     python3 .claude/driver/loop.py start      # worktree + tmux + go
     python3 .claude/driver/loop.py status     # what is happening now
     python3 .claude/driver/loop.py approve    # approve the pending gate
     python3 .claude/driver/loop.py check      # run gates only, then exit
+    python3 .claude/driver/loop.py replan "<reason>"   # queue a re-plan
+    python3 .claude/driver/loop.py note "<text>"      # record a manual change
     python3 .claude/driver/loop.py close      # close a finished loop
     python3 .claude/driver/loop.py            # run in the foreground
     python3 .claude/driver/loop.py --here     # allow the primary worktree
@@ -561,8 +566,14 @@ def denials_seen() -> int:
     positive killed a paid Evaluator audit and left no trace anywhere
     the driver could see.
     """
+    # v8.1.16: count RECORDS, not lines. The hook writes one line per
+    # denial now (log_denial), but a log written by an older hook -- or
+    # by a multi-line command it did not escape -- still reads as one
+    # denial per record: a record starts with its ISO timestamp
+    # (journal/from-agentrl-retro-20260902.md, problem 9).
     try:
-        return sum(1 for _ in (ROOT / "logs" / "denials.log").open())
+        return sum(1 for line in (ROOT / "logs" / "denials.log").open()
+                   if line[:4].isdigit())
     except OSError:
         return 0
 
@@ -945,7 +956,13 @@ def budget_exceeded(st: dict, cfg: dict) -> str:
         return "max_replans"
     if wall_hours(st) >= b.get("max_wall_hours", 48):
         return "max_wall_hours"
-    if st.get("gpu_hours", 0.0) >= b.get("max_gpu_hours", 1e9):
+    # v8.1.16: `max_gpu_hours: 0` means "no GPU budget", not "breached
+    # before the first tick" -- `0.0 >= 0` escalated the OpenRouter
+    # smoke loop during its contract review, $11.40 before the gate,
+    # with nothing built (journal/from-aibench-retro-20260902.md,
+    # problem 5). A cap of zero is no cap.
+    gpu_cap = b.get("max_gpu_hours", 1e9)
+    if gpu_cap > 0 and st.get("gpu_hours", 0.0) >= gpu_cap:
         return "max_gpu_hours"
     # v8.1: spend was metered since 8.0 but never enforced.
     if st.get("spent_usd", 0.0) >= b.get("max_usd", 1e9):
@@ -1075,10 +1092,31 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
         # start_new_session: the trial gets its own process group, so
         # kill_trial() can signal the whole group without ever reaching
         # the driver itself.
+        # v8.1.16: `executable="/bin/bash"`. `shell=True` runs `/bin/sh`,
+        # which on Debian/Ubuntu is dash, and the framework's own
+        # `env.sh` idiom (`${BASH_SOURCE[0]}`) does not exist there --
+        # a Phase that worked as a Run Command broke the moment it
+        # became a Trial (journal/from-agentrl-retro-20260902.md,
+        # problem 3). Run Commands run in the Generator's bash; the
+        # Trial now runs in the same shell.
         proc = subprocess.Popen(trial_cmd, shell=True, cwd=ROOT,
+                                executable="/bin/bash",
                                 stdout=lf, stderr=subprocess.STDOUT,
                                 start_new_session=True)
         interventions = 0
+        # v8.1.16: the Monitor's memory. Every false kill in the aibench
+        # campaigns -- five of six kills, each a replan and a human gate
+        # -- was a signature undecidable from a 100-line window: a
+        # litellm cost line logged 21,788 times and read HEALTHY five
+        # polls running, then read as a crash on the sixth
+        # (journal/from-aibench-retro-20260902.md, problem 1;
+        # journal/from-agentrl-retro-20260902.md, problem 7). Two
+        # deterministic parts: the Monitor is handed its own last three
+        # verdicts, and a kill whose quoted evidence appeared in a window
+        # a prior poll returned HEALTHY on is overruled by the driver --
+        # that line was already judged normal for this run.
+        ok_lines = set()           # lines of every HEALTHY-judged window
+        history = []               # last three Monitor verdicts
         while proc.poll() is None:
             time.sleep(min(interval, 60))
             if time.time() - last_poll < interval:
@@ -1097,11 +1135,33 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
             rep = claude(st, "monitor",
                          f"Monitor Profile:\n"
                          f"{field(body, 'Monitor Profile')}\n\n"
-                         f"Trial log tail:\n{tail}\n\nClassify per your "
-                         f"instructions. Output ONLY the JSON.")
+                         f"Your previous verdicts on this trial (oldest "
+                         f"first): {json.dumps(history) if history else 'none yet'}"
+                         f"\n\nTrial log tail:\n{tail}\n\nClassify per "
+                         f"your instructions. Output ONLY the JSON.")
             m = re.search(r"\{.*\}", rep, re.S)
-            status = (json.loads(m.group(0)) if m
-                      else {"status": "HEALTHY"})
+            try:
+                status = json.loads(m.group(0)) if m else {}
+            except json.JSONDecodeError:
+                status = {}
+            if status.get("status") not in ("HEALTHY", "INTERVENE",
+                                            "KILL_ESCALATE"):
+                status = {"status": "HEALTHY"}
+            evidence = str(status.get("evidence", "")).strip()
+            if status["status"] != "HEALTHY" and len(evidence) >= 12 \
+                    and any(evidence in ln or ln in evidence
+                            for ln in ok_lines):
+                event("monitor_overruled",
+                      detail=f"{status['status']} on a line a prior poll "
+                             f"judged HEALTHY: {evidence[:160]}")
+                status = {"status": "HEALTHY", "signature": "none",
+                          "evidence": "overruled: " + evidence[:120]}
+            if status["status"] == "HEALTHY":
+                ok_lines.update(ln.strip() for ln in tail.splitlines()
+                                if len(ln.strip()) >= 12)
+            history = (history + [{"status": status["status"],
+                                   "signature": status.get("signature"),
+                                   "evidence": evidence[:160]}])[-3:]
             event("monitor", detail=status.get("status"),
                   signature=status.get("signature"))
             if status["status"] == "KILL_ESCALATE":
@@ -1202,7 +1262,23 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
     for a revision nothing will review. Reviews = revisions + 1.
     """
     why = "Evaluation.md describes the Plan.md now on disk"
-    for revision in range(MAX_REVISIONS + 1):
+    # v8.1.16: a review is REMEMBERED with the plan it reviewed. The
+    # round counter lived in this loop's local scope, so a driver
+    # restart mid-review forgot every round already bought and every
+    # verdict already written: an OK plan was re-reviewed, a REVISE'd
+    # plan was re-reviewed before being revised, and the revision cap
+    # restarted from zero (journal/from-aibench-retro-20260819.md rec 6,
+    # owed since; journal/from-aibench-retro-20260902.md problem 8).
+    # `st["review"]` carries the hash of the Plan.md a verdict was
+    # written for; on RESUME an unchanged plan gets its recorded verdict
+    # back instead of a paid session, and the round count resumes.
+    # Within one run every revision is still reviewed (reviews =
+    # revisions + 1, v8.1.4) -- the memory is for restarts only.
+    memo = st.get("review") or {}
+    resumed = memo if memo.get("plan_hash") == plan_hash() \
+        and memo.get("verdict") in ("OK", "REVISE") else {}
+    start = resumed.get("revision", 0)
+    for revision in range(start, MAX_REVISIONS + 1):
         # v8.1.7: bounded by MONEY as well as by rounds. A hard breach
         # escalates like every other one; the soft share stops paying
         # for rounds and hands the plan to the human gate, which is free
@@ -1249,18 +1325,29 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                    "- " + "\n- ".join(problems) + "\n\nChange nothing "
                    "else unless the fix requires it.")
         else:
-            if VERDICT.exists():
-                VERDICT.unlink()      # never read a stale verdict
-            claude(st, "evaluator",
-                   "Mode 1 -- contract review. Read Plan.md, Goal.md, "
-                   "goal.json, and the Architecture Overview. Audit per "
-                   "your instructions; write Evaluation.md and "
-                   "verdict.json.")
-            # v8.1: fail-CLOSED. A missing or corrupt verdict from a
-            # safety pre-gate used to default to "OK", which silently
-            # passed the gate whenever the Evaluator crashed or wrote
-            # bad JSON.
-            v = load(VERDICT, {}).get("verdict")
+            h = plan_hash()
+            if resumed and revision == start:
+                v = resumed["verdict"]
+                event("contract_review_reused",
+                      detail=f"Plan.md is unchanged since its last review "
+                             f"({v}, revision {start}) -- resuming "
+                             f"without buying it again")
+            else:
+                if VERDICT.exists():
+                    VERDICT.unlink()      # never read a stale verdict
+                claude(st, "evaluator",
+                       "Mode 1 -- contract review. Read Plan.md, Goal.md, "
+                       "goal.json, and the Architecture Overview. Audit "
+                       "per your instructions; write Evaluation.md and "
+                       "verdict.json.")
+                # v8.1: fail-CLOSED. A missing or corrupt verdict from a
+                # safety pre-gate used to default to "OK", which silently
+                # passed the gate whenever the Evaluator crashed or wrote
+                # bad JSON.
+                v = load(VERDICT, {}).get("verdict")
+                st["review"] = {"plan_hash": h, "revision": revision,
+                                "verdict": "OK" if v == "OK" else "REVISE"}
+                save(STATE, st)
             if v == "OK":
                 event("contract_ok",
                       detail="plan matches the goal contract")
@@ -1287,6 +1374,15 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
     sys.exit(1)
 
 
+def plan_hash() -> str:
+    """Identity of the Plan.md on disk, for phase_contract_review()'s
+    memory. Empty when there is no plan."""
+    plan = ROOT / "Plan.md"
+    if not plan.exists():
+        return ""
+    return hashlib.sha256(plan.read_bytes()).hexdigest()[:16]
+
+
 def reload_budgets(cfg: dict) -> None:
     """Re-read ONLY the budget caps from goal.json, in place.
 
@@ -1306,7 +1402,7 @@ def reload_budgets(cfg: dict) -> None:
         event("budgets_updated", detail=json.dumps(b, sort_keys=True))
 
 
-def adjudicate_stop(st: dict, tid: str, tail: str) -> dict:
+def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0) -> dict:
     """Route a Generator stop -- REPLAN, RETRY, or ESCALATE -- decided
     by one bounded read-only Evaluator session, not by the driver.
 
@@ -1332,26 +1428,132 @@ def adjudicate_stop(st: dict, tid: str, tail: str) -> dict:
     """
     if VERDICT.exists():
         VERDICT.unlink()                  # never read a stale verdict
-    claude(st, "evaluator",
-           f"Mode 3 -- stop adjudication. The Generator stopped on "
-           f"ticket '{tid}' and reported:\n\n{tail}\n\n"
-           f"Read Plan.md, Goal.md, goal.json and the trial ledger per "
-           f"your instructions, and decide where the defect lives. "
-           f"verdict.json's verdict MUST be one of: REPLAN (the plan is "
-           f"defective and a fresh plan could fix it), RETRY (the plan "
-           f"is executable as written and the Generator misread it -- "
-           f"say exactly what it missed), or ESCALATE (the defect "
-           f"implicates Goal.md/goal.json, authority, or anything no "
-           f"replan can fix). Write Evaluation.md and verdict.json.")
+    if cap:
+        # v8.1.16: the retry CAP takes the same route as a stop. The
+        # question is different -- the plan was executable enough to
+        # attempt three times -- so the RETRY branch asks for what the
+        # ledger says the fourth attempt must do, and is granted once.
+        what = (f"Mode 3 -- retry-cap adjudication. The Generator's "
+                f"{cap} attempts on ticket '{tid}' were ALL rejected. "
+                f"The ledger's verdicts for it, oldest first:\n\n{tail}"
+                f"\n\nRead Plan.md, Goal.md, goal.json, the trial ledger "
+                f"and `git log` per your instructions, and decide "
+                f"whether the attempts are converging on a real defect "
+                f"or circling. verdict.json's verdict MUST be one of: "
+                f"REPLAN (the plan is defective and a fresh plan could "
+                f"fix it), RETRY (the attempts are converging and ONE "
+                f"more is warranted -- say exactly what it must do "
+                f"differently; this is granted once), or ESCALATE (the "
+                f"defect implicates Goal.md/goal.json, authority, or "
+                f"anything no replan can fix). Write Evaluation.md and "
+                f"verdict.json.")
+        fallback = (f"generator failed after {cap} attempts -- and the "
+                    f"cap adjudication returned no usable verdict")
+    else:
+        what = (f"Mode 3 -- stop adjudication. The Generator stopped on "
+                f"ticket '{tid}' and reported:\n\n{tail}\n\n"
+                f"Read Plan.md, Goal.md, goal.json and the trial ledger "
+                f"per your instructions, and decide where the defect "
+                f"lives. verdict.json's verdict MUST be one of: REPLAN "
+                f"(the plan is defective and a fresh plan could fix it), "
+                f"RETRY (the plan is executable as written and the "
+                f"Generator misread it -- say exactly what it missed), "
+                f"or ESCALATE (the defect implicates Goal.md/goal.json, "
+                f"authority, or anything no replan can fix). Write "
+                f"Evaluation.md and verdict.json.")
+        fallback = (f"generator stopped: {tail} -- and the stop "
+                    f"adjudication returned no usable verdict")
+    claude(st, "evaluator", what)
     v = load(VERDICT, {})
     if v.get("verdict") not in ("REPLAN", "RETRY", "ESCALATE"):
-        v = {"verdict": "ESCALATE",
-             "reason": f"generator stopped: {tail} -- and the stop "
-                       f"adjudication returned no usable verdict",
-             "evidence": []}
+        v = {"verdict": "ESCALATE", "reason": fallback, "evidence": []}
     event("stop_adjudicated",
-          detail=f"{tid}: {v['verdict']} -- " + str(v.get("reason", "")))
+          detail=f"{tid}{' (retry cap)' if cap else ''}: {v['verdict']} "
+                 f"-- " + str(v.get("reason", "")))
     return v
+
+
+def ledger_rows() -> list:
+    rows = []
+    if LEDGER.exists():
+        for line in LEDGER.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+# Tokens of an **Output:** field that look like paths. Free prose is
+# tolerated: only a token the ticket's own Boundary covers is checked,
+# so "read/write" or "v1.0" in a sentence cannot become a missing file.
+OUTPUT_TOKEN = re.compile(r"[\w./*?\[\]-]+")
+
+
+def output_paths(body: str) -> list:
+    bnd = boundary_paths(body)
+    out = []
+    for tok in OUTPUT_TOKEN.findall(field(body, "Output")):
+        p = tok.strip("`'\".,;:()").replace("\\", "/")
+        if not p or ("/" not in p and "." not in p):
+            continue
+        if any(covers(b, p.lower()) for b in bnd) and p not in out:
+            out.append(p)
+    return out
+
+
+def output_gaps(body: str, tid: str, iteration: int, dispatched: float,
+                crit: list, due: list) -> list:
+    """What a PASS would be claiming that is not on disk. Empty = clean.
+
+    v8.1.16. A ticket could PASS having produced nothing: the verdict
+    chain tested `trial_ok` and `regressed` and nothing else, so an
+    Evaluator that read a clean diff -- or a `final-pass` cadence that
+    deferred the audit -- waved through a ticket whose Output files
+    were never written, whose Run Command's last stage never ran, or
+    whose OWN criteria printed FAIL. Three times in two aibench loops
+    (journal/from-aibench-retro-20260902.md, problem 3; the IFEval
+    postmortem's item 1), each caught one iteration and one opus audit
+    later than this check costs. Three things, all mechanical:
+
+      * every path the ticket's **Output:** names, that its Boundary
+        covers, exists (globs must match something);
+      * if the ticket has a **Run Command:**, it ran under this dispatch:
+        `logs/ticket-<n>.log` is non-empty, or `logs/latest.log` was
+        written since the Generator was dispatched -- either name the
+        rules allow;
+      * no criterion this ticket OWNS (criteria_due: due, and owed by
+        this ticket) reads red. A ticket that owns the evidence and
+        leaves it red has not done what it exists to do.
+
+    A miss is a RETRY carrying exactly what is missing, and no audit is
+    bought for it. Fail-closed, like every other deterministic gate.
+    """
+    gaps = []
+    for p in output_paths(body):
+        if any(ch in p for ch in "*?["):
+            hit = bool(list(ROOT.glob(p)))
+        else:
+            hit = (ROOT / p).exists()
+        if not hit:
+            gaps.append(f"Output `{p}` does not exist")
+    if field(body, "Run Command").strip():
+        tlog = ROOT / "logs" / f"ticket-{iteration}.log"
+        latest = ROOT / "logs" / "latest.log"
+        # 2 s of slack: a filesystem's mtime clock can trail time.time()
+        # by a tick, and a false "did not run" costs an attempt.
+        ran = (tlog.exists() and tlog.stat().st_size > 0) or \
+              (latest.exists()
+               and latest.stat().st_mtime >= dispatched - 2)
+        if not ran:
+            gaps.append(f"the Run Command left no log (logs/ticket-"
+                        f"{iteration}.log is missing or empty and "
+                        f"logs/latest.log was not written) -- it did not "
+                        f"run to completion under tee")
+    for r, (d, owner) in zip(crit, due):
+        if d and owner == tid and not r.get("ok"):
+            gaps.append(f"owned criterion reads red: {criteria_line(r)}")
+    return gaps
 
 
 def phase_iterate(cfg: dict, st: dict) -> None:
@@ -1389,7 +1591,16 @@ def phase_iterate(cfg: dict, st: dict) -> None:
         event("iteration", detail=f"{tid}: {title}", n=st["iteration"])
 
         verdict, v = "ESCALATE", {"reason": "no attempt completed"}
-        for attempt in range(1, 4):                       # RETRY <= 3
+        # v8.1.16: the cap is adjudicated, not merely hit. `range(1, 4)`
+        # ended a ticket whose three attempts had each fixed a real,
+        # precisely diagnosed defect and were converging -- the human
+        # said "try again" an hour later and attempt 4 passed
+        # (journal/from-aibench-retro-20260902.md, problem 4). A stop
+        # has been adjudicated since 8.1.15; a cap now takes the same
+        # route ONCE, and a RETRY verdict buys exactly one more attempt.
+        attempt, max_attempts, extended = 0, 3, False
+        while attempt < max_attempts:                     # RETRY <= 3 (+1)
+            attempt += 1
             # v8.1.6: a retry carries WHY. The dispatch used to be the
             # ticket body and nothing else, so attempt 2 was byte-for-byte
             # the prompt that had just failed -- which can only help when
@@ -1410,6 +1621,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             # trial, so on an experiment ticket the Generator's own run
             # output was destroyed by the trial that followed it.
             before = tree_fingerprint()
+            dispatched = time.time()
             rep = claude(st, "generator",
                          f"Execute this ticket per your instructions:\n\n"
                          f"{body}\n\nTicket log: logs/ticket-"
@@ -1440,7 +1652,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                      "evidence": v.get("evidence", []),
                      "stopped": True}) + "\n")
                 verdict = v.get("verdict")
-                if verdict == "RETRY" and attempt < 3:
+                if verdict == "RETRY" and attempt < max_attempts:
                     event("retry", detail=f"{tid} attempt {attempt}: "
                           + str(v.get("reason", "")))
                     continue
@@ -1470,10 +1682,21 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             if first_green:
                 event("first_green", detail=", ".join(first_green))
 
+            # v8.1.16: the OUTPUT GATE -- free, before any audit is
+            # bought. See output_gaps().
+            gaps = output_gaps(body, tid, st["iteration"], dispatched,
+                               crit, due) if trial_ok else []
             if not trial_ok:
                 v = {"verdict": "RETRY",
                      "reason": "trial did not complete "
                                "(see events.jsonl / monitor)",
+                     "evidence": [criteria_line(r) for r in crit]}
+            elif gaps:
+                event("output_gate", detail=f"{tid} attempt {attempt}: "
+                      + "; ".join(gaps))
+                v = {"verdict": "RETRY",
+                     "reason": "output gate: the ticket's own outputs "
+                               "are not on disk -- " + "; ".join(gaps),
                      "evidence": [criteria_line(r) for r in crit]}
             elif regressed:
                 # A criterion that was green went red. No model opinion
@@ -1544,8 +1767,18 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             # the trial itself failed: relaunching an unchanged config is
             # exactly what that RETRY is for. Decided before the ledger
             # is written, so the record says what the driver actually did.
+            #
+            # v8.1.16: ALSO skipped when the output gate is what failed.
+            # A Generator that abandoned a long Run Command -- a Bash
+            # call is capped at 600 s, and the agentRl loops lost eight
+            # 20-35 minute runs that way -- changed nothing because the
+            # run never finished, not because it read the verdict and
+            # could not act. "Change nothing, run it again" is exactly
+            # the retry an abandoned run needs
+            # (journal/from-agentrl-retro-20260902.md, problems 3 and
+            # 9). The cap still bounds it, and the cap is adjudicated.
             if v.get("verdict") == "RETRY" and wrote_nothing and trial_ok \
-                    and attempt > 1:
+                    and attempt > 1 and not gaps:
                 event("no_op_session", detail=f"{tid} attempt {attempt} "
                       "wrote nothing -- not retrying an identical session")
                 v = {"verdict": "ESCALATE",
@@ -1561,10 +1794,32 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                  "criteria": crit}) + "\n")
 
             verdict = v.get("verdict")
-            if verdict == "RETRY" and attempt < 3:
-                event("retry", detail=f"{tid} attempt {attempt}: "
-                      + str(v.get("reason", "")))
-                continue
+            if verdict == "RETRY":
+                if attempt < max_attempts:
+                    event("retry", detail=f"{tid} attempt {attempt}: "
+                          + str(v.get("reason", "")))
+                    continue
+                if not extended:
+                    rows = [f"attempt {r.get('attempt')}: "
+                            f"{r.get('verdict')} -- {r.get('reason', '')}"
+                            for r in ledger_rows()
+                            if r.get("iteration") == st["iteration"]]
+                    v = adjudicate_stop(st, tid, "\n".join(rows),
+                                        cap=attempt)
+                    LEDGER.open("a").write(json.dumps(
+                        {"ts": now(), "iteration": st["iteration"],
+                         "ticket": tid, "attempt": attempt,
+                         "verdict": v.get("verdict"),
+                         "reason": v.get("reason"),
+                         "evidence": v.get("evidence", []),
+                         "cap_adjudicated": True}) + "\n")
+                    verdict = v.get("verdict")
+                    if verdict == "RETRY":
+                        extended, max_attempts = True, max_attempts + 1
+                        event("retry", detail=f"{tid} attempt {attempt}: "
+                              f"cap extended once by adjudication -- "
+                              + str(v.get("reason", "")))
+                        continue
             break
 
         if verdict == "PASS":
@@ -1720,9 +1975,20 @@ def write_journal(cfg: dict, st: dict) -> Path:
     last = EVENTS.stat().st_mtime if EVENTS.exists() else 0.0
     cal = max(0.0, (last - st.get("started_epoch", last)) / 3600)
     b = cfg.get("budgets", {})
+    # v8.1.16: `hook_denials` joins the list -- the driver had emitted
+    # the event since 8.1.9 and this filter dropped it, so the retro's
+    # primary artifact was blind to the framework's most frequent defect
+    # and ~90 denials across nine loops were counted by hand
+    # (journal/from-aibench-retro-20260902.md, problem 2). The other
+    # additions are the transitions a retro reads first: a stop's
+    # adjudication, a trial that died on its own, a review cut short, a
+    # Monitor kill the driver overruled, and the user's own notes.
     notable = ("escalate", "replan", "regression", "no_op_session",
                "first_green", "trial_killed", "commit_failed",
-               "plan_rejected", "goal_reached", "session_died")
+               "plan_rejected", "goal_reached", "session_died",
+               "hook_denials", "stop_adjudicated", "trial_failed",
+               "contract_review_halted", "monitor_overruled",
+               "output_gate", "note")
     evs = []
     if EVENTS.exists():
         for line in EVENTS.read_text().splitlines():
@@ -1736,6 +2002,9 @@ def write_journal(cfg: dict, st: dict) -> Path:
 
     out = [f"# Session Journal — loop ({cfg.get('type', '?')}) — "
            f"{st.get('started', '?')}", "",
+           "_Driver-written and rewritten on every driver exit. Only the "
+           "`## Feedback` block survives a rewrite; put anything else "
+           "you want kept in that block._", "",
            "## Request", cfg.get("goal", "(no goal)"), "",
            "## Outcome",
            f"- phase at exit: **{st.get('phase', '?')}**"
@@ -1919,6 +2188,24 @@ def seed_goal_files(src_root: Path, target: Path) -> None:
             print(f"note: {dst} differs from {src} and WINS -- the loop "
                   f"reads the worktree's copy. Edit budgets there (they "
                   f"hot-reload: no restart, no iteration spent).")
+    # v8.1.16: the gitignored parts of a working environment. A fresh
+    # worktree has no `.env` and no virtualenv, so three consecutive
+    # aibench loops failed their own preflight on the first `start` --
+    # six of seven checks in one case -- and were repaired by hand
+    # (journal/from-aibench-retro-20260902.md, problem 7). `.env` is
+    # COPIED (secrets stay out of git either way); a venv is SYMLINKED,
+    # because a worktree that reinstalled it would not be the
+    # environment the goal was written against. Anything else a project
+    # keeps outside git is still the preflight's to report.
+    env = src_root / ".env"
+    if env.is_file() and not (target / ".env").exists():
+        (target / ".env").write_bytes(env.read_bytes())
+        print("seeded .env into the worktree (copied, not committed)")
+    for v in (".venv", "venv"):
+        src, dst = src_root / v, target / v
+        if src.is_dir() and not dst.exists():
+            dst.symlink_to(src.resolve(), target_is_directory=True)
+            print(f"linked {v} -> {src.resolve()}")
 
 
 def phase_start(cfg: dict, allow_here: bool) -> None:
@@ -2121,11 +2408,28 @@ def main() -> None:
     allow_here = "--here" in argv
     args = [a for a in argv if not a.startswith("-")]
 
-    if args and args[0] in ("status", "approve", "close", "replan"):
+    if args and args[0] in ("status", "approve", "close", "replan",
+                            "note"):
         elsewhere = find_loop()
         if elsewhere != ROOT:
             print(f"(the loop is in {elsewhere})")
             rebind(elsewhere)
+
+    if args and args[0] == "note":
+        # v8.1.16: provenance for the human's hand. Every loop in the
+        # agentRl deployment had a manual change made under the running
+        # driver -- a simulator swapped, a hook patched, a budget edited,
+        # checkpoints deleted -- and each later surfaced as "the record
+        # does not match the run" because nothing recorded it at the
+        # moment it happened (journal/from-agentrl-retro-20260902.md,
+        # problem 4). One event, written where the journal reads.
+        text = " ".join(args[1:]).strip()
+        if not text:
+            die('usage: loop.py note "<what you changed and why>"')
+        event("note", detail=text, by="user")
+        print("noted in events.jsonl (it will appear under the "
+              "journal's Notable events)")
+        return
 
     if args and args[0] == "status":
         if "--json" in argv:

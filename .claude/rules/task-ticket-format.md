@@ -99,6 +99,26 @@ makes concurrent execution race-free.
 later diagnosis (see `.claude/rules/run-logging.md`). Example:
 `uv run pytest tests/test_extractor.py -v 2>&1 | tee logs/latest.log`.
 
+Two rules from the 2026-09-02 retros (v8.1.16):
+
+- **Under ten minutes, or it is a `Trial:`.** A Generator's Bash call
+  is capped at 600 s. An install, an eval or a rollout that needs
+  20–35 minutes cannot be "run in the foreground and waited for": the
+  session abandons it, the process it started dies with the session,
+  and the ticket retries — eight abandoned runs across six iterations
+  in two agentRl loops, each killing vLLM mid-flight
+  (`journal/from-agentrl-retro-20260902.md`, problem 3). Anything slow
+  is either a `Trial:` the driver launches and the Monitor polls, or a
+  Run Command that launches it detached (`nohup … &`, or a scheduler)
+  and polls its completion in sub-600 s waits. The Trials in the same
+  loops never had the problem, because the driver owns them.
+- **Chain the regression sweep with `;`, not `&&`.** When a Run Command
+  runs the ticket's writer and then the regression sweep, a failing
+  writer must not short-circuit the sweep — the sweep is what tells the
+  Evaluator whether the failure is local. `python3 src/run.py; pytest
+  -q 2>&1 | tee logs/latest.log` (rebuild-v2's standing rule 8, now
+  durable).
+
 ## Experiment Tickets (v8.0)
 
 For `experiment` goals, tickets REPLACE the Test Contract with:
@@ -111,10 +131,32 @@ written to, e.g. results/gate1.json]
 **Success Threshold:** [metric vs value; must map 1:1 to goal.json
 criteria]
 **Monitor Profile:** [poll interval; known failure signatures, e.g.
-cuda_oom, nan_loss, stall]
+cuda_oom, nan_loss, stall; AND the run's known benign noise, listed as
+non-actionable; `stall` defined by last-write time]
+**Disk:** [bytes written per iteration/step, and what the trial deletes
+as it goes]   ← v8.1.16
 
 All other fields (Boundary, Depends On, Architecture, Skills to Load)
-are unchanged. Spec granularity rule: experiment tickets are detailed
+are unchanged.
+
+**The Monitor Profile is where false kills are prevented** (v8.1.16).
+Five of six Monitor kills across two campaigns were healthy trials: a
+per-call cost line logged 21,788 times, a `TimeoutException` seen once,
+"tasks 55–62 all 0.0" that is a constant of the apparatus, `stall`
+while the log was writing every minute
+(`journal/from-aibench-retro-20260902.md`, problem 1). The one loop
+whose Profile enumerated its noise as non-actionable (`0.0/1.0` runs,
+`Transcript not found`, `Grading failed:`) and defined `stall` by
+last-write time killed nothing healthy. Write the Profile against the
+run's scar tissue, not against a generic list.
+
+**`Disk:` is a contract, not a note.** A 54 GB-per-iteration trial that
+never rotated filled its volume at iteration 7, killed the driver
+mid-write and lost four summary fields; the preflight's `>= 100 GB`
+was a check on the start, not the run, and a Monitor polling every 8
+minutes cannot police 54 GB per 13 minutes
+(`journal/from-agentrl-retro-20260902.md`, problem 6). The trial must
+rotate; the Planner must show the arithmetic (self-check below). Spec granularity rule: experiment tickets are detailed
 about OUTCOMES and interfaces, light on implementation path — granular
 technical detail specified upfront cascades errors when wrong.
 Provenance: a launched trial's config is immutable; any parameter
@@ -183,6 +225,28 @@ Before ending the Planner session, verify for each ticket:
 - For experiment tickets: does every Success Threshold map to a
   goal.json criterion, and does the Metrics Contract name the exact
   file the driver/Evaluator will read?
+- **Does any Run Command run longer than ~5 minutes** (an install, an
+  eval, a rollout)? Then it is a `Trial:` the driver launches, or it is
+  launched detached and polled in sub-600 s waits — a Generator's Bash
+  call is capped at 600 s, and a session that abandons a run kills what
+  it started (v8.1.16; Run Command rules above).
+- **For every symbol a ticket retires, renames or changes: did you grep
+  its CONSUMERS, and does the Boundary name each file that imports or
+  calls it?** A plan written from `git diff --stat` plus the
+  definitions has not been written: three manual sessions in one week
+  shipped importers in no Boundary, a spec that contradicted a
+  function's documented design, and four merge revisions — and each
+  time the fix was the same grep, learned in-loop and written nowhere
+  (`journal/from-aibench-retro-20260902.md`, problem 6).
+- For experiment tickets: **K iterations × the `Disk:` figure <
+  `df` at launch, or the trial rotates as it goes.** Show the
+  arithmetic in the ticket (v8.1.16).
+- **A ticket that deletes or supersedes banked evidence lists, in
+  `Depends On`, the ticket that PROVES the replacement.** Never destroy
+  the current measurement until the replacement has produced one: one
+  ticket discarded both arms' ten repeats before the new protocol had
+  run, and they were restored by hand at close
+  (`journal/from-aibench-retro-20260902.md`, problem 9).
 
 Every gap becomes a potential Generator hallucination.
 

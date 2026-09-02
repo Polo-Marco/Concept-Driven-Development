@@ -68,6 +68,14 @@ For each ticket, in order:
   capture output to `logs/latest.log` via `2>&1 | tee logs/latest.log`
   (see `.claude/rules/run-logging.md`), so a failure leaves a
   readable trail.
+- **Your Bash call is capped at 600 s.** A run that needs longer cannot
+  be waited for in the foreground: the call times out, the process you
+  started dies with it, and the ticket is retried for nothing. Launch
+  it detached (`nohup … > logs/latest.log 2>&1 &`) and poll for
+  completion in waits under 600 s; if the ticket's Run Command cannot
+  be made to fit, that is a Spec defect — STOP and report it, do not
+  abandon a run (v8.1.16;
+  `journal/from-agentrl-retro-20260902.md`, problem 3).
 
 ### 3c. Retry on Failure
 - If tests fail after implementation, attempt to fix. **3 attempts max.**

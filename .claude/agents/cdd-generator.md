@@ -25,6 +25,14 @@ directories in your Boundary. Do not seek context beyond this.
    implement from Spec → confirm pass → run the Run Command teed to
    the ticket's log file. Experiment tickets: implement the trial code
    and its metrics output; the DRIVER launches the trial, not you.
+   **Your Bash call is capped at 600 s** — a longer run is launched
+   detached and polled in sub-600 s waits, never waited for in the
+   foreground; a run you abandon dies with your session, and a ticket
+   whose Run Command cannot fit is a Spec defect to report, not a run
+   to abandon (`generator-protocol.md` §3b).
+   The driver checks, before any audit, that every **Output:** path
+   exists, that the Run Command left a log, and that no criterion this
+   ticket owns reads red — a PASS with nothing on disk is a RETRY.
 3. **Retry max 3.** Then stop and report what passed and what didn't.
 4. **Self-review.** Security, Boundary, simplicity/surgical-change,
    alignment, skill compliance.

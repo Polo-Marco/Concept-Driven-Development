@@ -102,6 +102,15 @@ What it covers, and which v8.0 defect each case pins down:
                       branch and (8.1) the Bash write-target scan, plus
                       one test that pins the interpreter-escape gap as
                       knowingly out of scope
+  8.1.16              the two 2026-09-02 retros: cd tracked per shell
+                      segment, quoted spans as data on the loose net,
+                      escaped quotes, listing forms with options; the
+                      output gate before PASS; the retry cap
+                      adjudicated once; the Monitor's memory and the
+                      driver's overrule; `max_gpu_hours: 0`; .env/venv
+                      seeded into a worktree; a remembered contract
+                      review; `note`; denials counted as records and
+                      shown in the journal
 """
 import json
 import os
@@ -639,11 +648,9 @@ PLAN = """# Plan
 
 ### Phase 1, Step 1: First ticket
 **Boundary:** src/
-**Run Command:** true
 
 ### Phase 1, Step 2: Second ticket
 **Boundary:** src/other/
-**Run Command:** true
 """
 
 
@@ -2228,7 +2235,6 @@ TRIAL_PLAN = """# Plan
 ### Phase 1, Step 1: Only ticket
 **Boundary:** src/
 **Trial:** exit 1
-**Run Command:** true
 """
 
 
@@ -2312,7 +2318,12 @@ class TestNoOpSessionIsNotRetryable(LiveRunCase):
             if role == "generator" and writes:
                 (self.tmp / f"gen{len(calls)}.txt").write_text("x")
             if role == "evaluator":
+                # v8.1.16: the retry cap is adjudicated; this suite is
+                # about the no-op backstop, so the adjudicator declines
+                # to extend the cap (TestRetryCapIsAdjudicated covers it).
                 loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "ESCALATE", "reason": "cap"}
+                    if "retry-cap" in prompt else
                     verdict or {"verdict": "RETRY", "reason": "stale"}))
             return "done"
         loop.claude = fake
@@ -3293,7 +3304,6 @@ class TestCriteriaDue(DriverCase):
 
 ### Phase 1, Step 1: Runtime probe
 **Boundary:** src/probe.py
-**Run Command:** true
 
 ### Phase 2, Step 2: Global regression test phase
 **Boundary:** results/out.json
@@ -3342,6 +3352,8 @@ class TestCriteriaDue(DriverCase):
                     (self.tmp / "results" / "out.json").unlink()
                 else:
                     self.results({"metrics": {"acc": 0.9}})
+                    # v8.1.16: the owner's Run Command ran (output gate)
+                    (self.tmp / "logs" / "latest.log").write_text("ran")
             if role == "evaluator":
                 loop.VERDICT.write_text(json.dumps(
                     {"verdict": "PASS", "reason": "ok"}))
@@ -3792,6 +3804,572 @@ class TestReplanCLI(DriverCase):
         self.assertIn("the smoke bar was wrong", prompts[0])
         self.assertIn("(none on disk)", prompts[0])
         self.assertNotIn("replan_reason", st)
+
+
+# ---------- 8.1.16: the two 2026-09-02 retros ---------------------------
+
+class TestHookRetro20260902(HookCaller, unittest.TestCase):
+    """journal/from-agentrl-retro-20260902.md problem 1 and
+    journal/from-aibench-retro-20260902.md problem 2: ~110 denials
+    across twelve loops, five sessions killed, one plan reshaped to
+    route around the net. Two shapes behind nearly all of them -- a
+    relative target under a `cd` decided against the repo root, and a
+    token inside a quoted span read as a command -- plus the two listing
+    forms and the escaped quote found on the way. Each false positive is
+    pinned NEXT to the real denial beside it, because every one of these
+    fixes narrows a net that is load-bearing."""
+
+    def bash(self, role, cmd, boundary=""):
+        return self.call(role, "Bash", {"command": cmd}, boundary)
+
+    # ---- cd is tracked per segment, like assignments -----------------
+
+    def test_cd_into_tmp_makes_relative_targets_scratch(self):
+        for cmd in ("cd /tmp && echo x > notes.txt",
+                    "cd /tmp && mkdir -p x && cp -r /repo/src x/",
+                    "cd /tmp/eval && cd .. && echo hi > eval/x",
+                    "M=/tmp/w; mkdir -p $M; cd $M && echo x > out.txt",
+                    "(cd /tmp && tee scratch.txt < /dev/null)"):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+
+    def test_position_is_the_rule(self):
+        """A cd AFTER the write does not rebase it -- the reverse-order
+        case the v8.1.13 assignment fix mandated for its class."""
+        self.assertEqual(self.bash("generator",
+                                   "echo x > Plan.md; cd /tmp", "src/"),
+                         self.DENY)
+
+    def test_cd_inside_the_repo_is_still_decided(self):
+        self.assertEqual(self.bash("generator",
+                                   "cd src && echo x > Plan.md", "src/"),
+                         self.DENY)
+        self.assertEqual(self.bash("generator",
+                                   "cd tests && echo x > test_a.py",
+                                   "tests/"), self.ALLOW)
+        self.assertEqual(self.bash("generator",
+                                   "cd tests && echo x > test_a.py",
+                                   "src/"), self.DENY)
+
+    def test_a_cd_and_a_dotdot_resolve_to_the_real_target(self):
+        """The fail-CLOSED direction of the same fix. Before 8.1.16 this
+        write to a core file was ALLOWED: `../../Architecture.md` decided
+        against the repo root resolved outside the repo."""
+        self.assertEqual(self.bash(
+            "generator", "cd src/pkg && echo x > ../../Architecture.md",
+            "src/"), self.DENY)
+
+    def test_an_unfollowable_cd_fails_open_as_documented(self):
+        """Pinned as a known gap: a cd the hook cannot resolve leaves
+        every later RELATIVE target undecidable, and the module docstring
+        says expansion fails OPEN. An absolute target needs no cwd."""
+        self.assertEqual(self.bash("generator",
+                                   "cd $UNSET && echo x > Plan.md", "src/"),
+                         self.ALLOW)
+        self.assertEqual(self.bash("generator",
+                                   "cd $UNSET && echo x > /repo/Plan.md",
+                                   "src/"), self.DENY)
+
+    # ---- loose net: quoted spans are data ----------------------------
+
+    def test_a_grep_pattern_naming_rm_is_not_a_write(self):
+        cmd = 'grep -n "rm -rf\\|shutil\\." src/x.py loop-state.json'
+        self.assertEqual(self.bash("evaluator", cmd), self.ALLOW)
+        self.assertEqual(self.bash("evaluator", "rm loop-state.json"),
+                         self.DENY, "the real rm is still caught")
+        self.assertEqual(self.bash("evaluator", 'tee "goal.json" < x'),
+                         self.DENY, "a quoted TARGET is still a target")
+
+    # ---- escaped quotes ----------------------------------------------
+
+    def test_an_escaped_quote_does_not_end_the_span(self):
+        cmd = 'python3 -c "print(f\\"{x:>5}\\")"'
+        self.assertEqual(self.bash("evaluator", cmd), self.ALLOW)
+        self.assertEqual(self.bash("evaluator", cmd + " > Plan.md"),
+                         self.DENY, "the redirect after it is real")
+
+    # ---- listing forms take options ----------------------------------
+
+    def test_listing_forms_take_options(self):
+        for cmd in ("git worktree list --porcelain 2>&1 | head",
+                    "git stash show -p", "git stash list --oneline"):
+            self.assertEqual(self.bash("evaluator", cmd), self.ALLOW, cmd)
+        for cmd in ("git worktree add ../x", "git stash", "git stash pop"):
+            self.assertEqual(self.bash("evaluator", cmd), self.DENY, cmd)
+
+    # ---- one denial, one record --------------------------------------
+
+    def test_a_multiline_command_is_one_denial_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "CDD_ROLE": "generator",
+                   "CDD_BOUNDARY": "", "CLAUDE_PROJECT_DIR": d}
+            cmd = "echo a\necho b\necho x > Architecture.md\necho c"
+            r = subprocess.run(
+                [sys.executable, str(HOOK)], env=env, text=True,
+                capture_output=True,
+                input=json.dumps({"tool_name": "Bash",
+                                  "tool_input": {"command": cmd}}))
+            self.assertEqual(r.returncode, self.DENY)
+            lines = (Path(d) / "logs" / "denials.log").read_text() \
+                .splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn("\\n", lines[0])
+
+
+class TestDenialsAreCountedAsRecords(DriverCase):
+    """journal/from-agentrl-retro-20260902.md problem 9: a log written by
+    an older hook carries a command's newlines; a record starts with its
+    timestamp."""
+
+    def test_an_old_multiline_record_counts_once(self):
+        (self.tmp / "logs" / "denials.log").write_text(
+            "2026-09-01T10:00:00\tgenerator\tmsg\tBash: echo a\necho b\n"
+            "2026-09-01T10:00:05\tevaluator\tmsg\tBash: x\n")
+        self.assertEqual(loop.denials_seen(), 2)
+
+
+class TestGpuCapZeroIsNoCap(DriverCase):
+    """journal/from-aibench-retro-20260902.md problem 5: `max_gpu_hours:
+    0` escalated the OpenRouter smoke during its contract review."""
+
+    def test_zero_is_not_breached_before_the_first_tick(self):
+        cfg = {"budgets": {"max_gpu_hours": 0}}
+        self.assertEqual(loop.budget_exceeded({"gpu_hours": 0.0}, cfg), "")
+        self.assertEqual(loop.budget_exceeded({"gpu_hours": 9.0}, cfg), "")
+
+    def test_a_positive_cap_still_trips(self):
+        cfg = {"budgets": {"max_gpu_hours": 1}}
+        self.assertEqual(loop.budget_exceeded({"gpu_hours": 1.5}, cfg),
+                         "max_gpu_hours")
+
+
+class TestTrialRunsUnderBash(DriverCase):
+    """journal/from-agentrl-retro-20260902.md problem 3: `shell=True` is
+    /bin/sh, which is dash on Ubuntu, so a Trial using the framework's
+    own `${BASH_SOURCE[0]}` idiom broke the moment a Phase became one."""
+
+    def setUp(self):
+        super().setUp()
+        loop.time = FakeClock(step=0.0)
+        loop.claude = lambda *a, **k: '{"status": "HEALTHY"}'
+
+    def test_a_bash_only_idiom_runs(self):
+        body = ("**Trial:** [[ -n ${BASH_VERSION:-} ]] && [[ 1 == 1 ]]\n"
+                "**Monitor Profile:** none")
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 1},
+                                       self.write_goal()))
+
+
+class TestMonitorMemory(DriverCase):
+    """journal/from-aibench-retro-20260902.md problem 1 (five false
+    kills, one true), journal/from-agentrl-retro-20260902.md problem 7
+    (a kill at 159/160 on a URL the eval prints on every call). The
+    Monitor is handed its own last verdicts, and a kill whose quoted
+    evidence sat in a window a prior poll judged HEALTHY is overruled by
+    the driver."""
+
+    NOISE = "WARN litellm: see https://prices.example/table for pricing"
+
+    def setUp(self):
+        super().setUp()
+        loop.time = FakeClock(step=600.0)
+
+    def run_with(self, evidence, status="INTERVENE"):
+        state = {"seen": 0, "prompts": []}
+
+        def fake(_st, role, prompt, *a, **k):
+            state["prompts"].append(prompt)
+            if self.NOISE in prompt.split("Trial log tail:")[-1]:
+                state["seen"] += 1
+                if state["seen"] > 1:
+                    return json.dumps({"status": status,
+                                       "signature": "context_window",
+                                       "evidence": evidence})
+            return '{"status": "HEALTHY"}'
+        loop.claude = fake
+        cfg = self.write_goal(monitor={"interval_min": 1})
+        body = (f"**Trial:** echo '{self.NOISE}'; sleep 0.7\n"
+                f"**Monitor Profile:** none")
+        ok = loop.run_trial("T", body, {"iteration": 1}, cfg)
+        self.assertGreater(state["seen"], 1,
+                           "the trial ended before a second sighting")
+        return ok, state
+
+    def test_a_line_judged_healthy_once_cannot_kill_later(self):
+        ok, state = self.run_with(self.NOISE)
+        self.assertTrue(ok)
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("monitor_overruled", kinds)
+        self.assertNotIn("trial_killed", kinds)
+
+    def test_a_new_line_still_kills(self):
+        ok, _ = self.run_with("RuntimeError: CUDA error: out of memory")
+        self.assertFalse(ok)
+        self.assertIn("trial_killed", [e["event"] for e in self.events()])
+
+    def test_a_kill_escalate_on_old_noise_is_overruled_too(self):
+        ok, _ = self.run_with(self.NOISE, status="KILL_ESCALATE")
+        self.assertTrue(ok)
+        self.assertNotIn("escalate", [e["event"] for e in self.events()])
+
+    def test_the_monitor_sees_its_previous_verdicts(self):
+        _, state = self.run_with(self.NOISE)
+        self.assertIn("none yet", state["prompts"][0])
+        later = state["prompts"][-1]
+        self.assertIn("previous verdicts", later)
+        self.assertIn("HEALTHY", later.split("Trial log tail:")[0])
+
+
+class TestSeedEnvAndVenv(DriverCase):
+    """journal/from-aibench-retro-20260902.md problem 7: three loops
+    failed their own preflight on the first `start` because the
+    worktree had no `.env` and no virtualenv."""
+
+    def dirs(self):
+        primary, wt = self.tmp / "primary", self.tmp / "wt"
+        primary.mkdir(), wt.mkdir()
+        return primary, wt
+
+    def test_env_is_copied_and_the_venv_is_linked(self):
+        primary, wt = self.dirs()
+        (primary / ".env").write_text("KEY=secret\n")
+        (primary / ".venv" / "bin").mkdir(parents=True)
+        loop.seed_goal_files(primary, wt)
+        self.assertEqual((wt / ".env").read_text(), "KEY=secret\n")
+        self.assertFalse((wt / ".env").is_symlink())
+        self.assertTrue((wt / ".venv").is_symlink())
+        self.assertTrue((wt / ".venv" / "bin").is_dir())
+
+    def test_the_worktrees_own_copies_are_never_replaced(self):
+        primary, wt = self.dirs()
+        (primary / ".env").write_text("KEY=primary\n")
+        (primary / "venv").mkdir()
+        (wt / ".env").write_text("KEY=mine\n")
+        (wt / "venv").mkdir()
+        loop.seed_goal_files(primary, wt)
+        self.assertEqual((wt / ".env").read_text(), "KEY=mine\n")
+        self.assertFalse((wt / "venv").is_symlink())
+
+    def test_nothing_to_seed_seeds_nothing(self):
+        primary, wt = self.dirs()
+        loop.seed_goal_files(primary, wt)
+        self.assertEqual(sorted(p.name for p in wt.iterdir()), [])
+
+
+class TestJournalShowsDenialsAndNotes(DriverCase):
+    """journal/from-aibench-retro-20260902.md problem 2: the driver
+    emitted `hook_denials` since 8.1.9 and the journal filtered it out,
+    so ~90 denials were counted by hand. Plus the user's own `note`
+    events, and the record saying what survives a rewrite."""
+
+    def test_the_new_notable_events_reach_the_record(self):
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.event("hook_denials",
+                   detail="evaluator: 3 authority denial(s)")
+        loop.event("note", detail="swapped SIM_MODEL by hand", by="user")
+        loop.event("stop_adjudicated", detail="Phase 1, Step 1: REPLAN")
+        loop.event("monitor_overruled", detail="INTERVENE on old noise")
+        st = {"phase": "done", "iteration": 1, "replans": 0,
+              "spent_usd": 1.0, "started": "2026-09-02T10:00:00+00:00",
+              "started_epoch": loop.time.time()}
+        text = loop.write_journal(self.write_goal(), st).read_text()
+        for needle in ("hook_denials", "3 authority denial",
+                       "swapped SIM_MODEL", "stop_adjudicated",
+                       "monitor_overruled",
+                       "Only the `## Feedback` block survives"):
+            self.assertIn(needle, text)
+
+
+class TestNoteCLI(DriverCase):
+    """journal/from-agentrl-retro-20260902.md problem 4: every loop had
+    a manual change made under the running driver and none was recorded
+    at the moment it happened. `loop.py note "<text>"` is the record."""
+
+    def note(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(HERE / "loop.py"), "note", *extra],
+            env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.tmp)},
+            capture_output=True, text=True)
+
+    def test_a_note_is_an_event_the_journal_shows(self):
+        loop.save(loop.STATE, {"phase": "iterate"})
+        r = self.note("deleted iterations 1-4 checkpoints to free disk")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ev = [e for e in self.events() if e["event"] == "note"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("checkpoints", ev[0]["detail"])
+        self.assertEqual(ev[0].get("by"), "user")
+
+    def test_an_empty_note_is_refused(self):
+        loop.save(loop.STATE, {"phase": "iterate"})
+        r = self.note()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usage", r.stderr)
+        self.assertEqual(self.events(), [])
+
+
+class TestContractReviewIsRemembered(DriverCase):
+    """journal/from-aibench-retro-20260819.md rec 6, owed since;
+    journal/from-aibench-retro-20260902.md problem 8. A restart forgot
+    every review round already bought: an OK plan was re-reviewed and a
+    REVISE'd plan re-reviewed before being revised. The memory is for
+    RESUME only -- within a run, reviews = revisions + 1 still holds."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+
+    def review(self, memo, planner_rewrites=False):
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
+            if role == "planner" and planner_rewrites:
+                (self.tmp / "Plan.md").write_text(PLAN + "\n<!-- v2 -->\n")
+            return ""
+        loop.claude = fake
+        st = {"spent_usd": 0.0, "review": memo}
+        loop.phase_contract_review(self.write_goal(), st)
+        return calls, st
+
+    def test_an_ok_review_of_an_unchanged_plan_is_not_rebought(self):
+        calls, st = self.review({"plan_hash": loop.plan_hash(),
+                                 "verdict": "OK", "revision": 0})
+        self.assertEqual(calls, [])
+        self.assertEqual(st["phase"], "gate")
+        self.assertTrue(any(e["event"] == "contract_review_reused"
+                            for e in self.events()))
+
+    def test_a_revise_of_an_unchanged_plan_buys_the_revision_not_the_review(self):
+        calls, st = self.review({"plan_hash": loop.plan_hash(),
+                                 "verdict": "REVISE", "revision": 1},
+                                planner_rewrites=True)
+        self.assertEqual(calls, ["planner", "evaluator"])
+        self.assertEqual(st["phase"], "gate")
+
+    def test_a_changed_plan_is_reviewed_afresh_and_remembered(self):
+        calls, st = self.review({"plan_hash": "stale", "verdict": "OK",
+                                 "revision": 0})
+        self.assertEqual(calls, ["evaluator"])
+        self.assertEqual(st["review"]["plan_hash"], loop.plan_hash())
+        self.assertEqual(st["review"]["verdict"], "OK")
+
+    def test_the_round_count_resumes_too(self):
+        """A REVISE recorded at the last revision leaves nothing to buy:
+        the restart escalates instead of granting two more rounds."""
+        with self.assertRaises(SystemExit):
+            self.review({"plan_hash": loop.plan_hash(), "verdict": "REVISE",
+                         "revision": loop.MAX_REVISIONS})
+
+
+OUTPUT_PLAN = """# Plan
+
+### Phase 1, Step 1: Build the writer
+**Output:** src/writer.py, results/out.json (the metrics file; read/write
+of v1.0 data)
+**Boundary:** src/, results/out.json
+**Run Command:** python3 src/writer.py 2>&1 | tee logs/latest.log
+"""
+
+
+class TestOutputGate(DriverCase):
+    """journal/from-aibench-retro-20260902.md problem 3 (a ticket PASSed
+    having produced nothing, three times in two loops) and
+    journal/from-agentrl-retro-20260902.md problems 3 and 9 (an
+    abandoned Run Command is the one case an unchanged retry is for)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(OUTPUT_PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+
+    def drive(self, generator):
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append((role, prompt))
+            if role == "generator":
+                generator()
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "ESCALATE", "reason": "cap"}
+                    if "retry-cap" in prompt else
+                    {"verdict": "PASS", "reason": "ok", "evidence": []}))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        return calls, st
+
+    def ran(self):
+        (self.tmp / "logs" / "latest.log").write_text("ran")
+
+    def complete(self):
+        (self.tmp / "src").mkdir(exist_ok=True)
+        (self.tmp / "src" / "writer.py").write_text("print(1)")
+        self.results({"metrics": {"acc": 0.5}})
+        self.ran()
+
+    def gates(self):
+        return [e for e in self.events() if e["event"] == "output_gate"]
+
+    def test_output_paths_come_from_prose_and_stay_inside_the_boundary(self):
+        self.assertEqual(loop.output_paths(OUTPUT_PLAN),
+                         ["src/writer.py", "results/out.json"])
+
+    def test_a_missing_output_file_is_a_retry_and_buys_no_audit(self):
+        def gen():
+            self.results({"metrics": {"acc": 0.5}})
+            self.ran()
+        calls, st = self.drive(gen)
+        self.assertTrue(self.gates())
+        self.assertIn("src/writer.py", self.gates()[0]["detail"])
+        self.assertEqual([p for r, p in calls
+                          if r == "evaluator" and "Mode 2" in p], [])
+        self.assertEqual(self.ledger()[0]["verdict"], "RETRY")
+        self.assertIn("src/writer.py", self.ledger()[0]["reason"])
+
+    def test_a_run_command_that_left_no_log_is_a_retry(self):
+        def gen():
+            (self.tmp / "src").mkdir(exist_ok=True)
+            (self.tmp / "src" / "writer.py").write_text("x")
+            self.results({"metrics": {"acc": 0.5}})
+        self.drive(gen)
+        self.assertTrue(self.gates())
+        self.assertIn("no log", self.gates()[0]["detail"])
+
+    def test_an_owned_criterion_reading_red_blocks_pass(self):
+        def gen():
+            self.complete()
+            self.results({"metrics": {"acc": 0.0}})
+        _, st = self.drive(gen)
+        self.assertTrue(self.gates())
+        self.assertIn("owned criterion", self.gates()[0]["detail"])
+        self.assertNotEqual(st.get("phase"), "final_eval")
+
+    def test_a_complete_ticket_passes_through_to_the_audit(self):
+        _, st = self.drive(self.complete)
+        self.assertEqual(self.gates(), [])
+        self.assertEqual(st["phase"], "final_eval")
+
+    def test_the_retry_carries_what_is_missing(self):
+        n = {"i": 0}
+
+        def gen():
+            n["i"] += 1
+            if n["i"] == 2:
+                self.complete()
+            else:
+                self.results({"metrics": {"acc": 0.5}})
+                self.ran()
+        calls, st = self.drive(gen)
+        second = [p for r, p in calls if r == "generator"][1]
+        self.assertIn("src/writer.py", second)
+        self.assertEqual(st["phase"], "final_eval")
+
+    def test_an_abandoned_run_is_retried_unchanged_not_escalated_as_a_no_op(self):
+        calls, _ = self.drive(lambda: None)      # writes nothing, 3x
+        self.assertEqual(len([r for r, _ in calls if r == "generator"]), 3)
+        self.assertEqual([e for e in self.events()
+                          if e["event"] == "no_op_session"], [])
+        self.assertTrue([e for e in self.events()
+                         if e["event"] == "stop_adjudicated"
+                         and "retry cap" in e["detail"]])
+
+
+class TestRetryCapIsAdjudicated(LiveRunCase):
+    """journal/from-aibench-retro-20260902.md problem 4: three attempts,
+    three real defects each precisely diagnosed, converging -- stopped by
+    the counter; attempt 4 passed an hour later on a human's say-so.
+    LiveRunCase, because each attempt here WRITES something -- the no-op
+    backstop is a different suite."""
+
+    def setUp(self):
+        super().setUp()
+        loop.wait_approval = lambda st, name, detail: None
+        loop.flush_pregate = lambda what: "deadbee"
+        self.results({"metrics": {"acc": 0.5}})
+
+    def drive(self, cap_verdict, pass_on=None):
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append((role, prompt))
+            gens = len([r for r, _ in calls if r == "generator"])
+            if role == "generator":
+                (self.tmp / f"attempt{gens}.txt").write_text("x")
+            if role == "evaluator":
+                if "retry-cap" in prompt:
+                    v = cap_verdict
+                elif "Mode 1" in prompt:
+                    v = {"verdict": "OK"}
+                elif pass_on and gens >= pass_on:
+                    v = {"verdict": "PASS", "reason": "ok", "evidence": []}
+                else:
+                    v = {"verdict": "RETRY", "reason": f"defect {gens}",
+                         "evidence": []}
+                if v is not None:
+                    loop.VERDICT.write_text(json.dumps(v))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.write_goal(), st)
+        return calls, st
+
+    def gens(self, calls):
+        return [p for r, p in calls if r == "generator"]
+
+    def test_the_cap_buys_one_adjudication_carrying_the_ledger(self):
+        calls, st = self.drive({"verdict": "RETRY", "evidence": [],
+                                "reason": "converging: fix the import"},
+                               pass_on=4)
+        caps = [p for r, p in calls if r == "evaluator" and "retry-cap" in p]
+        self.assertEqual(len(caps), 1)
+        for needle in ("attempt 1: RETRY -- defect 1",
+                       "attempt 3: RETRY -- defect 3"):
+            self.assertIn(needle, caps[0])
+        self.assertEqual(len(self.gens(calls)), 5,
+                         "4 attempts on ticket 1, then ticket 2 once")
+        self.assertIn("fix the import", self.gens(calls)[3])
+        self.assertIn("attempt 4", self.gens(calls)[3])
+        self.assertEqual(st["phase"], "final_eval")
+        self.assertTrue([r for r in self.ledger()
+                         if r.get("cap_adjudicated")])
+
+    def test_the_extension_is_granted_once(self):
+        calls, _ = self.drive({"verdict": "RETRY", "reason": "again",
+                               "evidence": []})
+        self.assertEqual(len(self.gens(calls)), 4)
+        ev = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertTrue(ev)
+        self.assertIn("defect 4", ev[0]["detail"])
+
+    def test_escalate_from_the_adjudicator_stops_the_loop(self):
+        calls, _ = self.drive({"verdict": "ESCALATE", "evidence": [],
+                               "reason": "the goal contract is wrong"})
+        self.assertEqual(len(self.gens(calls)), 3)
+        ev = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertIn("goal contract is wrong", ev[0]["detail"])
+
+    def test_replan_from_the_adjudicator_is_gated_like_any_replan(self):
+        calls, st = self.drive({"verdict": "REPLAN", "evidence": [],
+                                "reason": "ticket 1 is under-specified"},
+                               pass_on=4)
+        self.assertEqual(st["replans"], 1)
+        self.assertTrue([e for e in self.events() if e["event"] == "replan"])
+        self.assertEqual(st["phase"], "final_eval")
+
+    def test_a_junk_adjudication_fails_closed(self):
+        calls, _ = self.drive(None)
+        self.assertEqual(len(self.gens(calls)), 3)
+        ev = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertIn("no usable verdict", ev[0]["detail"])
+
 
 
 if __name__ == "__main__":
