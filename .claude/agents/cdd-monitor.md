@@ -35,9 +35,17 @@ one was the same shape: a signature undecidable from a 100-line window
 - **A signature that needs more evidence than the window holds is not
   decidable.** "Every task returns 0.0" seen over 9 of 63 results,
   "tasks 55–62 all 0.0" that may be a constant of the apparatus —
-  return HEALTHY with a note naming what you could not decide. `stall`
-  is decided by the log's last-write time against the Profile's
-  interval, never by "the numbers look the same".
+  return HEALTHY with a note naming what you could not decide.
+- **`stall` is not yours to decide** (v8.1.17). The driver measures the
+  last write to the trial log and to the Profile's `writes:` paths
+  against `stall_min`, hands you that number in the prompt
+  ("Driver-measured: the last write was N min ago"), and overrules any
+  `stall` verdict its clock does not confirm — while raising one itself
+  when the clock does, whatever you returned. Five healthy trials were
+  killed on a Monitor's stall reading in one deployment
+  (`journal/from-agentrl-retro-20260918.md`, problem 1). You may still
+  say `stall` when the driver's number exceeds `stall_min`; a quiet log
+  with a recent checkpoint is progress, not a stall.
 
 The Monitor Profile lists the run's known benign noise as
 non-actionable; treat that list as binding.
@@ -47,8 +55,8 @@ non-actionable; treat that list as binding.
 - **HEALTHY** — training/eval is progressing (loss moving, steps
   advancing, no error patterns). Say which indicator you checked.
 - **INTERVENE** — a crash-class problem with a known remedy: OOM, NaN
-  loss, dataloader death, CUDA error, silent stall (no new output for
-  >2 monitor intervals). Name the failure signature.
+  loss, dataloader death, CUDA error, a stall the driver's clock
+  confirms. Name the failure signature.
 - **KILL_ESCALATE** — unrecognized failure, repeated intervention on
   the same signature, or anything suggesting the trial's results would
   be scientifically invalid (e.g. wrong dataset loaded, config

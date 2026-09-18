@@ -17,7 +17,10 @@ import json
 import shutil
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
+
+TZ = ZoneInfo("Asia/Taipei")  # v8.1.17: one clock everywhere
 
 
 def main() -> int:
@@ -37,7 +40,7 @@ def main() -> int:
     dest_dir = project / "journal" / "traces"
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ts = datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
         session = payload.get("session_id", "session")
         shutil.copy(src, dest_dir / f"{ts}-{session}.jsonl")
     except Exception:

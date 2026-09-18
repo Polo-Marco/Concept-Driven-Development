@@ -51,7 +51,8 @@ import subprocess
 import sys
 import textwrap
 import time
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
@@ -79,6 +80,13 @@ DEFAULT_MODELS = {"planner": "claude-opus-5",
                   "generator": "claude-sonnet-5",
                   "evaluator": "claude-opus-5",
                   "monitor": "claude-haiku-4-5"}
+# v8.1.17: reasoning effort per role, passed to the CLI as `--effort`.
+# The Planner and Evaluator are read by every later session and pay
+# for themselves in every retro; the Generator runs many short
+# sessions; the Monitor runs every few minutes and must be cheap.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = {"planner": "high", "generator": "medium",
+                  "evaluator": "high", "monitor": "low"}
 # A full model ID: family, then a version -- `claude-opus-5`,
 # `claude-fable-5-1`, `claude-haiku-4-5`. `opus`, `sonnet`, `haiku`,
 # `claude-opus` and `default` are aliases and are rejected.
@@ -98,8 +106,15 @@ OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le,
 
 # ---------- plumbing --------------------------------------------------
 
+# v8.1.17: every timestamp the framework writes -- events, the journal
+# record's name, the hook's denials log, the trace archive -- is Taipei
+# time. It was UTC here and naive local time in the hooks, so one loop's
+# artifacts carried two clocks (user request, 2026-09-18).
+TZ = ZoneInfo("Asia/Taipei")
+
+
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(TZ).isoformat(timespec="seconds")
 
 
 def _tail(text: str, n: int = 200) -> str:
@@ -408,6 +423,16 @@ def validate_goal(cfg: dict) -> None:
                     f"models.{role}: {m!r} is not a full model ID with a "
                     f"version (e.g. {DEFAULT_MODELS[role]!r}; bare tiers "
                     f"like 'opus' are aliases and are refused)")
+    effort = cfg.get("effort", {})
+    if not isinstance(effort, dict):
+        problems.append("effort: must be an object, one level per role, "
+                        f"e.g. {json.dumps(DEFAULT_EFFORT)}")
+    else:
+        for role, lvl in effort.items():
+            if role not in ROLES or lvl not in EFFORT_LEVELS:
+                problems.append(
+                    f"effort.{role}: {lvl!r} -- roles are {ROLES}, "
+                    f"levels are {EFFORT_LEVELS}")
     if problems:
         die("goal.json is not a usable contract:\n  - "
             + "\n  - ".join(problems))
@@ -611,6 +636,13 @@ def denials_seen() -> int:
         return 0
 
 
+def session_errored(out: dict) -> bool:
+    """True when the CLI's JSON result reports the session itself failed
+    (upstream error, not a verdict). See claude(), v8.1.17."""
+    return bool(out.get("is_error")) or \
+        str(out.get("subtype", "")).startswith("error")
+
+
 def claude(st: dict, role: str, prompt: str, boundary: str = "",
            timeout: int = 7200) -> str:
     """Spawn one fresh headless session with hook-enforced authority.
@@ -628,9 +660,10 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     """
     cfg = load(GOAL, {})
     model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
+    effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
     sys_prompt = (AGENTS / f"cdd-{role}.md").read_text()
     env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": boundary}
-    cmd = ["claude", "-p", prompt, "--model", model,
+    cmd = ["claude", "-p", prompt, "--model", model, "--effort", effort,
            "--append-system-prompt", sys_prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions"]  # hook = enforcement layer
@@ -639,7 +672,15 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     # gate, so `status` looked identical whether the Planner was
     # thinking or the driver was dead. One line per session is the
     # cheapest heartbeat there is.
-    event("session", detail=f"{role} ({model}) started")
+    event("session", detail=f"{role} ({model}, effort {effort}) started")
+    # v8.1.17: per-role time and spend, visible while it runs. `status`
+    # shows "planner running 20m" from `session_running`, and a table of
+    # sessions / minutes / spend per role from `roles` (user request,
+    # 2026-09-18).
+    t0 = time.time()
+    st["session_running"] = {"role": role, "model": model,
+                             "effort": effort, "started_epoch": t0}
+    save(STATE, st)
     denials_before = denials_seen()
     # v8.1.13: a session that DIED is not a session that returned a
     # judgement, and one dispatch could not tell them apart. On
@@ -657,14 +698,29 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
                            capture_output=True, timeout=timeout)
         try:
             out = json.loads(r.stdout)
-            break
         except (json.JSONDecodeError, AttributeError):
             out = None
+        if isinstance(out, dict) and not session_errored(out):
+            break
+        # v8.1.17: the CLI reports an upstream failure as VALID JSON
+        # (`is_error: true`, `subtype: error_*`) with exit 0, so the
+        # 8.1.13 retry -- keyed on unparseable output -- never fired
+        # for the fault it was written for: an API 529 killed a Planner
+        # that then "wrote nothing", and the replan was charged
+        # (journal/from-agentrl-retro-20260918.md, problem 8). Its
+        # cost is still billed; the dispatch is the one thing retried.
+        err = str(out.get("result", ""))[:160] if isinstance(out, dict) \
+            else ""
+        if isinstance(out, dict):
+            st["spent_usd"] = round(st.get("spent_usd", 0.0)
+                                    + out.get("total_cost_usd", 0.0), 4)
+        out = None
         # getattr: the offline suite stubs subprocess.run with a bare
         # stdout, and a crash HERE would be a driver defect invented by
         # its own diagnostics.
-        why = (f"{role}: exit {getattr(r, 'returncode', '?')}, no usable "
-               f"output{_tail(getattr(r, 'stderr', ''))}")
+        why = (f"{role}: exit {getattr(r, 'returncode', '?')}, "
+               + (f"API error: {err}" if err else
+                  f"no usable output{_tail(getattr(r, 'stderr', ''))}"))
         if attempt == 1:
             event("session_died", detail=f"{why} -- redispatching once")
             if SESSION_RETRY_SECONDS:
@@ -672,6 +728,17 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
         else:
             event("session_died", detail=f"{why} -- giving up")
     st["session_died"] = out is None
+    st.pop("session_running", None)
+    minutes = (time.time() - t0) / 60
+    usd = out.get("total_cost_usd", 0.0) if isinstance(out, dict) else 0.0
+    tot = st.setdefault("roles", {}).setdefault(
+        role, {"sessions": 0, "minutes": 0.0, "usd": 0.0})
+    tot["sessions"] += 1
+    tot["minutes"] = round(tot["minutes"] + minutes, 2)
+    tot["usd"] = round(tot["usd"] + usd, 4)
+    event("session_done", detail=f"{role} finished in {minutes:.1f}m, "
+                                 f"${usd:.2f}", minutes=round(minutes, 2),
+          usd=round(usd, 4))
     new_denials = denials_seen() - denials_before
     if new_denials:
         event("hook_denials",
@@ -1005,11 +1072,20 @@ def budget_exceeded(st: dict, cfg: dict) -> str:
 
 # ---------- gates ------------------------------------------------------
 
+GATE_REMIND_SECONDS = 4 * 3600
+
+
 def wait_approval(st: dict, name: str, detail: str) -> None:
     """Block until the named gate is approved.
 
     v8.1.1: publishes WHICH gate is pending, so `approve` can target it
     and a premature `approve` can be told that nothing is waiting.
+
+    v8.1.17: re-emits `approval_waiting` every GATE_REMIND_SECONDS. One
+    push at open is one push; a plan gate outlasted a 24.6 h GPU rental
+    with the driver silent the whole time (journal/from-agentrl-retro-
+    20260918.md, problem 8). event() is what notify.sh hangs off, so the
+    reminder reaches the phone without a second plumbing path.
     """
     APPROVALS.mkdir(exist_ok=True)
     flag = APPROVALS / f"{name}.approved"
@@ -1030,9 +1106,17 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
           f"           (from any tree of this repo; or write "
           f"{flag} from the control tower)\n"
           + (f"!! {gap}\n" if gap else ""))
+    opened = time.time()
+    reminded = 0
     while not flag.exists():
         time.sleep(2)          # v8.1.2: 15s made a phone approve feel
                                # broken; this is a stat() call
+        waited = time.time() - opened
+        if waited // GATE_REMIND_SECONDS > reminded:
+            reminded = int(waited // GATE_REMIND_SECONDS)
+            event("approval_waiting", gate=name,
+                  detail=f"gate {name} has waited {waited / 3600:.1f}h "
+                         f"-- {detail}")
     flag.unlink()
     st["pending_gate"] = None
     clock_start(st)                        # the driver is working again
@@ -1045,6 +1129,48 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
 
 
 # ---------- trials (experiment goals) ----------------------------------
+
+# v8.1.17: the stall decision leaves the model. Five healthy trials in
+# one deployment were killed on a Monitor `stall` verdict -- train-v2
+# twice, v8d twice (~1.5 h lost), v8e once -- and the deployment patched
+# its driver for it three times in three days, converging on exactly
+# this: the driver measures last-write time against the Profile's
+# `stall_min`, and a `stall` the driver cannot confirm is overruled
+# (journal/from-agentrl-retro-20260918.md, problem 1 / rec 1). Two keys
+# are read off the Monitor Profile: `stall_min: N` (minutes) and
+# `writes: <path>[, <path>]` (files or directories the trial writes as
+# it progresses -- checkpoints, metrics, a store). Without `stall_min`
+# the driver never kills on stall, whatever the Monitor says.
+STALL_MIN = re.compile(r"stall_min\s*[:=]\s*(\d+)", re.I)
+STALL_WRITES = re.compile(r"writes\s*[:=]\s*([^\n]+)", re.I)
+
+
+def stall_profile(profile: str):
+    """(stall_min or None, [paths]) from a Monitor Profile's text."""
+    m = STALL_MIN.search(profile)
+    stall_min = int(m.group(1)) if m else None
+    w = STALL_WRITES.search(profile)
+    paths = [x.strip(" `'\"") for x in w.group(1).split(",")] if w else []
+    return stall_min, [x for x in paths if x]
+
+
+def last_write(log: Path, paths: list) -> float:
+    """Newest mtime across the trial log and every declared path,
+    directories walked. 0.0 when nothing exists yet."""
+    newest = log.stat().st_mtime if log.exists() else 0.0
+    for raw in paths:
+        p = Path(raw) if Path(raw).is_absolute() else ROOT / raw
+        if p.is_dir():
+            for d, _dirs, files in os.walk(p):
+                for f in files:
+                    try:
+                        newest = max(newest, os.stat(Path(d) / f).st_mtime)
+                    except OSError:
+                        continue
+        elif p.exists():
+            newest = max(newest, p.stat().st_mtime)
+    return newest
+
 
 def kill_trial(proc) -> None:
     """Kill the trial's whole process GROUP, not just the shell.
@@ -1165,9 +1291,19 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
                 return False
             tail = "\n".join(log.read_text(errors="ignore")
                              .splitlines()[-100:])
+            profile = field(body, "Monitor Profile")
+            stall_min, writes = stall_profile(profile)
+            idle_min = max(0.0, (time.time() - last_write(log, writes))
+                           / 60)
+            stalled = stall_min is not None and idle_min > stall_min
             rep = claude(st, "monitor",
-                         f"Monitor Profile:\n"
-                         f"{field(body, 'Monitor Profile')}\n\n"
+                         f"Monitor Profile:\n{profile}\n\n"
+                         f"Driver-measured: the last write to the trial "
+                         f"log or its declared `writes:` paths was "
+                         f"{idle_min:.0f} min ago; stall_min is "
+                         f"{stall_min if stall_min is not None else 'not declared'}. "
+                         f"Stall is decided by the driver from that clock, "
+                         f"never by you.\n\n"
                          f"Your previous verdicts on this trial (oldest "
                          f"first): {json.dumps(history) if history else 'none yet'}"
                          f"\n\nTrial log tail:\n{tail}\n\nClassify per "
@@ -1189,6 +1325,28 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
                              f"judged HEALTHY: {evidence[:160]}")
                 status = {"status": "HEALTHY", "signature": "none",
                           "evidence": "overruled: " + evidence[:120]}
+            # v8.1.17: a `stall` the driver's clock does not confirm is
+            # overruled; a stall it does confirm is raised even if the
+            # Monitor read HEALTHY. The Monitor may report; it never
+            # decides this one.
+            sig = str(status.get("signature", "")).lower()
+            if status["status"] != "HEALTHY" and "stall" in sig \
+                    and not stalled:
+                event("monitor_overruled",
+                      detail=f"stall verdict while the last write was "
+                             f"{idle_min:.0f} min ago (stall_min "
+                             + (f"{stall_min})" if stall_min is not None
+                                else "not declared in the Profile -- the "
+                                     "driver never kills on stall "
+                                     "without it)"))
+                status = {"status": "HEALTHY", "signature": "none",
+                          "evidence": "overruled: " + evidence[:120]}
+            elif stalled and status["status"] == "HEALTHY":
+                status = {"status": "INTERVENE", "signature": "stall",
+                          "evidence": f"driver: no write to the trial log "
+                                      f"or declared paths for "
+                                      f"{idle_min:.0f} min "
+                                      f"(stall_min {stall_min})"}
             if status["status"] == "HEALTHY":
                 ok_lines.update(ln.strip() for ln in tail.splitlines()
                                 if len(ln.strip()) >= 12)
@@ -1280,6 +1438,17 @@ MAX_REVISIONS = 2
 # (journal/retro-20260731-toy-816.md, problem 2).
 PREGATE_SHARE = 0.5
 
+# v8.1.17: rounds are ALSO capped per loop, across replans. MAX_REVISIONS
+# and PREGATE_SHARE bound one plan phase; a loop that replans six times
+# gets six fresh phases, and one deployment bought 16 review rounds
+# across 6 replans -- ~$150 of $218 before or between measurements --
+# without the user ever seeing a consolidated question, because four of
+# the replans were defects in the GOAL, which no plan can fix
+# (journal/from-agentrl-retro-20260918.md, problem 5 / rec 5). At the
+# cap the driver stops and says so. Overridable per loop via
+# `budgets.max_review_rounds` (hot-reloadable, like every cap).
+MAX_REVIEW_ROUNDS = 6
+
 
 def phase_contract_review(cfg: dict, st: dict) -> None:
     """Review, revise, review again -- never the other way round.
@@ -1366,8 +1535,24 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                              f"({v}, revision {start}) -- resuming "
                              f"without buying it again")
             else:
+                bought = st.get("review_rounds", 0)
+                cap_rounds = cfg.get("budgets", {}).get(
+                    "max_review_rounds", MAX_REVIEW_ROUNDS)
+                if bought >= cap_rounds:
+                    event("escalate", detail=(
+                        f"contract review has been bought {bought} times "
+                        f"in this loop across {st.get('replans', 0)} "
+                        f"replan(s) (cap {cap_rounds}). The contract, not "
+                        f"the plan, is what keeps failing: read the "
+                        f"disputed lines in Evaluation.md against "
+                        f"Goal.md, fix the Goal and start a fresh loop -- "
+                        f"or raise budgets.max_review_rounds in the "
+                        f"worktree's goal.json and restart."))
+                    save(STATE, st)
+                    sys.exit(1)
                 if VERDICT.exists():
                     VERDICT.unlink()      # never read a stale verdict
+                st["review_rounds"] = bought + 1
                 claude(st, "evaluator",
                        "Mode 1 -- contract review. Read Plan.md, Goal.md, "
                        "goal.json, and the Architecture Overview. Audit "
@@ -1963,6 +2148,29 @@ def journal_path(cfg: dict, st: dict) -> Path:
             f"{stamp[:8]}-{stamp[8:14]}-{cfg.get('type', 'loop')}.md")
 
 
+FEEDBACK_HEADING = re.compile(r"^## Feedback\b.*$", re.M)
+
+
+def feedback_block(text: str) -> str:
+    """The user's `## Feedback` block of an existing record, or the
+    template when there is none.
+
+    v8.1.17. This used to be `"## Feedback" + text.split("## Feedback",
+    1)[1]` -- and the record's own header sentence says "Only the
+    `## Feedback` block survives a rewrite", so the split landed on the
+    HEADER, not the heading, and everything after it (the whole previous
+    record) was carried over as the user's block. Every rewrite nested
+    the last one: 22 deployed files carried 53 `## Request` sections,
+    and one operator, finding the first `## Feedback` in the file, wrote
+    the rating into the header sentence (journal/from-agentrl-retro-
+    20260918.md, problem 7c/7d). The heading is a LINE, so it is matched
+    as one; and the LAST match wins, which is what heals a record the
+    old code already nested -- the innermost block is the real one.
+    """
+    heads = list(FEEDBACK_HEADING.finditer(text))
+    return text[heads[-1].start():] if heads else FEEDBACK_BLOCK
+
+
 def write_journal(cfg: dict, st: dict) -> Path:
     """Write this loop's Tier-1 journal record. Overwrites its own file.
 
@@ -1981,10 +2189,8 @@ def write_journal(cfg: dict, st: dict) -> Path:
     """
     path = journal_path(cfg, st)
     path.parent.mkdir(parents=True, exist_ok=True)
-    feedback = FEEDBACK_BLOCK
-    if path.exists() and "## Feedback" in path.read_text():
-        feedback = "## Feedback" + \
-            path.read_text().split("## Feedback", 1)[1]
+    feedback = feedback_block(path.read_text()) if path.exists() \
+        else FEEDBACK_BLOCK
 
     rows = []
     if LEDGER.exists():
@@ -2051,7 +2257,8 @@ def write_journal(cfg: dict, st: dict) -> Path:
            f" / {b.get('max_usd', '-')} · driver runtime: {hours:.1f}h"
            f" / {b.get('max_wall_hours', '-')}",
            f"- elapsed: {cal:.1f}h calendar — {max(0.0, cal - hours):.1f}h"
-           f" of it waiting on a human", ""]
+           f" of it waiting on a human", "",
+           "```"] + role_table(cfg, st, live=False) + ["```", ""]
     if tick:
         out += ["## Tickets"] + [
             f"- [{'x' if d else ' '}] {i} — {t}" for i, t, _, d in tick
@@ -2107,6 +2314,21 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
             f"  If you finished it by hand, say so: loop.py close --force")
 
     rec = write_journal(cfg, st)
+    # v8.1.17: a template Feedback block is a refusal, not a warning.
+    # The warning below shipped in 8.1.6 and six of 22 loops in one
+    # deployment still closed on the untouched template -- exactly the
+    # window of continuous delegated running, where the operator closes
+    # loops and the reminder scrolls past (journal/from-agentrl-retro-
+    # 20260918.md, problem 7a). [retro] can only see what the record
+    # holds; a close that proceeds without it is the cheapest place to
+    # stop. One line in your own words is enough. `--force` still
+    # closes, so nothing is locked behind a form.
+    if FEEDBACK_BLOCK.splitlines()[1] in rec.read_text() and not force:
+        die(f"The journal's Feedback block is still the template:\n"
+            f"  {rec.relative_to(ROOT)}\n\n"
+            + FEEDBACK_BLOCK +
+            "\n  Fill it in (one line in your own words is enough --\n"
+            "  [retro] reads it), then run close again; or close --force.")
     ok, crit = check_criteria(cfg)
     branch = sh("git rev-parse --abbrev-ref HEAD").stdout.strip()
     print(f"\nclosing: {cfg.get('goal', '(no goal)')}")
@@ -2339,6 +2561,27 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
 ACTIONABLE = ("escalate", "approval_request")
 
 
+def role_table(cfg: dict, st: dict, live: bool = True) -> list:
+    """Per-role model, effort, sessions, time and spend (v8.1.17), with
+    the running session's elapsed time when `live`."""
+    run = st.get("session_running") or {}
+    rows = ["roles       model                 effort  sessions  time     spend"]
+    for role in ROLES:
+        model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
+        effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
+        t = st.get("roles", {}).get(role, {})
+        mins = t.get("minutes", 0.0)
+        clock = f"{int(mins // 60)}h{int(mins % 60):02d}m" if mins >= 60 \
+            else f"{mins:.0f}m"
+        line = (f"  {role:<10}{model:<22}{effort:<8}{t.get('sessions', 0):<10}"
+                f"{clock:<9}${t.get('usd', 0.0):.2f}")
+        if live and run.get("role") == role:
+            up = (time.time() - run.get("started_epoch", time.time())) / 60
+            line += f"   <- running {up:.0f}m"
+        rows.append(line)
+    return rows
+
+
 def phase_status(cfg: dict) -> None:
     """What is happening, in the order a human asks it.
 
@@ -2401,6 +2644,8 @@ def phase_status(cfg: dict) -> None:
             f"  spend       {cap(st.get('spent_usd', 0.0), 'max_usd', '${:.2f}')}",
             f"  runtime     {cap(hours, 'max_wall_hours', '{:.1f}h')}",
             f"  gpu         {cap(st.get('gpu_hours', 0.0), 'max_gpu_hours', '{:.1f}h')}"]
+
+    out += [""] + role_table(cfg, st)
 
     if st.get("pending_gate"):
         out += ["", f">> WAITING FOR YOU: gate '{st['pending_gate']}'",

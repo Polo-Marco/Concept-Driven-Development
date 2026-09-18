@@ -153,7 +153,11 @@ call.
   stops/retries; the Evaluator appends its verdict.
 - **The user fills the `## Feedback` block** at loop end: a rating
   (good / ok / bad), what went well, and — critically — any
-  *instruction that was not followed*.
+  *instruction that was not followed*. `loop.py close` refuses a
+  template block (v8.1.17); under delegated authority the operator
+  fills it as part of closing, but one line in the user's own words is
+  what `[retro]` is for — in 22 loops of one deployment the user's
+  voice appeared in one block.
 - Keep records short and factual. This is a log, not an essay.
 
 **Tier 2 — full raw trace (`journal/traces/*.jsonl`, optional, Claude

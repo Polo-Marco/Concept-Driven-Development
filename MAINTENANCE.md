@@ -77,9 +77,11 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
 
 ### 5. Version + ship
 
-- **Bump the version** everywhere it appears: README title + Version
-  History row, `CLAUDE.md` header, and the `version:` frontmatter of
-  any skill touched.
+- **Bump the version** everywhere it appears: README title and its
+  upgrade `git diff` line, `CLAUDE.md` header, and the `version:`
+  frontmatter of any skill touched. There is no Version History
+  section (removed in 8.1.17): git history is the changelog, so the
+  commit message and the tag carry what a release changed.
   - Patch (8.1.x): rule tightening, skill edits, doc clarifications,
     driver/hook fixes.
   - Major (x.0): new/removed modes, pipeline or file-structure changes.

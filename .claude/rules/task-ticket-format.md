@@ -131,8 +131,12 @@ written to, e.g. results/gate1.json]
 **Success Threshold:** [metric vs value; must map 1:1 to goal.json
 criteria]
 **Monitor Profile:** [poll interval; known failure signatures, e.g.
-cuda_oom, nan_loss, stall; AND the run's known benign noise, listed as
-non-actionable; `stall` defined by last-write time]
+cuda_oom, nan_loss; AND the run's known benign noise, listed as
+non-actionable; plus two keys the DRIVER reads — `stall_min: N` and
+`writes: <path>[, <path>]` (v8.1.17)]
+**Deadline:** [`K × measured min/iteration × 1.5 = N min`, with the
+source of the measurement — `<campaign> iterations.jsonl`, per domain
+if mixed]   ← v8.1.17
 **Disk:** [bytes written per iteration/step, and what the trial deletes
 as it goes]   ← v8.1.16
 
@@ -149,6 +153,30 @@ whose Profile enumerated its noise as non-actionable (`0.0/1.0` runs,
 `Transcript not found`, `Grading failed:`) and defined `stall` by
 last-write time killed nothing healthy. Write the Profile against the
 run's scar tissue, not against a generic list.
+
+**`stall` is decided by the driver's clock, from two Profile keys**
+(v8.1.17). `stall_min: N` is the minutes of silence that mean a stall;
+`writes:` lists the files or directories the trial writes as it
+progresses (checkpoints, a metrics store), so a quiet log during a
+checkpoint write is not silence. The driver takes the newest mtime
+across the trial log and those paths; a Monitor `stall` verdict its
+clock does not confirm is overruled, and a stall it confirms is raised
+without the Monitor. Without `stall_min` the driver never kills on
+stall. Five healthy trials were killed on a model's stall reading in
+one deployment, and its driver was patched three times in three days
+toward this rule (`journal/from-agentrl-retro-20260918.md`, problem 1).
+Set `stall_min` from the run's longest legitimate silence (an eval
+pass, a checkpoint write), padded — not from the poll interval.
+
+**`Deadline:` is arithmetic on a measured number, never a round one**
+(v8.1.17). A 540-minute cap was derived from a mean over a
+monotonically increasing series; a 900-minute cap assumed ~52 min per
+iteration where the airline domain took ~155, and the segment expired
+at 23/24. Both numbers sat in the store's `iterations.jsonl` the whole
+time (`journal/from-agentrl-retro-20260918.md`, problem 3). Show `K ×
+measured × 1.5` and name the file the measurement came from; when the
+mix of domains changes the per-iteration time, measure per domain. A
+first run with nothing to measure says so and sizes from the smoke.
 
 **`Disk:` is a contract, not a note.** A 54 GB-per-iteration trial that
 never rotated filled its volume at iteration 7, killed the driver
@@ -241,6 +269,24 @@ Before ending the Planner session, verify for each ticket:
 - For experiment tickets: **K iterations × the `Disk:` figure <
   `df` at launch, or the trial rotates as it goes.** Show the
   arithmetic in the ticket (v8.1.16).
+- For experiment tickets: **is `Deadline:` K × a MEASURED minutes-per-
+  iteration × 1.5, with its source named?** A round number with no
+  source fails this check (v8.1.17). And does the Monitor Profile carry
+  `stall_min` and `writes:`, sized from the run's longest legitimate
+  silence?
+- **Before the first GPU smoke of a new training path: is there a
+  GPU-free config-probe ticket?** List every assertion the new argv can
+  trip — `validate_config`, micro-batch divisibility, offload/dtype
+  combinations, Hydra `+` append, a `ref.*` field required by a flag —
+  and probe them without a GPU, as one deployment's `validate_config`
+  ticket did in seven seconds. Nine of 49 replans in that deployment
+  were framework configuration facts discovered by a failed GPU smoke
+  (`journal/from-agentrl-retro-20260918.md`, problem 2).
+- **If a replan's cause was an environment fact** — a `PATH` the JIT
+  needs, a cache location, a driver version — **does the fix ticket
+  edit the environment script or the goal's preflight, not the Trial
+  line?** The same vLLM `PATH` defect cost two replans six days apart,
+  each fixing the plan (v8.1.17; problem 4).
 - **A ticket that deletes or supersedes banked evidence lists, in
   `Depends On`, the ticket that PROVES the replacement.** Never destroy
   the current measurement until the replacement has produced one: one

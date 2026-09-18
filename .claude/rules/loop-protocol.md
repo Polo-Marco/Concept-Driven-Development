@@ -207,6 +207,16 @@ goal.json → [gates: machinery, contract shape, isolation, preflight, evidence]
           → loop.py close: journal record, housekeeping
 ```
 
+**A replan that fixes an environment fact fixes the environment**
+(v8.1.17). vLLM's flashinfer JIT needing the venv `bin/` on `PATH` cost
+a replan on 09-02 and the identical replan on 09-08, because both fixes
+edited the Trial line and the next loop started from the same
+environment (`journal/from-agentrl-retro-20260918.md`, problem 4). When
+the ledger's reason for a replan is a `PATH`, a cache, a driver or
+library version, the fix ticket edits the project's environment script
+(`scripts/env.sh` or equivalent) or adds a `Preflight` check the next
+`Goal.md` inherits — never only the command that tripped on it.
+
 **A retry carries WHY** (v8.1.6). The Generator dispatch on attempt 2+
 includes the previous verdict's `reason` and `evidence`; retrying a
 ticket verbatim can only help a nondeterministic fault. And a Generator
@@ -216,6 +226,18 @@ and escalates rather than buying a third identical session. The
 exception is a RETRY caused by a trial that did not complete:
 relaunching an unchanged config is exactly what that retry is for
 (Protocol #5).
+
+**Contract review is capped per loop, across replans** (v8.1.17).
+`MAX_REVISIONS` and the pre-gate share bound one plan phase; each
+replan opens a fresh one. One loop bought 16 review rounds across 6
+replans — ~$150 of $218 before or between measurements — and four of
+the replans were defects in the GOAL, which no plan can fix, so the
+user never saw one consolidated question
+(`journal/from-agentrl-retro-20260918.md`, problem 5). The driver
+counts every paid round in `loop-state.json` (`review_rounds`) and at
+six escalates naming the disputed lines' home: Evaluation.md against
+Goal.md. `budgets.max_review_rounds` overrides it, hot-reloadable like
+every cap.
 
 **Contract review is bounded by money, not only by rounds** (v8.1.7).
 `MAX_REVISIONS` was the sole bound and no budget was consulted between
@@ -329,6 +351,16 @@ the revision cap. `loop-state.json` now carries the hash of the
 its verdict back, and the round count continues. Within one run every
 revision is still reviewed.
 
+**An API error inside a valid result is a dead session too** (v8.1.17).
+The CLI reports an upstream failure as well-formed JSON — `is_error:
+true`, `subtype: error_*`, exit 0 — so the v8.1.13 retry, keyed on
+unparseable output, never fired for the fault it was written for: an
+API 529 killed a Planner that then "wrote nothing", and the replan was
+charged (`journal/from-agentrl-retro-20260918.md`, problem 8). The
+driver now reads the result's own error flag, bills the failed session
+and re-dispatches it once, exactly as for a session that produced no
+output.
+
 **A session that DIED is not a verdict** (v8.1.13). One dispatch could
 not tell "the auditor judged this unsalvageable" from "the auditor never
 ran": an Evaluator that died on its first token with API Error 529 wrote
@@ -364,11 +396,34 @@ RETRY-with-fix for crash-class signatures (max 2 interventions),
 escalate otherwise. The Monitor never edits, never kills, never
 retunes parameters.
 
+**The stall decision is the driver's** (v8.1.17). Five healthy trials
+in one deployment were killed on a Monitor `stall` verdict — twice in
+one loop, twice in another with ~1.5 h lost, once more the day after —
+and the deployment patched its own driver three times in three days,
+converging on one rule (`journal/from-agentrl-retro-20260918.md`,
+problem 1). It is written here once: the driver measures `now − max(
+mtime(trial log), mtime(any file under the Profile's `writes:` paths))`
+against the Profile's `stall_min`, tells the Monitor the number, and
+overrules any `stall` its clock does not confirm (`monitor_overruled`).
+When the clock does confirm one, the driver raises it as an INTERVENE
+even if the Monitor read HEALTHY. A Profile with no `stall_min` never
+kills on stall. Sizing the two keys is the Planner's job
+(`task-ticket-format.md`).
+
 ## Human gates & remote control
 
 Gates: plan approval (once), every replan, and every ESCALATE — three,
 all event-driven. The driver blocks on `approvals/<gate>.approved` flag
 files.
+
+**A gate that has waited says so again** (v8.1.17). One push at open
+was one push: a plan gate outlasted a 24.6 h GPU rental with the driver
+silent (`journal/from-agentrl-retro-20260918.md`, problem 8). The
+driver now emits `approval_waiting` every 4 h a gate stays open, and
+`notify.sh` pushes it like any event. Under delegated authority the
+rule is: a gate that has waited longer than the shorter of 4 h or 20 %
+of a rental may be approved by the operator, and the approval is noted
+(`loop.py note`).
 
 **No mid-loop `[Halt here]`** (v8.1). The driver never implemented it,
 and asking for it required guessing which ticket would need inspection
@@ -431,7 +486,21 @@ second; a hand-edit breaks the claim the loop needs to make next.
 **The driver writes the loop's `journal/` record** (v8.1.6) — goal,
 outcome, tickets, criteria, every ledger row and the notable events —
 on EVERY terminal exit, including an escalation and a crash, not only
-on `done`. It never overwrites the `## Feedback` block, which is yours.
+on `done`. It never overwrites the `## Feedback` block, which is yours
+— and only that block (v8.1.17: the driver's own header sentence names
+`## Feedback`, and the carry-over split on it, so every rewrite nested
+the whole previous record; 22 files held 53 `## Request` sections.
+The heading is matched as a line now, and a record the old driver
+nested heals on its next rewrite).
+
+**`close` refuses a template Feedback block** (v8.1.17). Six of 22
+loops in one deployment closed on the untouched template while the
+8.1.6 warning printed every time — exactly the window of continuous
+delegated running, where the reminder scrolls past
+(`journal/from-agentrl-retro-20260918.md`, problem 7a). `close` now
+prints the block and exits 1 until `Rating:` is filled; `--force`
+still closes. One line in your own words is enough, and it is the
+line `[retro]` cannot get anywhere else.
 
 **Closing is a command, not a memory exercise:**
 

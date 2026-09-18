@@ -62,7 +62,8 @@ output, and they are frozen (`loop-protocol.md` #4). Therefore:
    `build`/`modify` tickets get full detail (typed signatures, error
    cases). `experiment` tickets get the experiment variant: Hypothesis,
    Trial command, Metrics Contract, Success Threshold, Monitor Profile
-   — detailed about OUTCOMES, light on implementation path.
+   (with `stall_min` and `writes:`), Deadline (K × measured × 1.5, source
+   named), Disk — detailed about OUTCOMES, light on implementation path.
 3. **Satisfiability self-check.** For each Spec step: can it be
    executed with only the inputs available at that point? A circular or
    unsatisfiable step leaves the Generator no legal move but to stop.

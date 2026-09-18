@@ -32,10 +32,13 @@ adversarial containment is the VM plus the worktree
 parser; if a role needs real confinement, confine the process.
 """
 import datetime
+from zoneinfo import ZoneInfo
 import json
 import os
 import re
 import sys
+
+TZ = ZoneInfo("Asia/Taipei")  # v8.1.17: one clock everywhere
 
 # What the current call was trying to do, for the denial log. Set by
 # main() before any decision is taken.
@@ -64,7 +67,7 @@ def log_denial(msg: str) -> None:
             return                     # not a real tree: leave no litter
         d = os.path.join(root, "logs")
         os.makedirs(d, exist_ok=True)
-        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        stamp = datetime.datetime.now(TZ).isoformat(timespec="seconds")
         # v8.1.16: ONE LINE PER RECORD. A multi-line Bash command put
         # its newlines into the log, and the driver's denials_seen()
         # counts lines -- so one denial of a three-line batch was

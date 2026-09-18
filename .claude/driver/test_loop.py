@@ -111,6 +111,16 @@ What it covers, and which v8.0 defect each case pins down:
                       seeded into a worktree; a remembered contract
                       review; `note`; denials counted as records and
                       shown in the journal
+  8.1.17              the 2026-09-18 agentRl retro: the driver decides
+                      stall from mtimes and overrules the Monitor;
+                      contract review capped per loop; an `is_error`
+                      result is a dead session and is redispatched; a
+                      gate re-announces itself every 4 h; the journal
+                      carries ONE record (the Feedback split landed on
+                      the header sentence); close refuses a template
+                      Feedback block; effort per role (`--effort`),
+                      per-role sessions/minutes/spend in status and the
+                      journal, and Taipei time on every stamp
 """
 import json
 import os
@@ -2659,9 +2669,13 @@ class TestCloseTheLoop(DriverCase):
         loop.LEDGER.write_text("")
         loop.EVENTS.write_text("")
 
-    def close(self, st, force=False):
+    def close(self, st, force=False, rated=True):
         cfg = self.write_goal(type="build")
         loop.save(loop.STATE, st)
+        if rated:                       # v8.1.17: close refuses a template
+            rec = loop.write_journal(cfg, st)
+            rec.write_text(rec.read_text().replace(
+                "- Rating: [good | ok | bad]", "- Rating: ok"))
         with contextlib.redirect_stdout(io.StringIO()) as out:
             loop.phase_close(cfg, st, force)
         return out.getvalue()
@@ -2689,7 +2703,24 @@ class TestCloseTheLoop(DriverCase):
             self.assertFalse((self.tmp / f).exists(), f)
         self.assertTrue((self.tmp / "journal" /
                          "20260731-102218-build.md").exists())
-        self.assertIn("Feedback block is still the template", out)
+
+    def test_refuses_a_template_feedback_block(self):
+        """v8.1.17: six of 22 loops closed on the untouched template
+        while the 8.1.6 warning printed every time
+        (journal/from-agentrl-retro-20260918.md, problem 7a)."""
+        st = {"phase": "done", "iteration": 3,
+              "started": "2026-07-31T10:22:18+00:00"}
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    self.close(st, rated=False)
+            finally:
+                sys.stderr = real
+        self.assertTrue((self.tmp / "Plan.md").exists(),
+                        "a refused close must delete nothing")
+        self.close(st, force=True, rated=False)       # --force still closes
+        self.assertFalse((self.tmp / "Plan.md").exists())
 
     def test_the_record_is_committed_and_the_branch_is_left_alone(self):
         head = loop.sh("git rev-parse HEAD").stdout.strip()
@@ -4394,6 +4425,334 @@ class TestRetryCapIsAdjudicated(LiveRunCase):
         self.assertIn("no usable verdict", ev[0]["detail"])
 
 
+
+
+# ---------- 8.1.17: the 2026-09-18 agentRl retro -----------------------
+
+class TestJournalNesting(DriverCase):
+    """journal/from-agentrl-retro-20260918.md, problem 7c/7d: 22 files
+    carried 53 `## Request` sections. The record's header sentence
+    names `## Feedback`, and the split landed on it."""
+
+    def state(self):
+        return {"phase": "done", "iteration": 1,
+                "started": "2026-07-31T10:22:18+00:00",
+                "started_epoch": loop.time.time()}
+
+    def test_a_rewrite_keeps_one_request_section(self):
+        cfg = self.write_goal(type="build")
+        for _ in range(3):
+            p = loop.write_journal(cfg, self.state())
+        text = p.read_text()
+        self.assertEqual(text.count("## Request"), 1)
+        self.assertEqual(text.count("## Feedback"), 1 + 1)   # heading + header sentence
+        self.assertTrue(text.rstrip().endswith("- Notes:"))
+
+    def test_the_innermost_block_of_a_nested_record_is_the_real_one(self):
+        """A record the 8.1.16 driver already nested heals on rewrite:
+        the LAST heading is the block the user actually filled."""
+        cfg = self.write_goal(type="build")
+        p = loop.write_journal(cfg, self.state())
+        nested = p.read_text().replace(
+            "## Feedback (filled by user)",
+            "## Feedback` block survives a rewrite._\n\n## Request\nold\n\n"
+            "## Feedback (filled by user)").replace(
+            "- Rating: [good | ok | bad]", "- Rating: bad")
+        p.write_text(nested)
+        text = loop.write_journal(cfg, self.state()).read_text()
+        self.assertEqual(text.count("## Request"), 1)
+        self.assertIn("- Rating: bad", text)
+
+
+class TestDriverDecidesStall(DriverCase):
+    """journal/from-agentrl-retro-20260918.md, problem 1: five healthy
+    trials killed on a Monitor `stall` verdict; the driver was patched
+    three times in three days toward one rule -- the driver's clock
+    decides, the Monitor only reports."""
+
+    def setUp(self):
+        super().setUp()
+        # A clock that starts at the real time so mtimes are comparable.
+        self.clock = FakeClock(start=self._real_time.time(), step=600.0)
+        loop.time = self.clock
+        self.cfg = self.write_goal(monitor={"interval_min": 1})
+
+    def monitor(self, **verdict):
+        loop.claude = lambda *a, **k: json.dumps(verdict)
+
+    def stamp_log(self, age_seconds):
+        """Popen wrapper that sets the trial log's mtime relative to the
+        REAL clock. The fake clock drifts +600 s per poll, so a fresh
+        file is stamped far in the future; an old one far in the past."""
+        real_popen = loop.subprocess.Popen
+
+        def popen(*a, **k):
+            proc = real_popen(*a, **k)
+            t = self._real_time.time() - age_seconds
+            os.utime(k["stdout"].name, (t, t))
+            return proc
+        loop.subprocess = types.SimpleNamespace(
+            run=loop.subprocess.run, Popen=popen,
+            STDOUT=loop.subprocess.STDOUT)
+
+    def test_a_stall_verdict_on_a_fresh_log_is_overruled(self):
+        self.monitor(status="INTERVENE", signature="stall",
+                     evidence="no new output for 2 intervals")
+        body = "**Trial:** sleep 3\n**Monitor Profile:** stall_min: 120"
+        st = {"iteration": 1}
+        self.stamp_log(-10 ** 7)                    # written "later"
+        self.assertTrue(loop.run_trial("T", body, st, self.cfg))
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("monitor_overruled", kinds)
+        self.assertNotIn("trial_killed", kinds)
+
+    def test_without_stall_min_the_driver_never_kills_on_stall(self):
+        self.monitor(status="INTERVENE", signature="silent_stall",
+                     evidence="x")
+        body = "**Trial:** sleep 3\n**Monitor Profile:** cuda_oom only"
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 1},
+                                       self.cfg))
+        over = [e for e in self.events() if e["event"] == "monitor_overruled"]
+        self.assertTrue(over and "not declared" in over[0]["detail"])
+
+    def test_the_driver_raises_a_stall_the_monitor_missed(self):
+        """The trial log stopped 3 h ago, stall_min is 30, the Monitor
+        says HEALTHY: the driver kills, and names its own clock."""
+        self.monitor(status="HEALTHY")
+        body = "**Trial:** sleep 3\n**Monitor Profile:** stall_min: 30"
+        st = {"iteration": 2}
+        self.stamp_log(3 * 3600)
+        self.assertFalse(loop.run_trial("T", body, st, self.cfg))
+        killed = [e for e in self.events() if e["event"] == "trial_killed"]
+        self.assertTrue(killed and "stall" in killed[0]["detail"])
+
+    def test_declared_writes_paths_count_as_progress(self):
+        """A checkpoint written a minute ago is progress even when the
+        log itself went quiet (v8d: the log was quiet while the store
+        was being written)."""
+        self.monitor(status="HEALTHY")
+        store = self.tmp / "store" / "ckpt"
+        store.mkdir(parents=True)
+        ckpt = store / "step-12.pt"
+        ckpt.write_text("x")
+        t = self._real_time.time() + 10 ** 7        # written "later"
+        os.utime(ckpt, (t, t))
+        body = ("**Trial:** sleep 3\n**Monitor Profile:**\n"
+                "- stall_min: 30\n- writes: store/\n- noise: none")
+        self.stamp_log(3 * 3600)                    # the log went quiet
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 3},
+                                       self.cfg))
+
+    def test_stall_profile_parses_both_keys(self):
+        self.assertEqual(loop.stall_profile(
+            "poll 10 min; stall_min: 45; writes: `results/`, logs/x.log"),
+            (45, ["results/", "logs/x.log"]))
+        self.assertEqual(loop.stall_profile("cuda_oom, nan_loss"),
+                         (None, []))
+
+
+class TestReviewRoundsPerLoop(DriverCase):
+    """journal/from-agentrl-retro-20260918.md, problem 5: 16 review
+    rounds across 6 replans, ~$150 before a measurement, and never one
+    consolidated question to the user."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.claude = lambda *a, **k: ""    # never writes a verdict -> REVISE
+
+    def test_the_cap_counts_across_replans(self):
+        cfg = self.write_goal(type="build")
+        st = {"review_rounds": loop.MAX_REVIEW_ROUNDS, "replans": 1}
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(cfg, st)
+        esc = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertTrue(esc and "max_review_rounds" in esc[0]["detail"],
+                        esc)
+        self.assertEqual(st["review_rounds"], loop.MAX_REVIEW_ROUNDS,
+                         "nothing was bought at the cap")
+
+    def test_each_paid_review_counts_and_a_reused_one_does_not(self):
+        cfg = self.write_goal(type="build")
+        st = {}
+        with self.assertRaises(SystemExit):     # MAX_REVISIONS exhausted
+            loop.phase_contract_review(cfg, st)
+        self.assertEqual(st["review_rounds"], loop.MAX_REVISIONS + 1)
+
+    def test_the_cap_is_a_budget(self):
+        cfg = self.write_goal(type="build",
+                              budgets={"max_usd": 10, "max_iterations": 8,
+                                       "max_review_rounds": 20})
+        st = {"review_rounds": 7}
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(cfg, st)
+        self.assertEqual(st["review_rounds"], 10)
+
+
+class TestApiErrorIsADeadSession(DriverCase):
+    """journal/from-agentrl-retro-20260918.md, problem 8: an API 529
+    reached the driver as valid JSON with `is_error`, so the 8.1.13
+    retry never fired and the replan was charged."""
+
+    def stub(self, *stdouts):
+        seen = []
+        real = loop.subprocess
+
+        def run(*a, **k):
+            out = stdouts[len(seen)]
+            seen.append(out)
+            return types.SimpleNamespace(stdout=out, returncode=0,
+                                         stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        return seen
+
+    def test_is_error_json_is_redispatched_once_and_billed(self):
+        self.write_goal()
+        bad = json.dumps({"type": "result", "subtype": "error_during_execution",
+                          "is_error": True, "total_cost_usd": 0.5,
+                          "result": "API Error: 529 Overloaded"})
+        ok = json.dumps({"total_cost_usd": 2.0, "result": "fine"})
+        seen = self.stub(bad, ok)
+        st = {"spent_usd": 0.0}
+        self.assertEqual(loop.claude(st, "planner", "p"), "fine")
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(st["spent_usd"], 2.5)
+        self.assertFalse(st["session_died"])
+        died = [e for e in self.events() if e["event"] == "session_died"]
+        self.assertEqual(len(died), 1)
+        self.assertIn("529", died[0]["detail"])
+
+
+class TestGateReminder(DriverCase):
+    """journal/from-agentrl-retro-20260918.md, problem 8: a plan gate
+    outlasted a 24.6 h rental with one push at open."""
+
+    def test_a_long_wait_is_re_announced(self):
+        clock = FakeClock(step=3600.0)          # one hour per sleep()
+        loop.time = clock
+        self.write_goal()
+        flag = loop.APPROVALS / "plan.approved"
+        real_exists = Path.exists
+        # the flag appears after 10 sleeps
+        calls = [0]
+
+        def exists(p):
+            if p == flag:
+                calls[0] += 1
+                if calls[0] > 10 and not real_exists(p):
+                    p.write_text("")
+                return calls[0] > 10
+            return real_exists(p)
+        loop.Path.exists = exists
+        self.addCleanup(setattr, loop.Path, "exists", real_exists)
+        loop.wait_approval({}, "plan", "approve the plan")
+        waits = [e for e in self.events() if e["event"] == "approval_waiting"]
+        self.assertEqual(len(waits), 2)          # at 4h and 8h
+        self.assertIn("4.0h", waits[0]["detail"])
+
+
+class TestEffortAndRoleClocks(DriverCase):
+    """2026-09-18 user request: effort per role, passed as --effort;
+    each role's sessions, minutes and spend visible in status and the
+    journal; every timestamp in Taipei time."""
+
+    def stub(self, stdout):
+        seen = []
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            seen.append(cmd)
+            return types.SimpleNamespace(stdout=stdout, returncode=0,
+                                         stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        return seen
+
+    def test_effort_is_validated_per_role(self):
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    loop.validate_goal(self.write_goal(
+                        effort={"planner": "ultra"}))
+                with self.assertRaises(SystemExit):
+                    loop.validate_goal(self.write_goal(
+                        effort={"driver": "high"}))
+            finally:
+                sys.stderr = real
+        loop.validate_goal(self.write_goal(effort={"planner": "max"}))
+        loop.validate_goal(self.write_goal())       # absent = defaults
+
+    def test_effort_reaches_the_cli_and_the_session_event(self):
+        self.write_goal(effort={"generator": "xhigh"})
+        seen = self.stub(json.dumps({"total_cost_usd": 1.0, "result": "r"}))
+        loop.claude({}, "generator", "p")
+        cmd = seen[0]
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "xhigh")
+        loop.claude({}, "planner", "p")
+        self.assertEqual(seen[1][seen[1].index("--effort") + 1], "high")
+        started = [e for e in self.events() if e["event"] == "session"]
+        self.assertIn("effort xhigh", started[0]["detail"])
+
+    def test_each_session_is_timed_and_totalled_per_role(self):
+        clock = FakeClock(step=0.0)
+        loop.time = clock
+        self.write_goal()
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            clock.t += 20 * 60                      # a 20-minute session
+            return types.SimpleNamespace(
+                stdout=json.dumps({"total_cost_usd": 3.0, "result": "r"}),
+                returncode=0, stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        st = {}
+        loop.claude(st, "planner", "p")
+        loop.claude(st, "planner", "p")
+        self.assertEqual(st["roles"]["planner"],
+                         {"sessions": 2, "minutes": 40.0, "usd": 6.0})
+        self.assertNotIn("session_running", st)
+        done = [e for e in self.events() if e["event"] == "session_done"]
+        self.assertEqual(len(done), 2)
+        self.assertEqual(done[0]["minutes"], 20.0)
+        table = "\n".join(loop.role_table(self.write_goal(), st))
+        self.assertRegex(table, r"planner\s+claude-opus-5\s+high\s+2\s+40m\s+\$6\.00")
+
+    def test_status_shows_the_running_role_and_its_elapsed_time(self):
+        clock = FakeClock(step=0.0)
+        loop.time = clock
+        cfg = self.write_goal()
+        st = {"phase": "plan", "session_running": {
+            "role": "planner", "started_epoch": clock.t - 20 * 60}}
+        table = "\n".join(loop.role_table(cfg, st))
+        self.assertIn("<- running 20m", table)
+        loop.save(loop.STATE, st)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            loop.phase_status(cfg)
+        self.assertIn("roles", out.getvalue())
+        self.assertIn("<- running 20m", out.getvalue())
+
+    def test_the_journal_carries_the_role_table(self):
+        cfg = self.write_goal(type="build")
+        st = {"phase": "done", "iteration": 1,
+              "started": "2026-07-31T10:22:18+08:00",
+              "started_epoch": loop.time.time(),
+              "roles": {"evaluator": {"sessions": 3, "minutes": 75.5,
+                                      "usd": 2.5}}}
+        text = loop.write_journal(cfg, st).read_text()
+        self.assertRegex(text, r"evaluator\s+claude-opus-5\s+high\s+3\s+1h15m\s+\$2\.50")
+
+    def test_timestamps_are_taipei_time(self):
+        self.assertTrue(loop.now().endswith("+08:00"), loop.now())
+        loop.event("x")
+        self.assertTrue(self.events()[-1]["ts"].endswith("+08:00"))
+        hook = load_hook()
+        self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,

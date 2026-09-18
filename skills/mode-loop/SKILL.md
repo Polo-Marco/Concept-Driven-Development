@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.16
+version: 8.1.17
 ---
 
 # Mode: Loop (v8.1) — `[loop] <goal>`
@@ -184,6 +184,26 @@ path; `check_criteria()` fails closed on `null`/NaN, so `null` is what
 makes "the measurement did not happen" visible instead of passing.
 Write the rule into the ticket's Spec for every recorder.
 
+**Every read in an experiment Goal states its detectable effect**
+(v8.1.17). For each slice or test read the loop will make, write one
+line in `Goal.md`: `n episodes, SE ≈ x, decision rule fires at ≥ y`.
+If the effect the user plausibly expects is under 2·SE, say so at the
+Ask and either enlarge the read or declare the loop a stability check
+rather than a comparison. Three consecutive training loops ($251 plus
+~100 GPU-h) each ended "within one SE" of the same baseline because no
+Goal had said what the 16-task slice could resolve
+(`journal/from-agentrl-retro-20260918.md`, problem 6). The question at
+the gate is: *what is the smallest effect this read can see?*
+
+**A training Goal writes its stop rule before the first read**
+(v8.1.17). "If the 24 read is under 0.400, stop" cost nothing to honor
+and was the first stop in that deployment decided at the gate instead
+of mid-run; the three mid-run stops before it each came after two reads
+that had already said "within noise". Ask for the rule per read and
+put it under Escalation rules. And if a calendar boundary exists — a
+rental's end, a deadline — it goes in `Goal.md` so the Planner sizes
+the tail for it; a one-hour wrap-up dropped both test reads once.
+
 Also extract:
 
 - **Budgets** — max iterations, replans, wall-clock, USD, and GPU-hours
@@ -209,12 +229,18 @@ Also extract:
   it (`validate_goal()`). Propose a default and let the user change
   any role — for example:
 
-  | Role | Proposed | Why |
-  |---|---|---|
-  | planner | `claude-opus-5` | plans are read by every later session |
-  | generator | `claude-sonnet-5` | many short sessions; the retros name it the weak link — offer `claude-opus-5` or `claude-fable-5-1` when abandoned runs or no-op retries have cost this project before |
-  | evaluator | `claude-opus-5` | the component that pays for itself in every retro |
-  | monitor | `claude-haiku-4-5` | runs every few minutes; must be cheap |
+  | Role | Proposed model | Effort | Why |
+  |---|---|---|---|
+  | planner | `claude-opus-5` | `high` | plans are read by every later session |
+  | generator | `claude-sonnet-5` | `medium` | many short sessions; the retros name it the weak link — offer `claude-opus-5` or `claude-fable-5-1` when abandoned runs or no-op retries have cost this project before |
+  | evaluator | `claude-opus-5` | `high` | the component that pays for itself in every retro |
+  | monitor | `claude-haiku-4-5` | `low` | runs every few minutes; must be cheap |
+
+  **Effort is asked per role too** (v8.1.17): one of `low`, `medium`,
+  `high`, `xhigh`, `max`, written to `goal.json` `effort` and passed
+  to every session as `--effort`. The driver's `status` and the journal
+  show each role's model, effort, session count, minutes and spend, so
+  the pair can be tuned from the record.
 
   Cost is the user's call, never yours: a stronger Generator on a
   rental GPU is often cheaper than a dead session's wall clock
@@ -258,6 +284,18 @@ Rules for preflight checks:
   tickets 7–8, because Step 1 installed the harness and never ran it.
   One preflight line would have failed all three at once, before the
   Planner, for $0 (`journal/from-aibench-retro-20260802.md`).
+- **If the goal introduces a new training path or argv for a pinned
+  framework, one check probes its configuration without a GPU**
+  (v8.1.17): list every assertion the new argv can trip
+  (`validate_config`, micro-batch divisibility, offload/dtype, Hydra
+  `+` append, a field a flag requires) and run the framework's own
+  validator — or a dry-run that reaches its config assertions — as a
+  preflight. Nine of 49 replans in one deployment were such facts
+  discovered by a failed GPU smoke; the same check took seven seconds
+  when a ticket finally ran it (`journal/from-agentrl-retro-
+  20260918.md`, problem 2). Where the argv is not known until the
+  Planner writes it, the Planner owns the same probe as its first
+  ticket (`task-ticket-format.md` self-check).
 - Zero checks is a legal answer, but it must be a **stated conclusion**,
   not an omission. Write "no external preconditions" into Goal.md.
 
@@ -325,6 +363,8 @@ without spending a model call.
   "evaluation_cadence": "per-iteration",
   "models": {"planner": "claude-opus-5", "generator": "claude-sonnet-5",
              "evaluator": "claude-opus-5", "monitor": "claude-haiku-4-5"},
+  "effort": {"planner": "high", "generator": "medium",
+             "evaluator": "high", "monitor": "low"},
   "monitor": {"interval_min": 10},
   "escalate_if": ["free-text conditions the Evaluator must honor"]
 }
@@ -339,8 +379,9 @@ will check, and end with the closing line:
 > `results/test-summary.json` is `>= 20`. Before starting I will run
 > three preflight checks: `.env` has both keys, the endpoint answers,
 > the dataset directory exists. Planner and Evaluator run on
-> `claude-opus-5`, the Generator on `claude-sonnet-5`, the Monitor on
-> `claude-haiku-4-5`. **Nothing else is checked.** Correct?
+> `claude-opus-5` at `high` effort, the Generator on `claude-sonnet-5`
+> at `medium`, the Monitor on `claude-haiku-4-5` at `low`. **Nothing
+> else is checked.** Correct?
 
 "Nothing else is checked" is not politeness — it is what forces out the
 qualifier that lived in your prose and never made it into the JSON.

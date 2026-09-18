@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.1.16
+# Concept-Driven Development (CDD) 8.1.17
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode
@@ -126,13 +126,16 @@ never work around.
    exhausted retry cap (v8.1.16); the user can also queue a replan
    with `loop.py replan "<reason>"`. A ticket PASSes only with its
    Output files, its Run Command's log and the criteria it owns on
-   disk (v8.1.16). Ledger appended every iteration. Budgets checked —
+   disk (v8.1.16). A trial's stall is decided by the driver's clock,
+   never by the Monitor; contract review is capped per loop, not per
+   replan (v8.1.17). Ledger appended every iteration. Budgets checked —
    and re-read — every iteration. Any manual change under a running
    loop is recorded with `loop.py note "<text>"`.
 5. Final evaluation verifies ALL `goal.json` criteria → done. The
    driver writes the loop's `journal/` record on every terminal exit;
    the user fills its Feedback block and closes the loop with
-   `python3 .claude/driver/loop.py close`.
+   `python3 .claude/driver/loop.py close` — which refuses a template
+   Feedback block (v8.1.17).
 
 Remote control: keep an interactive session in tmux with Remote
 Control enabled as the control tower — `status` and `approve` from
