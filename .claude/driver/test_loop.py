@@ -232,13 +232,21 @@ class DriverCase(unittest.TestCase):
         # never emits -- the same leak this loop was written for.
         for _n in ("claude", "git_commit", "subprocess", "sh",
                    "require_cli", "wait_approval", "flush_pregate",
-                   "SESSION_RETRY_SECONDS"):
+                   "SESSION_RETRY_SECONDS", "NETWORK_PROBE_SECONDS",
+                   "MAX_NETWORK_WAIT_MIN", "network_up"):
             self.addCleanup(setattr, loop, _n, getattr(loop, _n))
         # v8.1.13: the retry before a re-dispatch is a real 30s pause in
         # production and must be zero here -- set for EVERY case, not
         # only the ones about it, because any stub that returns
         # unparseable output now costs that pause twice.
         loop.SESSION_RETRY_SECONDS = 0
+        # v8.1.19: the suite is offline, so the connectivity wait is
+        # zero by default (a stubbed 529 would otherwise probe the real
+        # network and sleep for two hours); the B3 cases raise the cap
+        # through goal.json and fake the clock.
+        loop.NETWORK_PROBE_SECONDS = 0
+        loop.MAX_NETWORK_WAIT_MIN = 0
+        loop.network_up = lambda: False
         # the suite is offline by contract; TestAuthGate exercises
         # the real probe with a stubbed subprocess.
         loop.require_cli = lambda: None
@@ -4778,6 +4786,115 @@ class TestEffortAndRoleClocks(DriverCase):
         self.assertTrue(self.events()[-1]["ts"].endswith("+08:00"))
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
+
+# ---------- v8.1.19: a connectivity death is a wait, not an attempt (B3) -
+
+class TestNetworkWaitIsNotAnAttempt(DriverCase):
+    """NVFP4 L2/L5 and DF M0: a 37-minute DNS outage = three burned
+    attempts, a dead adjudicator and an escalation."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = FakeClock(start=1_000_000.0, step=60.0)
+        loop.time = self.clock
+        self.addCleanup(setattr, loop, "network_up", loop.network_up)
+        self.write_goal(budgets={"max_iterations": 8, "max_usd": 10,
+                                 "max_network_wait_min": 3})
+
+    def stub_runs(self, outcomes):
+        """Each outcome: 'net' (connectivity error), 'junk' (unparseable),
+        or 'ok'. Consumed in order; the last one repeats."""
+        real = loop.subprocess
+        seen = []
+
+        def run(cmd, **k):
+            o = outcomes[min(len(seen), len(outcomes) - 1)]
+            seen.append(o)
+            if o == "net":
+                return types.SimpleNamespace(stdout=json.dumps({
+                    "is_error": True, "subtype": "error_api",
+                    "result": "API Error: getaddrinfo EAI_AGAIN "
+                              "api.anthropic.com", "total_cost_usd": 0}),
+                    returncode=0, stderr="")
+            if o == "junk":
+                return types.SimpleNamespace(stdout="not json",
+                                             returncode=1, stderr="boom")
+            return types.SimpleNamespace(stdout=json.dumps(
+                {"total_cost_usd": 0.5, "result": "done"}),
+                returncode=0, stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        return seen
+
+    def test_an_outage_that_ends_is_waited_out_and_redispatched(self):
+        seen = self.stub_runs(["net", "net", "ok"])
+        probes = iter([False, False, True])
+        loop.network_up = lambda: next(probes, True)
+        st = {"run_epoch": self.clock.time(), "run_hours": 0.0}
+        self.assertEqual(loop.claude(st, "generator", "p"), "done")
+        self.assertFalse(st["session_died"])
+        self.assertEqual(seen, ["net", "net", "ok"])
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("network_wait", kinds)
+        self.assertIn("network_restored", kinds)
+        self.assertNotIn("network_wait_exhausted", kinds)
+        self.assertTrue(st.get("run_epoch"), "the clock restarted")
+
+    def test_the_wait_does_not_meter_driver_runtime(self):
+        self.stub_runs(["net", "net", "ok"])
+        probes = iter([False, False, False, True])
+        loop.network_up = lambda: next(probes, True)
+        st = {"run_epoch": self.clock.time(), "run_hours": 0.0}
+        loop.claude(st, "generator", "p")
+        # 4 probe sleeps of 60 s happened; none of them is runtime
+        self.assertLess(loop.wall_hours(st), 4 * 60 / 3600)
+
+    def test_an_outage_that_outlasts_the_cap_is_a_dead_session(self):
+        seen = self.stub_runs(["net"])
+        loop.network_up = lambda: False
+        st = {}
+        loop.claude(st, "generator", "p")
+        self.assertTrue(st["session_died"])
+        self.assertIn("not restored within 3 min", st["session_died_why"])
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("network_wait_exhausted", kinds)
+        self.assertEqual(seen.count("net"), 2, "no re-dispatch storm")
+
+    def test_a_non_connectivity_death_does_not_wait(self):
+        self.stub_runs(["junk"])
+        loop.network_up = lambda: (_ for _ in ()).throw(
+            AssertionError("probed the network for a non-network death"))
+        st = {}
+        loop.claude(st, "evaluator", "p")
+        self.assertTrue(st["session_died"])
+        self.assertNotIn("network_wait",
+                         [e["event"] for e in self.events()])
+
+    def test_a_dead_generator_is_not_an_attempt_in_the_iteration(self):
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.git_commit = lambda msg: "abc1234"
+
+        def dead(st, role, prompt, *a, **k):
+            st["session_died"] = True
+            st["session_died_why"] = "connectivity not restored"
+            return ""
+        loop.claude = dead
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        rows = self.ledger()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].get("session_died"))
+        self.assertEqual(rows[0]["attempt"], 0, "not an attempt")
+        kinds = [e["event"] for e in self.events()]
+        self.assertNotIn("output_gate", kinds)
+        self.assertNotIn("retry", kinds)
+        esc = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertTrue(esc and "infrastructure" in esc[0]["detail"])
+
 
 # ---------- v8.1.18: the record keeps what a retro needs (C1, C2, C8) ----
 

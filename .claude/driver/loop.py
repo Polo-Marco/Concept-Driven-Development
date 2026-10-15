@@ -704,52 +704,50 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
                              "effort": effort, "started_epoch": t0}
     save(STATE, st)
     denials_before = denials_seen()
-    # v8.1.13: a session that DIED is not a session that returned a
-    # judgement, and one dispatch could not tell them apart. On
-    # 2026-08-18 17:10 the provenance Evaluator died on its first token
-    # with API Error 529 Overloaded and wrote nothing; the caller read
-    # the absent verdict.json as ESCALATE and stopped a loop whose 2.7h
-    # trial had already SUCCEEDED, costing a human, a hand-made commit
-    # and a restart -- and a restart costs an iteration
-    # (journal/from-aibench-retro-20260819.md, escalation 2). The retry
-    # is of the SESSION, never of the ticket: re-running the ticket is
-    # what would have re-run the trial.
-    out, r = None, None
-    for attempt in (1, 2):
-        r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
-                           input=prompt,          # v8.1.18: never argv
-                           capture_output=True, timeout=timeout)
-        try:
-            out = json.loads(r.stdout)
-        except (json.JSONDecodeError, AttributeError):
-            out = None
-        if isinstance(out, dict) and not session_errored(out):
+    # v8.1.19: a connectivity death is a WAIT, not an attempt. The
+    # one-shot re-dispatch below bridges a sub-minute blip; a 37-minute
+    # DNS outage produced six dead Generator dispatches = three
+    # "attempts", a dead cap-adjudicator and an escalation, twice in one
+    # deployment and 11 of 16 escalations in another (NVFP4 L2, L5; DF
+    # M0/M1a; journal/retro-20261015-cross-project.md, B3). When the
+    # failure text is the connectivity class, the driver stops its
+    # clock, probes every NETWORK_PROBE_SECONDS until the API answers
+    # (cap: budgets.max_network_wait_min, hot-reloadable), and
+    # re-dispatches. Only a wait that runs out is a dead session.
+    waited_from = None
+    while True:
+        out, why = _dispatch_twice(st, role, cmd, env, prompt, timeout)
+        if out is not None or not CONNECTIVITY.search(why):
             break
-        # v8.1.17: the CLI reports an upstream failure as VALID JSON
-        # (`is_error: true`, `subtype: error_*`) with exit 0, so the
-        # 8.1.13 retry -- keyed on unparseable output -- never fired
-        # for the fault it was written for: an API 529 killed a Planner
-        # that then "wrote nothing", and the replan was charged
-        # (journal/from-agentrl-retro-20260918.md, problem 8). Its
-        # cost is still billed; the dispatch is the one thing retried.
-        err = str(out.get("result", ""))[:160] if isinstance(out, dict) \
-            else ""
-        if isinstance(out, dict):
-            st["spent_usd"] = round(st.get("spent_usd", 0.0)
-                                    + out.get("total_cost_usd", 0.0), 4)
-        out = None
-        # getattr: the offline suite stubs subprocess.run with a bare
-        # stdout, and a crash HERE would be a driver defect invented by
-        # its own diagnostics.
-        why = (f"{role}: exit {getattr(r, 'returncode', '?')}, "
-               + (f"API error: {err}" if err else
-                  f"no usable output{_tail(getattr(r, 'stderr', ''))}"))
-        if attempt == 1:
-            event("session_died", detail=f"{why} -- redispatching once")
-            if SESSION_RETRY_SECONDS:
-                time.sleep(SESSION_RETRY_SECONDS)
-        else:
-            event("session_died", detail=f"{why} -- giving up")
+        cap_min = load(GOAL, {}).get("budgets", {}).get(
+            "max_network_wait_min", MAX_NETWORK_WAIT_MIN)
+        if waited_from is None:
+            waited_from = time.time()
+            clock_stop(st)                 # an outage is not driver time
+            event("network_wait", detail=f"{role}: {why} -- waiting for "
+                                          f"connectivity, up to {cap_min} "
+                                          f"min, probing every "
+                                          f"{NETWORK_PROBE_SECONDS}s")
+        up = False
+        while not up and time.time() - waited_from < cap_min * 60:
+            time.sleep(NETWORK_PROBE_SECONDS)
+            up = network_up()
+        if not up:
+            st["session_died_why"] = (f"connectivity not restored within "
+                                      f"{cap_min} min ({why})")
+            event("network_wait_exhausted", detail=st["session_died_why"])
+            clock_start(st)
+            break
+        event("network_restored",
+              detail=f"after {(time.time() - waited_from) / 60:.0f} min "
+                     f"-- re-dispatching {role}")
+        clock_start(st)
+        waited_from = None
+    if out is None and "session_died_why" not in st:
+        st["session_died_why"] = why
+    if out is not None:
+        st.pop("session_died_why", None)
+    r = _LAST_RUN[0]
     st["session_died"] = out is None
     st.pop("session_running", None)
     minutes = (time.time() - t0) / 60
@@ -764,12 +762,6 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
           usd=round(usd, 4))
     new_denials = denial_records()[denials_before:]
     if new_denials:
-        # v8.1.18: the event QUOTES the denials -- message, command and
-        # the net/token the hook names since 8.1.18 -- because a count
-        # alone could not be classified once the worktree (and its
-        # logs/) was gone: 11 of 13 denials in one deployment and 1 of 6
-        # in another are unknowable today
-        # (journal/retro-20261015-cross-project.md, C8).
         quoted = "; ".join(
             " | ".join(f for f in ln.split("\t")[2:5] if f)[:240]
             for ln in new_denials)
@@ -778,20 +770,72 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
                      f"{quoted}")
     if out is None:
         save(STATE, st)
-        return r.stdout
+        return getattr(r, "stdout", "") or ""
     st["spent_usd"] = round(st.get("spent_usd", 0.0)
                             + out.get("total_cost_usd", 0.0), 4)
     save(STATE, st)          # safe now: the same dict every caller holds
     return out.get("result", "")
 
 
-# ---------- plan parsing (dumb, format-bound) --------------------------
+# The CLI's connectivity failures, as their text reaches the driver. An
+# API 529 (overloaded) is the same class: nothing about the ticket is
+# wrong, and the next attempt will not change the outcome either.
+CONNECTIVITY = re.compile(
+    r"EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|"
+    r"Can't reach|Could not connect|Connection error|fetch failed|"
+    r"getaddrinfo|\b529\b|overloaded", re.I)
+MAX_NETWORK_WAIT_MIN = 120
+NETWORK_PROBE_SECONDS = 60
+_LAST_RUN = [None]              # the last subprocess result, for callers
 
-# v8.1.4: any heading LEVEL, because a Planner writes `##` as readily as
-# `###` and the level carries no meaning the driver uses. What still
-# makes it a ticket is `Phase N, Step M:` -- that part is the contract.
-# Pinned to exactly `### `, the second toy run parsed zero tickets out of
-# a three-ticket plan. See tickets() for the half that mattered more.
+
+def network_up() -> bool:
+    """One cheap probe: DNS plus a TLS handshake to the API host.
+    Stubbed by the offline suite; never raises."""
+    try:
+        import socket
+        with socket.create_connection(("api.anthropic.com", 443),
+                                      timeout=10):
+            return True
+    except OSError:
+        return False
+
+
+def _dispatch_twice(st: dict, role: str, cmd: list, env: dict,
+                    prompt: str, timeout: int):
+    """The v8.1.13/v8.1.17 dispatch: run, re-run once after a pause if
+    the session died, bill what was billed. Returns (result dict or
+    None, the last failure's one-line why)."""
+    out, why = None, ""
+    for attempt in (1, 2):
+        r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
+                           input=prompt,          # v8.1.18: never argv
+                           capture_output=True, timeout=timeout)
+        _LAST_RUN[0] = r
+        try:
+            out = json.loads(r.stdout)
+        except (json.JSONDecodeError, AttributeError):
+            out = None
+        if isinstance(out, dict) and not session_errored(out):
+            return out, ""
+        err = str(out.get("result", ""))[:160] if isinstance(out, dict) \
+            else ""
+        if isinstance(out, dict):
+            st["spent_usd"] = round(st.get("spent_usd", 0.0)
+                                    + out.get("total_cost_usd", 0.0), 4)
+        out = None
+        why = (f"{role}: exit {getattr(r, 'returncode', '?')}, "
+               + (f"API error: {err}" if err else
+                  f"no usable output{_tail(getattr(r, 'stderr', ''))}"))
+        if attempt == 1:
+            event("session_died", detail=f"{why} -- redispatching once")
+            if SESSION_RETRY_SECONDS:
+                time.sleep(SESSION_RETRY_SECONDS)
+        else:
+            event("session_died", detail=f"{why} -- giving up")
+    return None, why
+
+
 # v8.1.18: the not-done marker ` [ ]` is part of the grammar too. The
 # pattern accepted only the driver's own ` [x]`, so a Planner that wrote
 # `### Phase 1, Step 1 [ ]: Title` -- the natural checklist form --
@@ -1908,6 +1952,32 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                          f"{st['iteration']}.log" + prior,
                          field(body, "Boundary"))
             wrote_nothing = tree_fingerprint() == before
+            if st.get("session_died"):
+                # v8.1.19: a session that never ran is not an attempt.
+                # It used to fall through to the output gate ("the Run
+                # Command left no log"), be RETRIED, consume the attempt
+                # cap, kill a dead adjudicator and escalate -- 12
+                # output-gate RETRYs on sessions that never ran in one
+                # deployment (journal/retro-20261015-cross-project.md,
+                # B3). claude() has already waited out a connectivity
+                # outage by now (network_wait); what is left is a
+                # session that could not be bought at all.
+                attempt -= 1
+                v = {"verdict": "ESCALATE",
+                     "reason": "infrastructure: the generator session "
+                               "could not be dispatched -- "
+                               + str(st.get("session_died_why", ""))
+                               + ". Not an attempt: nothing ran and "
+                                 "nothing was judged. Restart the driver "
+                                 "when the API is reachable.",
+                     "evidence": []}
+                LEDGER.open("a").write(json.dumps(
+                    {"ts": now(), "iteration": st["iteration"],
+                     "ticket": tid, "attempt": attempt,
+                     "verdict": "ESCALATE", "reason": v["reason"],
+                     "evidence": [], "session_died": True}) + "\n")
+                verdict = "ESCALATE"
+                break
             if "STATUS: stopped" in rep:
                 # v8.1.4: still the last 400 characters -- the reason is
                 # at the end of a stop report -- but cut at a word
