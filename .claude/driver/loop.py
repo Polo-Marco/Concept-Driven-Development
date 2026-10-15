@@ -629,11 +629,19 @@ def denials_seen() -> int:
     # by a multi-line command it did not escape -- still reads as one
     # denial per record: a record starts with its ISO timestamp
     # (journal/from-agentrl-retro-20260902.md, problem 9).
+    return len(denial_records())
+
+
+def denial_records() -> list:
+    """Every record in logs/denials.log, one string each (v8.1.18). A
+    record starts with its ISO timestamp; continuation lines an older
+    hook wrote belong to the record above them and are not counted."""
     try:
-        return sum(1 for line in (ROOT / "logs" / "denials.log").open()
-                   if line[:4].isdigit())
+        return [ln.rstrip("\n")
+                for ln in (ROOT / "logs" / "denials.log").open()
+                if ln[:4].isdigit()]
     except OSError:
-        return 0
+        return []
 
 
 def session_errored(out: dict) -> bool:
@@ -748,11 +756,20 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     event("session_done", detail=f"{role} finished in {minutes:.1f}m, "
                                  f"${usd:.2f}", minutes=round(minutes, 2),
           usd=round(usd, 4))
-    new_denials = denials_seen() - denials_before
+    new_denials = denial_records()[denials_before:]
     if new_denials:
+        # v8.1.18: the event QUOTES the denials -- message, command and
+        # the net/token the hook names since 8.1.18 -- because a count
+        # alone could not be classified once the worktree (and its
+        # logs/) was gone: 11 of 13 denials in one deployment and 1 of 6
+        # in another are unknowable today
+        # (journal/retro-20261015-cross-project.md, C8).
+        quoted = "; ".join(
+            " | ".join(f for f in ln.split("\t")[2:5] if f)[:240]
+            for ln in new_denials)
         event("hook_denials",
-              detail=f"{role}: {new_denials} authority denial(s) -- "
-                     f"see logs/denials.log")
+              detail=f"{role}: {len(new_denials)} authority denial(s) -- "
+                     f"{quoted}")
     if out is None:
         save(STATE, st)
         return r.stdout
@@ -2254,22 +2271,48 @@ def write_journal(cfg: dict, st: dict) -> Path:
     # additions are the transitions a retro reads first: a stop's
     # adjudication, a trial that died on its own, a review cut short, a
     # Monitor kill the driver overruled, and the user's own notes.
+    # v8.1.18: `approval_waiting` and `wip_committed` join it -- a gate
+    # that waited 14 h left no trace of whether the 4-hour nudge fired
+    # (NVFP4 L5, L11; journal/retro-20261015-cross-project.md, C1).
     notable = ("escalate", "replan", "regression", "no_op_session",
                "first_green", "trial_killed", "commit_failed",
                "plan_rejected", "goal_reached", "session_died",
                "hook_denials", "stop_adjudicated", "trial_failed",
                "contract_review_halted", "monitor_overruled",
-               "output_gate", "note")
+               "output_gate", "note", "approval_waiting", "wip_committed")
     evs = []
+    # v8.1.18: a STREAK of `session_died` is one line with a count and a
+    # time window. A 37-minute DNS outage wrote 50 identical lines into
+    # one record, burying the three events that mattered (DF M0;
+    # journal/retro-20261015-cross-project.md, C2).
+    streak = None                 # [first ts, last ts, count, detail]
+
+    def flush() -> None:
+        if not streak:
+            return
+        first, last, n, detail = streak
+        when = f"`{first}`" if n == 1 else f"`{first}`–`{last}` ×{n}"
+        evs.append(f"- {when} **session_died** — {detail}")
     if EVENTS.exists():
         for line in EVENTS.read_text().splitlines():
             try:
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if e.get("event") in notable:
-                evs.append(f"- `{e['ts'][11:19]}` **{e['event']}** — "
-                           + str(e.get("detail", "")))
+            if e.get("event") not in notable:
+                continue
+            ts = str(e.get("ts", ""))[11:19]
+            if e["event"] == "session_died":
+                if streak:
+                    streak[1], streak[2] = ts, streak[2] + 1
+                else:
+                    streak = [ts, ts, 1, str(e.get("detail", ""))]
+                continue
+            flush()
+            streak = None
+            evs.append(f"- `{ts}` **{e['event']}** — "
+                       + str(e.get("detail", "")))
+        flush()
 
     out = [f"# Session Journal — loop ({cfg.get('type', '?')}) — "
            f"{st.get('started', '?')}", "",
@@ -2303,7 +2346,9 @@ def write_journal(cfg: dict, st: dict) -> Path:
                 "|---|---|---|---|---|"] + [
             f"| {r.get('iteration')} | {r.get('ticket')} | "
             f"{r.get('attempt')} | {r.get('verdict')} | "
-            + str(r.get("reason", "")).replace("|", "/")[:120] + " |"
+            # v8.1.18: 400, not 120 -- every REPLAN reason in two
+            # records ended mid-sentence (DF; retro-20261015, C2).
+            + str(r.get("reason", "")).replace("|", "/")[:400] + " |"
             for r in rows] + [""]
     if evs:
         out += ["## Notable events"] + evs + [""]

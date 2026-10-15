@@ -4779,6 +4779,77 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.18: the record keeps what a retro needs (C1, C2, C8) ----
+
+class TestJournalKeepsWhatARetroNeeds(DriverCase):
+    """journal/retro-20261015-cross-project.md, section 2C."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+
+    def state(self):
+        return {"phase": "done", "iteration": 3, "replans": 1,
+                "spent_usd": 1.0, "started": "2026-10-15T10:00:00+08:00",
+                "started_epoch": loop.time.time()}
+
+    def test_c1_a_long_gate_wait_is_in_the_record(self):
+        cfg = self.write_goal()
+        loop.event("approval_waiting", gate="plan",
+                   detail="plan gate open 4.0h; approve when ready")
+        text = loop.write_journal(cfg, self.state()).read_text()
+        self.assertIn("**approval_waiting**", text)
+
+    def test_c2_a_streak_of_dead_sessions_is_one_line(self):
+        cfg = self.write_goal()
+        for _ in range(5):
+            loop.event("session_died", detail="generator: EAI_AGAIN")
+        loop.event("escalate", detail="no usable verdict")
+        loop.event("session_died", detail="evaluator: 529")
+        text = loop.write_journal(cfg, self.state()).read_text()
+        self.assertEqual(text.count("**session_died**"), 2)
+        self.assertIn("×5 **session_died** — generator: EAI_AGAIN", text)
+        self.assertIn("**escalate** — no usable verdict", text)
+        # order is kept: the streak is flushed before the escalation
+        self.assertLess(text.index("×5"), text.index("**escalate**"))
+
+    def test_c2_a_replan_reason_is_not_cut_mid_sentence(self):
+        cfg = self.write_goal()
+        reason = "plan defect: " + "the Spec contradicts Goal.md " * 12
+        loop.LEDGER.write_text(json.dumps(
+            {"ts": "t", "iteration": 2, "ticket": "Phase 1, Step 1",
+             "attempt": 1, "verdict": "REPLAN", "reason": reason,
+             "evidence": [], "criteria": []}) + "\n")
+        text = loop.write_journal(cfg, self.state()).read_text()
+        self.assertGreater(len(reason), 120)
+        self.assertIn(reason, text)
+
+    def test_c8_hook_denials_event_quotes_the_denial(self):
+        self.write_goal()
+        log = self.tmp / "logs" / "denials.log"
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            with log.open("a") as fh:          # the hook, mid-session
+                fh.write("2026-10-15T10:01:00+08:00\tgenerator\t"
+                         "Core files are read-only to the Generator.\t"
+                         "Bash: echo x > Plan.md\tnet=target "
+                         "token=plan.md\tfull=-\n")
+            return types.SimpleNamespace(
+                stdout=json.dumps({"total_cost_usd": 0.1, "result": "r"}),
+                returncode=0, stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        loop.claude({}, "generator", "p")
+        den = [e for e in self.events() if e["event"] == "hook_denials"]
+        self.assertEqual(len(den), 1)
+        self.assertIn("1 authority denial", den[0]["detail"])
+        self.assertIn("Core files are read-only", den[0]["detail"])
+        self.assertIn("echo x > Plan.md", den[0]["detail"])
+        self.assertIn("net=target token=plan.md", den[0]["detail"])
+
+
 # ---------- v8.1.18: a user replan flushes the ticket's work first (B5) --
 
 class TestUserReplanCommitsWip(DriverCase):
