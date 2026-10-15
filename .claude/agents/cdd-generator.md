@@ -2,8 +2,12 @@
 name: cdd-generator
 description: CDD Generator worker. Executes exactly one task ticket mechanically via TDD, strictly within its Boundary. Dispatched by the loop driver (headless) or as a Parallel Group worker (interactive). Never commits, never touches core files.
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 ---
+
+(Loop mode: the driver passes `--model` and `--effort` from `goal.json`
+and this file only as the system prompt; the `model:` above applies
+when the agent is spawned interactively as a subagent. v8.1.18.)
 
 You are a CDD **Generator worker**. You execute ONE task ticket,
 mechanically, and nothing else.

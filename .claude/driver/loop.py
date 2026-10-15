@@ -76,9 +76,15 @@ NOTIFY = ROOT / ".claude" / "driver" / "notify.sh"  # optional plug-in
 # the component that pays for itself, the Monitor runs every few
 # minutes and must be cheap (journal/from-agentrl-retro-20260902.md,
 # rec 8).
-DEFAULT_MODELS = {"planner": "claude-opus-5",
-                  "generator": "claude-sonnet-5",
-                  "evaluator": "claude-opus-5",
+# v8.1.18: the defaults are what the seven 2026-10-15 deployments actually
+# ran -- opus-5-5 / sonnet-5-5 for Planner-Evaluator / Generator (every
+# deployment that switched the Generator to sonnet-5-5 reported zero
+# Generator-side defects at about half the cost), haiku-4-5 for the
+# Monitor (six of seven). goal.json `models` always wins; these apply
+# only when a role is not named there (retro-20261015, C7).
+DEFAULT_MODELS = {"planner": "claude-opus-5-5",
+                  "generator": "claude-sonnet-5-5",
+                  "evaluator": "claude-opus-5-5",
                   "monitor": "claude-haiku-4-5"}
 # v8.1.17: reasoning effort per role, passed to the CLI as `--effort`.
 # The Planner and Evaluator are read by every later session and pay
@@ -2596,13 +2602,13 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
         die("tmux is not installed. Either install it, or run the driver "
             "in the foreground:\n"
             f"  cd {target} && python3 .claude/driver/loop.py "
-            "2>&1 | tee logs/driver.log")
+            "2>&1 | tee -a logs/driver.log")
 
     flag = " --here" if allow_here else ""
     inner = (f"cd {shlex.quote(str(target))} && "
              f"CLAUDE_PROJECT_DIR={shlex.quote(str(target))} "
              f"python3 .claude/driver/loop.py{flag} "
-             f"2>&1 | tee logs/driver.log")
+             f"2>&1 | tee -a logs/driver.log")
     r = subprocess.run(["tmux", "new-session", "-d", "-s", name, inner],
                        text=True, capture_output=True)
     if r.returncode != 0:
@@ -2642,7 +2648,9 @@ def role_table(cfg: dict, st: dict, live: bool = True) -> list:
     """Per-role model, effort, sessions, time and spend (v8.1.17), with
     the running session's elapsed time when `live`."""
     run = st.get("session_running") or {}
-    rows = ["roles       model                 effort  sessions  time     spend"]
+    # v8.1.18: 28-wide model column -- `claude-haiku-4-5-20251001low`
+    # overflowed the 22 (JEVI; retro-20261015, C7).
+    rows = ["roles       model                       effort  sessions  time     spend"]
     for role in ROLES:
         model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
         effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
@@ -2650,7 +2658,7 @@ def role_table(cfg: dict, st: dict, live: bool = True) -> list:
         mins = t.get("minutes", 0.0)
         clock = f"{int(mins // 60)}h{int(mins % 60):02d}m" if mins >= 60 \
             else f"{mins:.0f}m"
-        line = (f"  {role:<10}{model:<22}{effort:<8}{t.get('sessions', 0):<10}"
+        line = (f"  {role:<10}{model:<28}{effort:<8}{t.get('sessions', 0):<10}"
                 f"{clock:<9}${t.get('usd', 0.0):.2f}")
         if live and run.get("role") == role:
             up = (time.time() - run.get("started_epoch", time.time())) / 60

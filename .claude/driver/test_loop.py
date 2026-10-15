@@ -1825,7 +1825,7 @@ class TestStart(DriverCase):
         # An inherited CLAUDE_PROJECT_DIR would point the child at the
         # PRIMARY tree, so it is pinned explicitly rather than inferred.
         self.assertIn(f"CLAUDE_PROJECT_DIR={self.tmp}", cmd[5])
-        self.assertIn("tee logs/driver.log", cmd[5])
+        self.assertIn("tee -a logs/driver.log", cmd[5])
         self.assertIn("--here", cmd[5])
 
     def test_preflight_runs_before_anything_is_created(self):
@@ -4746,7 +4746,7 @@ class TestEffortAndRoleClocks(DriverCase):
         self.assertEqual(len(done), 2)
         self.assertEqual(done[0]["minutes"], 20.0)
         table = "\n".join(loop.role_table(self.write_goal(), st))
-        self.assertRegex(table, r"planner\s+claude-opus-5\s+high\s+2\s+40m\s+\$6\.00")
+        self.assertRegex(table, r"planner\s+claude-opus-5-5\s+high\s+2\s+40m\s+\$6\.00")
 
     def test_status_shows_the_running_role_and_its_elapsed_time(self):
         clock = FakeClock(step=0.0)
@@ -4770,7 +4770,7 @@ class TestEffortAndRoleClocks(DriverCase):
               "roles": {"evaluator": {"sessions": 3, "minutes": 75.5,
                                       "usd": 2.5}}}
         text = loop.write_journal(cfg, st).read_text()
-        self.assertRegex(text, r"evaluator\s+claude-opus-5\s+high\s+3\s+1h15m\s+\$2\.50")
+        self.assertRegex(text, r"evaluator\s+claude-opus-5-5\s+high\s+3\s+1h15m\s+\$2\.50")
 
     def test_timestamps_are_taipei_time(self):
         self.assertTrue(loop.now().endswith("+08:00"), loop.now())

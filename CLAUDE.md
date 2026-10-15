@@ -109,7 +109,7 @@ never work around.
    machine-checkable; writes `Goal.md` + `goal.json`; user confirms;
    files freeze.
 2. User starts the driver (tmux):
-   `python3 .claude/driver/loop.py 2>&1 | tee logs/driver.log`.
+   `python3 .claude/driver/loop.py 2>&1 | tee -a logs/driver.log`.
 3. Driver: five deterministic gates (machinery / goal-contract
    shape / worktree isolation / preflight / evidence — nothing is
    planned or spent until all five pass; the evidence gate refuses a

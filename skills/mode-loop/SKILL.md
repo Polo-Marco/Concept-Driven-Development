@@ -231,10 +231,10 @@ Also extract:
 
   | Role | Proposed model | Effort | Why |
   |---|---|---|---|
-  | planner | `claude-opus-5` | `high` | plans are read by every later session |
-  | generator | `claude-sonnet-5` | `medium` | many short sessions; the retros name it the weak link — offer `claude-opus-5` or `claude-fable-5-1` when abandoned runs or no-op retries have cost this project before |
-  | evaluator | `claude-opus-5` | `high` | the component that pays for itself in every retro |
-  | monitor | `claude-haiku-4-5` | `low` | runs every few minutes; must be cheap |
+  | planner | `claude-opus-5-5` | `high` | plans are read by every later session |
+  | generator | `claude-sonnet-5-5` | `medium` | many short sessions; every 2026-10 deployment that moved here from opus reported zero Generator-side defects at about half the cost (JEV 19/19 first-attempt passes, STAGES 70 tickets, NVFP4, JEVI) — offer `claude-opus-5-5` or `claude-fable-5-1` only when abandoned runs or no-op retries have cost this project before |
+  | evaluator | `claude-opus-5-5` | `high` | the component that pays for itself in every retro |
+  | monitor | `claude-haiku-4-5` | `low` | runs every few minutes; must be cheap — never an opus-class model (one loop paid $26 for 68 HEALTHY readings) |
 
   **Effort is asked per role too** (v8.1.17): one of `low`, `medium`,
   `high`, `xhigh`, `max`, written to `goal.json` `effort` and passed
@@ -361,8 +361,8 @@ without spending a model call.
               "max_gpu_hours": 40, "max_wall_hours": 24,
               "max_usd": 60},
   "evaluation_cadence": "per-iteration",
-  "models": {"planner": "claude-opus-5", "generator": "claude-sonnet-5",
-             "evaluator": "claude-opus-5", "monitor": "claude-haiku-4-5"},
+  "models": {"planner": "claude-opus-5-5", "generator": "claude-sonnet-5-5",
+             "evaluator": "claude-opus-5-5", "monitor": "claude-haiku-4-5"},
   "effort": {"planner": "high", "generator": "medium",
              "evaluator": "high", "monitor": "low"},
   "monitor": {"interval_min": 10},
@@ -379,7 +379,7 @@ will check, and end with the closing line:
 > `results/test-summary.json` is `>= 20`. Before starting I will run
 > three preflight checks: `.env` has both keys, the endpoint answers,
 > the dataset directory exists. Planner and Evaluator run on
-> `claude-opus-5` at `high` effort, the Generator on `claude-sonnet-5`
+> `claude-opus-5-5` at `high` effort, the Generator on `claude-sonnet-5-5`
 > at `medium`, the Monitor on `claude-haiku-4-5` at `low`. **Nothing
 > else is checked.** Correct?
 
@@ -408,7 +408,7 @@ python3 .claude/driver/loop.py start
 `start` exists because every step it replaces was mechanical: the driver
 refuses to run in the primary working tree (it commits with
 `git add -A`), so a loop needs its own worktree — but creating it, cd-ing
-into it, remembering `| tee logs/driver.log`, and keeping a second shell
+into it, remembering `| tee -a logs/driver.log`, and keeping a second shell
 around for `approve` never needed a human. Relay `start`'s output to the
 user; it names the tmux session, the log path, and the two commands they
 may want.
