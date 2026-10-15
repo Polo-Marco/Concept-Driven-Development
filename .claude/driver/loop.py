@@ -663,7 +663,15 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
     sys_prompt = (AGENTS / f"cdd-{role}.md").read_text()
     env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": boundary}
-    cmd = ["claude", "-p", prompt, "--model", model, "--effort", effort,
+    # v8.1.18: the prompt travels on STDIN, not argv. A replan prompt
+    # carries the ledger, the Evaluation and the reason, and at 128 KB+
+    # it hit the kernel's argument limit (E2BIG): the driver crashed,
+    # the replan counter was already incremented, and the loop resumed
+    # one replan poorer -- in three deployments (STAGES s8 20:52, NVFP4
+    # L5, JEV loop 5), each patching its own copy
+    # (journal/retro-20261015-cross-project.md, B2). `claude -p` with
+    # no positional reads the prompt from stdin; nothing else changes.
+    cmd = ["claude", "-p", "--model", model, "--effort", effort,
            "--append-system-prompt", sys_prompt,
            "--output-format", "json",
            "--dangerously-skip-permissions"]  # hook = enforcement layer
@@ -695,6 +703,7 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     out, r = None, None
     for attempt in (1, 2):
         r = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
+                           input=prompt,          # v8.1.18: never argv
                            capture_output=True, timeout=timeout)
         try:
             out = json.loads(r.stdout)

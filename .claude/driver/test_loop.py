@@ -4779,6 +4779,35 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.18: the prompt travels on stdin (B2) --------------------
+
+class TestPromptOnStdin(DriverCase):
+    """A 128 KB+ replan prompt on argv hit E2BIG and crashed the driver
+    after the replan counter was incremented, in three deployments."""
+
+    def test_prompt_is_passed_as_input_not_as_an_argument(self):
+        seen = []
+        real = loop.subprocess
+
+        def run(cmd, **k):
+            seen.append((cmd, k))
+            return types.SimpleNamespace(
+                stdout=json.dumps({"total_cost_usd": 0.1, "result": "r"}),
+                returncode=0, stderr="")
+        loop.subprocess = types.SimpleNamespace(
+            run=run, Popen=real.Popen, STDOUT=real.STDOUT)
+        self.addCleanup(lambda: setattr(loop, "subprocess", real))
+        self.write_goal()
+        big = "ledger " * 40_000                      # ~280 KB
+        loop.claude({}, "planner", big)
+        cmd, kwargs = seen[0]
+        self.assertEqual(kwargs.get("input"), big)
+        self.assertNotIn(big, cmd)
+        self.assertEqual(cmd[:2], ["claude", "-p"])
+        self.assertTrue(all(len(a) < 128_000 for a in cmd),
+                        "no argv element may approach the E2BIG limit")
+
+
 # ---------- v8.1.18: five hook false positives from seven deployments ---
 
 class TestHookFalsePositives20261015(HookCaller, unittest.TestCase):
