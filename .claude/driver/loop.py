@@ -1668,15 +1668,13 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                 # replans that disputed nothing in Goal.md
                 # (journal/retro-20261015-cross-project.md, B6). The
                 # escalation now lists what each paid round was.
-                if VERDICT.exists():
-                    VERDICT.unlink()      # never read a stale verdict
                 if revision:
                     st["review_rounds"] = st.get("review_rounds", 0) + 1
-                claude(st, "evaluator",
-                       "Mode 1 -- contract review. Read Plan.md, Goal.md, "
-                       "goal.json, and the Architecture Overview. Audit "
-                       "per your instructions; write Evaluation.md and "
-                       "verdict.json.")
+                evaluator_verdict(
+                    st, "Mode 1 -- contract review. Read Plan.md, Goal.md, "
+                        "goal.json, and the Architecture Overview. Audit "
+                        "per your instructions; write Evaluation.md and "
+                        "verdict.json.")
                 # v8.1: fail-CLOSED. A missing or corrupt verdict from a
                 # safety pre-gate used to default to "OK", which silently
                 # passed the gate whenever the Evaluator crashed or wrote
@@ -1814,7 +1812,35 @@ def reload_criteria(cfg: dict) -> None:
                  + "; ".join(diff))
 
 
-def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0) -> dict:
+def evaluator_verdict(st: dict, prompt: str) -> None:
+    """Dispatch an Evaluator session whose contract is to write
+    verdict.json, and re-dispatch ONCE if a LIVE session came back
+    without one.
+
+    v8.1.19. The dead-session retry (v8.1.13/17) covers a session that
+    died; it never covered one that exited 0 having written nothing --
+    STAGES s8 21:15: the absent verdict.json was read straight as
+    ESCALATE and a human was woken for a session that simply forgot its
+    last step (journal/retro-20261015-cross-project.md, B10). A dead
+    session is NOT retried here a third time: claude() already did its
+    two, and session_died says so.
+    """
+    if VERDICT.exists():
+        VERDICT.unlink()                  # never read a stale verdict
+    claude(st, "evaluator", prompt)
+    if not VERDICT.exists() and not st.get("session_died"):
+        event("verdict_missing",
+              detail="evaluator returned without verdict.json -- "
+                     "re-dispatching once")
+        claude(st, "evaluator", prompt
+               + "\n\nYour previous session ended WITHOUT writing "
+                 "verdict.json. Write Evaluation.md and verdict.json this "
+                 "time: a missing verdict is read as ESCALATE and wakes a "
+                 "human.")
+
+
+def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0,
+                    trial: bool = False) -> dict:
     """Route a Generator stop -- REPLAN, RETRY, or ESCALATE -- decided
     by one bounded read-only Evaluator session, not by the driver.
 
@@ -1875,13 +1901,35 @@ def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0) -> dict:
                 f"Evaluation.md and verdict.json.")
         fallback = (f"generator stopped: {tail} -- and the stop "
                     f"adjudication returned no usable verdict")
-    claude(st, "evaluator", what)
+    if trial:
+        # v8.1.19 (B11): a Trial that failed twice with an IDENTICAL
+        # config is adjudicated, not relaunched a third time. Protocol #5
+        # covers nondeterministic deaths; JEV loop 3 relaunched a vLLM
+        # OOM verbatim and bought nothing.
+        what = (f"Mode 3 -- trial-failure adjudication. The Trial for "
+                f"ticket '{tid}' did not complete on {cap} consecutive "
+                f"attempts with an IDENTICAL launch config, so relaunching "
+                f"bought nothing. The failures, oldest first:\n\n{tail}\n\n"
+                f"Read Plan.md, Goal.md, goal.json, the trial ledger and "
+                f"the trial logs per your instructions, and decide where "
+                f"the defect lives. verdict.json's verdict MUST be one of: "
+                f"REPLAN (the Trial line, its config or the environment "
+                f"it assumes is defective and a fresh plan could fix it), "
+                f"RETRY (the deaths are plausibly nondeterministic and ONE "
+                f"more identical launch is warranted -- granted once), or "
+                f"ESCALATE (the defect implicates Goal.md/goal.json, the "
+                f"host, or anything no replan can fix). Write "
+                f"Evaluation.md and verdict.json.")
+        fallback = (f"trial did not complete {cap} times -- and the "
+                    f"adjudication returned no usable verdict")
+    evaluator_verdict(st, what)
     v = load(VERDICT, {})
     if v.get("verdict") not in ("REPLAN", "RETRY", "ESCALATE"):
         v = {"verdict": "ESCALATE", "reason": fallback, "evidence": []}
+    kind = " (trial)" if trial else " (retry cap)" if cap else ""
     event("stop_adjudicated",
-          detail=f"{tid}{' (retry cap)' if cap else ''}: {v['verdict']} "
-                 f"-- " + str(v.get("reason", "")))
+          detail=f"{tid}{kind}: {v['verdict']} -- "
+                 + str(v.get("reason", "")))
     return v
 
 
@@ -2011,6 +2059,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
         # has been adjudicated since 8.1.15; a cap now takes the same
         # route ONCE, and a RETRY verdict buys exactly one more attempt.
         attempt, max_attempts, extended = 0, 3, False
+        trial_fails = 0               # v8.1.19 (B11): identical relaunches
         while attempt < max_attempts:                     # RETRY <= 3 (+1)
             attempt += 1
             # v8.1.6: a retry carries WHY. The dispatch used to be the
@@ -2125,10 +2174,29 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             gaps = output_gaps(body, tid, st["iteration"], dispatched,
                                crit, due) if trial_ok else []
             if not trial_ok:
-                v = {"verdict": "RETRY",
-                     "reason": "trial did not complete "
-                               "(see events.jsonl / monitor)",
-                     "evidence": [criteria_line(r) for r in crit]}
+                trial_fails += 1
+                if trial_fails >= 2:
+                    # v8.1.19 (B11): the second identical death is
+                    # adjudicated, not relaunched (Protocol #5 is for
+                    # nondeterministic deaths; JEV loop 3 relaunched a
+                    # vLLM OOM verbatim for nothing).
+                    tails = []
+                    for a in range(1, attempt + 1):
+                        lg = ROOT / "logs" / f"trial-{st['iteration']}-{a}.log"
+                        if lg.exists():
+                            tails.append(f"attempt {a} ({lg.name}):\n"
+                                         + "\n".join(lg.read_text(
+                                             errors="ignore")
+                                             .splitlines()[-30:]))
+                    v = adjudicate_stop(st, tid, "\n\n".join(tails)
+                                        or "(no trial logs on disk)",
+                                        cap=trial_fails, trial=True)
+                    v.setdefault("evidence", [])
+                else:
+                    v = {"verdict": "RETRY",
+                         "reason": "trial did not complete "
+                                   "(see events.jsonl / monitor)",
+                         "evidence": [criteria_line(r) for r in crit]}
             elif gaps:
                 event("output_gate", detail=f"{tid} attempt {attempt}: "
                       + "; ".join(gaps))
@@ -2165,10 +2233,8 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                                    "deferred to final pass",
                          "evidence": [criteria_line(r) for r in crit]}
                 else:
-                    if VERDICT.exists():
-                        VERDICT.unlink()      # no stale verdicts
-                    claude(st, "evaluator",
-                           "Mode 2 -- evaluation. Audit the latest work "
+                    evaluator_verdict(
+                        st, "Mode 2 -- evaluation. Audit the latest work "
                            f"for ticket '{tid}' against Plan.md and "
                            "Goal.md per your instructions. The diff is "
                            "`git diff HEAD`. You MUST execute, not just "
@@ -2332,10 +2398,8 @@ def phase_final(cfg: dict, st: dict) -> None:
         save(STATE, st)
         return
 
-    if VERDICT.exists():
-        VERDICT.unlink()
-    claude(st, "evaluator",
-           "Mode 2 -- FINAL evaluation of the whole loop. The "
+    evaluator_verdict(
+        st, "Mode 2 -- FINAL evaluation of the whole loop. The "
            "deterministic criteria gate already PASSED, so do not "
            "re-check thresholds: audit PROVENANCE instead. Was each "
            "metric actually produced by the harness it claims, or could "

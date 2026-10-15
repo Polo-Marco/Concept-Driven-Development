@@ -588,8 +588,11 @@ class TestContractReview(DriverCase):
         with self.assertRaises(SystemExit):
             loop.phase_contract_review(self.write_goal(), st)
         # v8.1.4: reviews = revisions + 1, so an always-unreadable
-        # verdict is three fail-closed reviews, not two.
-        self.assertEqual(calls.count("evaluator"), loop.MAX_REVISIONS + 1)
+        # verdict is three fail-closed reviews, not two. v8.1.19 (B10):
+        # each LIVE session that wrote no verdict is asked once more, so
+        # every review costs two dispatches here.
+        self.assertEqual(calls.count("evaluator"),
+                         2 * (loop.MAX_REVISIONS + 1))
         self.assertTrue(any(e["event"] == "contract_review_unreadable"
                             for e in self.events()))
 
@@ -4630,7 +4633,9 @@ class TestReviewRoundsPerLoop(DriverCase):
         st = {"review_rounds": loop.MAX_REVIEW_ROUNDS, "replans": 1}
         with self.assertRaises(SystemExit):
             loop.phase_contract_review(cfg, st)
-        self.assertEqual(calls, ["evaluator"], "exactly the first review")
+        # (two dispatches: the live session wrote no verdict, B10)
+        self.assertEqual(set(calls), {"evaluator"},
+                         "the first review, and no Planner revision")
 
     def test_the_cap_is_a_budget(self):
         cfg = self.write_goal(type="build",
@@ -4806,6 +4811,118 @@ class TestEffortAndRoleClocks(DriverCase):
         self.assertTrue(self.events()[-1]["ts"].endswith("+08:00"))
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
+
+# ---------- v8.1.19: a live Evaluator that wrote no verdict (B10) ---------
+
+class TestMissingVerdictIsRedispatchedOnce(DriverCase):
+    """STAGES s8 21:15: an Evaluator exited 0 without verdict.json and
+    the absence was read straight as ESCALATE."""
+
+    def test_a_live_session_without_a_verdict_is_asked_again(self):
+        self.write_goal()
+        calls = []
+
+        def fake(st, role, prompt, *a, **k):
+            calls.append(prompt)
+            st["session_died"] = False
+            if len(calls) == 2:                      # second time: writes
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "forgot"
+        loop.claude = fake
+        loop.evaluator_verdict({}, "Mode 2 -- evaluation")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("WITHOUT writing verdict.json", calls[1])
+        self.assertTrue(loop.VERDICT.exists())
+        self.assertIn("verdict_missing", [e["event"] for e in self.events()])
+
+    def test_a_dead_session_is_not_asked_a_third_time(self):
+        self.write_goal()
+        calls = []
+
+        def dead(st, role, prompt, *a, **k):
+            calls.append(role)
+            st["session_died"] = True
+            return ""
+        loop.claude = dead
+        loop.evaluator_verdict({}, "Mode 2 -- evaluation")
+        self.assertEqual(calls, ["evaluator"])
+        self.assertNotIn("verdict_missing",
+                         [e["event"] for e in self.events()])
+
+    def test_a_verdict_on_the_first_try_is_not_re_asked(self):
+        self.write_goal()
+        calls = []
+
+        def fake(st, role, prompt, *a, **k):
+            calls.append(role)
+            loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
+            return "ok"
+        loop.claude = fake
+        loop.evaluator_verdict({}, "Mode 1 -- contract review")
+        self.assertEqual(calls, ["evaluator"])
+
+
+# ---------- v8.1.19: a trial that fails twice identically is adjudicated --
+
+class TestTrialFailingTwiceIsAdjudicated(DriverCase):
+    """JEV loop 3: a vLLM OOM was relaunched verbatim (Protocol #5 is for
+    nondeterministic deaths) and bought nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, loop, "run_trial", loop.run_trial)
+        self.cfg = self.write_goal(type="experiment")
+        (self.tmp / "Plan.md").write_text(
+            PLAN.replace("**Boundary:** src/\n",
+                         "**Boundary:** src/\n**Trial:** false\n", 1))
+        loop.git_commit = lambda msg: "abc1234"
+        loop.run_trial = lambda *a, **k: False       # every launch dies
+
+    def drive(self, adjudication):
+        prompts = []
+
+        def fake(st, role, prompt, *a, **k):
+            prompts.append((role, prompt))
+            if role == "evaluator" and "trial-failure adjudication" in prompt:
+                loop.VERDICT.write_text(json.dumps(adjudication))
+            elif role == "evaluator" and "contract review" in prompt:
+                loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(self.cfg, st)
+        return st, prompts
+
+    def test_the_second_identical_death_goes_to_adjudication(self):
+        st, prompts = self.drive({"verdict": "ESCALATE",
+                                  "reason": "the Trial line OOMs by design"})
+        adj = [p for r, p in prompts if "trial-failure adjudication" in p]
+        self.assertEqual(len(adj), 1)
+        self.assertIn("2 consecutive attempts", adj[0])
+        verdicts = [r["verdict"] for r in self.ledger()]
+        self.assertEqual(verdicts, ["RETRY", "ESCALATE"],
+                         "one relaunch, then the adjudicator decides")
+        ev = [e for e in self.events() if e["event"] == "stop_adjudicated"]
+        self.assertTrue(ev and "(trial)" in ev[0]["detail"])
+
+    def test_an_adjudicated_replan_takes_the_replan_route(self):
+        loop.wait_approval = lambda st, name, detail: None
+        loop.flush_pregate = lambda what: ""
+        launches = []                       # two deaths, then it runs
+        loop.run_trial = lambda *a, **k: (launches.append(1) or
+                                          len(launches) > 2)
+        st, prompts = self.drive({"verdict": "REPLAN",
+                                  "reason": "the config needs a smaller "
+                                            "batch; a fresh plan fixes it"})
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("replan", kinds)
+        self.assertEqual(st["replans"], 1)
+        self.assertEqual([r["verdict"] for r in self.ledger()][:2],
+                         ["RETRY", "REPLAN"])
+
 
 # ---------- v8.1.19: `pause-after` -- stop at a ticket boundary (B9) ------
 
