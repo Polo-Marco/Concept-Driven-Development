@@ -4812,6 +4812,80 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: close keeps the machine records; traces go home (C5) -
+
+class TestCloseKeepsTheRecords(DriverCase):
+    def test_ledger_and_events_are_kept_beside_the_journal(self):
+        loop.sh("git init -q && git -c user.name=t -c user.email=t@t "
+                "commit -q --allow-empty -m init")
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.LEDGER.write_text(json.dumps({"iteration": 1, "verdict": "PASS",
+                                           "ticket": "Phase 1, Step 1",
+                                           "attempt": 1, "reason": "ok"})
+                               + "\n")
+        loop.event("goal_reached", detail="all green")
+        st = {"phase": "done", "iteration": 1, "replans": 0,
+              "spent_usd": 1.0, "started": "2026-10-15T10:00:00+08:00",
+              "started_epoch": loop.time.time()}
+        rec = loop.write_journal(cfg, st)
+        rec.write_text(rec.read_text().replace(
+            "- Rating: [good | ok | bad]", "- Rating: good"))
+        loop.git_commit = lambda msg: "abc1234"
+        with open(os.devnull, "w") as null:
+            real, sys.stdout = sys.stdout, null
+            try:
+                loop.phase_close(cfg, st, force=False)
+            finally:
+                sys.stdout = real
+        raw = self.tmp / "journal" / "raw" / rec.stem
+        self.assertTrue((raw / "ledger.jsonl").exists())
+        self.assertTrue((raw / "events.jsonl").exists())
+        self.assertIn('"goal_reached"', (raw / "events.jsonl").read_text())
+        self.assertFalse(loop.LEDGER.exists(), "the ephemeral is still gone")
+        self.assertFalse(loop.EVENTS.exists())
+
+
+class TestTranscriptsGoToThePrimaryTree(unittest.TestCase):
+    """EBFT M0-M3b, JEV 1-7, DF M0/M1a: every Tier-2 trace went with its
+    worktree."""
+
+    def test_a_worktree_session_archives_into_the_primary_journal(self):
+        base = Path(tempfile.mkdtemp(prefix="cdd-tr-")).resolve()
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        primary, wt = base / "primary", base / "wt"
+        primary.mkdir()
+        run = lambda c, cwd: subprocess.run(c, shell=True, cwd=cwd, text=True,
+                                            capture_output=True)
+        run("git init -q && git -c user.name=t -c user.email=t@t commit -q "
+            "--allow-empty -m init && git worktree add -q ../wt -b loop",
+            primary)
+        self.assertTrue(wt.is_dir(), "worktree fixture")
+        transcript = base / "s.jsonl"
+        transcript.write_text('{"type":"x"}\n')
+        payload = {"cwd": str(wt), "transcript_path": str(transcript),
+                   "session_id": "abc"}
+        r = subprocess.run([sys.executable,
+                            str(HERE.parent / "hooks" / "archive_transcript.py")],
+                           input=json.dumps(payload), text=True,
+                           capture_output=True)
+        self.assertEqual(r.returncode, 0)
+        got = list((primary / "journal" / "traces").glob("*-abc.jsonl"))
+        self.assertEqual(len(got), 1, r.stderr)
+        self.assertFalse((wt / "journal" / "traces").exists())
+
+    def test_outside_git_it_falls_back_to_cwd(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "archive_transcript",
+            HERE.parent / "hooks" / "archive_transcript.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        d = Path(tempfile.mkdtemp(prefix="cdd-nogit-")).resolve()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.assertEqual(mod.primary_tree(d), d)
+
+
 # ---------- v8.1.19: the Outcome block counts what retros counted (C3, C4)
 
 class TestOutcomeBlockCounts(DriverCase):

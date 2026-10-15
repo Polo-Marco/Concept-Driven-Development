@@ -46,6 +46,7 @@ import operator
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -2751,6 +2752,22 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
         print("            !! Feedback block is still the template -- "
               "fill it in; [retro] reads it")
 
+    # v8.1.19 (C5): the two machine records survive the close. The
+    # journal is a PROJECTION of ledger.jsonl + events.jsonl; deleting
+    # them meant no Monitor verdict, no adjudication text and no cost
+    # per session could ever be re-read -- every one of the 2026-10-15
+    # retros hit that wall (journal/retro-20261015-cross-project.md,
+    # C5). They are small; they go next to the record they summarise.
+    raw = ROOT / "journal" / "raw" / rec.stem
+    kept = []
+    for f in ("ledger.jsonl", "events.jsonl"):
+        p = ROOT / f
+        if p.exists():
+            raw.mkdir(parents=True, exist_ok=True)
+            shutil.copy(p, raw / f)
+            kept.append(f)
+    if kept:
+        print(f"  kept      {raw.relative_to(ROOT)}/ ({', '.join(kept)})")
     removed = []
     for f in EPHEMERAL:
         p = ROOT / f
@@ -2778,10 +2795,20 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
         f"Removed per governance.md §5: " + (", ".join(removed) or "none"))
     print(f"  commit    {sha or 'nothing to commit'}")
 
+    common = sh("git rev-parse --git-common-dir").stdout.strip()
+    primary = Path(common).resolve().parent if common else None
+    traces_hint = (
+        f"  traces    cp -rn {ROOT / 'journal' / 'traces'}/. "
+        f"{primary / 'journal' / 'traces'}/\n"
+        f"            (BEFORE removing the worktree -- the Tier-2 traces of\n"
+        f"            three deployments went with their worktrees)\n"
+        if primary and primary != ROOT
+        and (ROOT / "journal" / "traces").is_dir() else "")
     print(f"\nStill yours to decide:\n"
           f"  merge     git checkout <main> && git merge {branch}\n"
           f"            (the loop's commits live only on this branch)\n"
-          f"  worktree  git worktree remove {ROOT}\n"
+          + traces_hint
+          + f"  worktree  git worktree remove {ROOT}\n"
           f"  primary   delete any stale Goal.md / goal.json left in the\n"
           f"            tree you started the loop from\n")
 
