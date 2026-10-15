@@ -760,7 +760,26 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
 # makes it a ticket is `Phase N, Step M:` -- that part is the contract.
 # Pinned to exactly `### `, the second toy run parsed zero tickets out of
 # a three-ticket plan. See tickets() for the half that mattered more.
-TICKET = re.compile(r"^#{2,4} (Phase \d+, Step \d+)( \[x\])?: (.+)$", re.M)
+# v8.1.18: the not-done marker ` [ ]` is part of the grammar too. The
+# pattern accepted only the driver's own ` [x]`, so a Planner that wrote
+# `### Phase 1, Step 1 [ ]: Title` -- the natural checklist form --
+# produced a plan with ZERO parseable tickets and an escalation, in
+# three deployments (EBFT M1, STAGES s4-ebft-smoke2, NVFP4 L6), each
+# losing one Planner session and each patching its own copy
+# (journal/retro-20261015-cross-project.md, B1). Done is `[x]` only.
+TICKET = re.compile(r"^#{2,4} (Phase \d+, Step \d+)( \[[ x]\])?: (.+)$",
+                    re.M)
+
+
+def mark_done(plan_text: str, tid: str) -> str:
+    """Rewrite one ticket's heading to carry ` [x]`, replacing a ` [ ]`
+    the Planner wrote rather than adding a second marker."""
+    # v8.1.4: mark at whatever level the heading was written at. This
+    # used to be a literal `### ` replace, which is the trap in
+    # tolerating other levels in TICKET: the ticket would parse but
+    # never mark, so phase_iterate would re-run it until the cap.
+    return re.sub(rf"^(#{{2,4}} {re.escape(tid)})( \[ \])?:",
+                  r"\1 [x]:", plan_text, count=1, flags=re.M)
 
 
 def tickets(plan_text: str):
@@ -779,7 +798,8 @@ def tickets(plan_text: str):
     for i, m in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(plan_text)
         body = plan_text[m.start():end]
-        done = bool(m.group(2)) or bool(re.search(r"^- \[x\]", body, re.M))
+        done = m.group(2) == " [x]" \
+            or bool(re.search(r"^- \[x\]", body, re.M))
         yield m.group(1), m.group(3), body, done
 
 
@@ -2041,15 +2061,8 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             break
 
         if verdict == "PASS":
-            unmarked = plan.read_text()
-            # v8.1.4: mark at whatever level the heading was written at.
-            # This used to be a literal `### ` replace, which is the trap
-            # in tolerating other levels in TICKET: the ticket would parse
-            # but never mark, so phase_iterate would re-run it until the
-            # iteration cap.
-            plan.write_text(re.sub(rf"^(#{{2,4}} {re.escape(tid)}):",
-                                   r"\1 [x]:", unmarked, count=1,
-                                   flags=re.M))
+            unmarked = plan.read_text()      # restored if the commit fails
+            plan.write_text(mark_done(unmarked, tid))
             sha = git_commit(
                 f"feat(loop): {tid} {title}\n\n"
                 f"verdict: PASS -- {v.get('reason', '')}\n"

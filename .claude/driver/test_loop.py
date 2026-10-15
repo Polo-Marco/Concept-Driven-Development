@@ -1467,6 +1467,27 @@ class TestTicketMarking(DriverCase):
         got = list(loop.tickets(body_marked))
         self.assertEqual([d for _, _, _, d in got], [True, False])
 
+    def test_a_planner_s_not_done_marker_parses_and_is_not_done(self):
+        """v8.1.18 (B1): `### Phase 1, Step 1 [ ]: Title` produced zero
+        tickets and an escalation in three deployments."""
+        todo = PLAN.replace("### Phase 1, Step 1:", "### Phase 1, Step 1 [ ]:")
+        todo = todo.replace("### Phase 1, Step 2:", "### Phase 1, Step 2 [ ]:")
+        got = list(loop.tickets(todo))
+        self.assertEqual(len(got), 2)
+        self.assertEqual([d for _, _, _, d in got], [False, False])
+        self.assertEqual(got[0][1], "First ticket")
+
+    def test_marking_done_replaces_the_planner_s_marker(self):
+        todo = PLAN.replace("### Phase 1, Step 1:", "### Phase 1, Step 1 [ ]:")
+        marked = loop.mark_done(todo, "Phase 1, Step 1")
+        self.assertIn("### Phase 1, Step 1 [x]: First ticket", marked)
+        self.assertNotIn("[ ]", marked.split("Step 2")[0])
+        self.assertEqual([d for _, _, _, d in loop.tickets(marked)],
+                         [True, False])
+        # and a heading with no marker still gets one
+        self.assertIn("### Phase 1, Step 2 [x]:",
+                      loop.mark_done(PLAN, "Phase 1, Step 2"))
+
 
 # ---------- v8.1.4: the second toy run -------------------------------
 
