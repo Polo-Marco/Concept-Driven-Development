@@ -182,6 +182,7 @@ def use_root(tmp: Path) -> None:
     loop.AGENTS = tmp / ".claude" / "agents"
     loop.SETTINGS = tmp / ".claude" / "settings.json"
     loop.NOTIFY = tmp / ".claude" / "driver" / "notify.sh"
+    loop.MANIFEST = tmp / ".claude" / "driver" / "manifest.json"
 
 
 def install_machinery(tmp: Path, wired: bool = True) -> None:
@@ -4811,6 +4812,136 @@ class TestEffortAndRoleClocks(DriverCase):
         self.assertTrue(self.events()[-1]["ts"].endswith("+08:00"))
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
+
+# ---------- v8.1.20: a ticket may defer its own audit (R3) ---------------
+
+class TestAuditDeferredField(DriverCase):
+    """STAGES: 19 per-ticket audits of no-code Trial tickets, all PASS,
+    nothing found; Evaluator = 40 % of the programme."""
+
+    PLAN_DEFERRED = PLAN.replace(
+        "**Boundary:** src/\n",
+        "**Boundary:** src/\n**Audit:** deferred\n", 1)
+
+    def drive(self, plan_text, cadence="per-iteration"):
+        cfg = self.write_goal(evaluation_cadence=cadence)
+        (self.tmp / "Plan.md").write_text(plan_text)
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append((role, prompt))
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0,
+              "criteria_green": ["acc@results/out.json"],   # no first green
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        return calls
+
+    def test_a_deferred_ticket_buys_no_audit_under_per_iteration(self):
+        calls = self.drive(self.PLAN_DEFERRED)
+        audits = [p for r, p in calls if r == "evaluator"
+                  and "Mode 2" in p and "FINAL" not in p]
+        # Step 1 deferred, Step 2 (last ticket) audited as always
+        self.assertEqual(len(audits), 1)
+        self.assertIn("Phase 1, Step 2", audits[0])
+        rows = self.ledger()
+        self.assertIn("Audit: deferred", rows[0]["reason"])
+
+    def test_without_the_field_per_iteration_audits_every_ticket(self):
+        calls = self.drive(PLAN)
+        audits = [p for r, p in calls if r == "evaluator"
+                  and "Mode 2" in p and "FINAL" not in p]
+        self.assertEqual(len(audits), 2)
+
+    def test_a_first_green_is_audited_even_when_deferred(self):
+        cfg = self.write_goal()
+        (self.tmp / "Plan.md").write_text(self.PLAN_DEFERRED)
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append((role, prompt))
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        first = [p for r, p in calls if r == "evaluator" and "Mode 2" in p]
+        self.assertTrue(first and "FIRST time" in first[0])
+
+
+# ---------- v8.1.20: the tree says which framework it really is ----------
+
+class TestTemplateDrift(DriverCase):
+    """Four deployments hot-patched the same three defects and none of
+    the eleven patches came home."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "CLAUDE.md").write_text(
+            "# Concept-Driven Development (CDD) 8.1.20\n")
+        (self.tmp / "skills").mkdir(exist_ok=True)
+        (self.tmp / "skills" / "x.md").write_text("skill\n")
+        (self.tmp / ".claude" / "settings.local.json").write_text("{}")
+
+    def test_no_manifest_is_reported_as_such(self):
+        self.assertIsNone(loop.template_drift())
+        self.assertEqual(loop.framework_label(), "8.1.20 (no manifest)")
+
+    def test_a_pristine_tree_reports_the_release(self):
+        loop.write_manifest()
+        self.assertEqual(loop.framework_label(), "8.1.20")
+        self.assertEqual(loop.template_drift(), ("8.1.20", []))
+        files = json.loads(loop.MANIFEST.read_text())["files"]
+        self.assertIn("CLAUDE.md", files)
+        self.assertIn("skills/x.md", files)
+        self.assertNotIn(".claude/settings.json", files)
+        self.assertNotIn(".claude/settings.local.json", files)
+        self.assertNotIn(".claude/driver/manifest.json", files)
+
+    def test_a_hot_patched_tree_names_the_file(self):
+        loop.write_manifest()
+        hook = self.tmp / ".claude" / "hooks" / "enforce_authority.py"
+        hook.write_text(hook.read_text() + "# local fix\n")
+        (self.tmp / "skills" / "x.md").unlink()           # missing too
+        version, changed = loop.template_drift()
+        self.assertEqual(changed, [".claude/hooks/enforce_authority.py",
+                                   "skills/x.md"])
+        self.assertEqual(loop.framework_label(),
+                         "8.1.20+local(2: enforce_authority.py, x.md)")
+        loop.machinery()
+        drift = [e for e in self.events() if e["event"] == "template_drift"]
+        self.assertEqual(len(drift), 1)
+        self.assertIn("format-patch", drift[0]["detail"])
+
+    def test_a_pristine_tree_emits_no_drift_event(self):
+        loop.write_manifest()
+        loop.machinery()
+        self.assertNotIn("template_drift",
+                         [e["event"] for e in self.events()])
+
+    def test_the_journal_and_status_carry_the_label(self):
+        loop.write_manifest()
+        (self.tmp / "Plan.md").write_text(PLAN)
+        cfg = self.write_goal()
+        text = loop.write_journal(cfg, {
+            "phase": "done", "iteration": 1, "replans": 0,
+            "spent_usd": 0.0, "started": "2026-10-15T10:00:00+08:00",
+            "started_epoch": loop.time.time()}).read_text()
+        self.assertIn("- framework: 8.1.20", text)
+
 
 # ---------- v8.1.19: close keeps the machine records; traces go home (C5) -
 

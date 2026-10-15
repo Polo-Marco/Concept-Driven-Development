@@ -334,6 +334,86 @@ def require_cli() -> None:
             "  misleading reason. Run `claude auth login` first.")
 
 
+MANIFEST = ROOT / ".claude" / "driver" / "manifest.json"
+# Template files a deployment copies verbatim. Excluded: per-deployment
+# configuration (settings*.json, notify.sh), caches, and the manifest.
+TEMPLATE_SKIP = {".claude/settings.json", ".claude/settings.local.json",
+                 ".claude/driver/notify.sh", ".claude/driver/manifest.json"}
+
+
+def framework_version() -> str:
+    """The version in CLAUDE.md's title line, or "?"."""
+    try:
+        m = re.search(r"\(CDD\)\s+(\d+\.\d+(?:\.\d+)?)",
+                      (ROOT / "CLAUDE.md").read_text())
+        return m.group(1) if m else "?"
+    except OSError:
+        return "?"
+
+
+def template_files() -> dict:
+    """{repo-relative path: sha256} of every shipped template file."""
+    out = {}
+    paths = [ROOT / "CLAUDE.md"]
+    for top in (".claude", "skills"):
+        d = ROOT / top
+        if d.is_dir():
+            paths += [p for p in d.rglob("*") if p.is_file()]
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix()
+        if rel in TEMPLATE_SKIP or "__pycache__" in rel \
+                or rel.endswith(".pyc") or not p.exists():
+            continue
+        out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
+
+
+def write_manifest() -> Path:
+    """Maintainer command (`loop.py manifest`): record what this release
+    ships, so a deployment can tell whether its copy is the release."""
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    save(MANIFEST, {"version": framework_version(),
+                    "files": template_files()})
+    return MANIFEST
+
+
+def template_drift():
+    """(version, [changed or missing template files]) against the
+    shipped manifest; None when no manifest is present.
+
+    v8.1.20. Four deployments hot-patched the same three driver and hook
+    defects and none of the eleven patches came home; each retro had to
+    discover from prose that its `.claude/` was not the release it
+    claimed (journal/retro-20261015-cross-project.md, section 4). The
+    version a tree REPORTS is now `8.1.20+local(3: ...)` whenever its
+    template files differ from the manifest, in `status`, in the
+    journal's Outcome block and as a `template_drift` event at start --
+    so "which framework ran this loop" has one honest answer and the
+    patch that needs sending home has a name.
+    """
+    m = load(MANIFEST, None)
+    if not isinstance(m, dict) or "files" not in m:
+        return None
+    here = template_files()
+    changed = sorted(p for p, h in m["files"].items()
+                     if here.get(p) != h)
+    return str(m.get("version", "?")), changed
+
+
+def framework_label() -> str:
+    """`8.1.20`, or `8.1.20+local(2: a, b)` when template files differ
+    from the shipped manifest."""
+    d = template_drift()
+    if d is None:
+        return framework_version() + " (no manifest)"
+    version, changed = d
+    if not changed:
+        return version
+    names = ", ".join(Path(p).name for p in changed[:4]) \
+        + (", …" if len(changed) > 4 else "")
+    return f"{version}+local({len(changed)}: {names})"
+
+
 def machinery() -> None:
     """Layer-A preflight: the loop's own parts.
 
@@ -378,6 +458,15 @@ def machinery() -> None:
             "Planner will fall back to task-ticket-format.md and mode "
             "skills will not shape the tickets"))
     event("machinery_ok", detail=f"{len(ROLES)} agents + hook wired")
+    drift = template_drift()
+    if drift and drift[1]:
+        # v8.1.20: visible, not fatal -- a hot-patch under a live loop is
+        # the documented emergency; the sin is that it stays silent.
+        event("template_drift", detail=(
+            f"framework {framework_label()} -- these template files differ "
+            f"from the shipped {drift[0]} manifest: {', '.join(drift[1])}. "
+            f"Send the patch home: git format-patch -1 <sha> -o "
+            f"<framework-repo>/journal/hotfixes/ (MAINTENANCE.md)"))
 
 
 # ---------- gate 2: goal contract is well-formed ----------------------
@@ -2288,14 +2377,24 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 # audit the whole loop bought was at iteration 8, five
                 # committed tickets later. One extra audit, at the one
                 # iteration where it could have caught it.
-                if cadence == "final-pass" and len(todo) > 1 \
+                # v8.1.20 (R3): a ticket may defer its own audit with
+                # `**Audit:** deferred` -- a no-code Trial ticket on a
+                # proven harness, where 19 per-ticket audits in one
+                # deployment all read PASS and found nothing. First-green
+                # and final audits are never deferred; the v8.1.16 output
+                # gate already checked this ticket's outputs, log and
+                # owned criteria for free.
+                deferred = field(body, "Audit").strip().lower() == "deferred"
+                if (cadence == "final-pass" or deferred) and len(todo) > 1 \
                         and not first_green:
                     # v8.1: "deferred" no longer means unchecked. The
                     # deterministic gate above ran, the Generator's own
                     # TDD ran, and a regression would have blocked here.
                     v = {"verdict": "PASS",
                          "reason": "deterministic gate clean; LLM audit "
-                                   "deferred to final pass",
+                                   + ("deferred to final pass (Audit: "
+                                      "deferred)" if deferred else
+                                      "deferred to final pass"),
                          "evidence": [criteria_line(r) for r in crit]}
                 else:
                     evaluator_verdict(
@@ -2589,7 +2688,7 @@ def write_journal(cfg: dict, st: dict) -> Path:
                "criteria_amended", "criteria_amendment_refused",
                "network_wait", "network_restored", "network_wait_exhausted",
                "preflight_skipped", "paused", "verdict_missing",
-               "deadline_exceeded")
+               "deadline_exceeded", "template_drift")
     evs = []
     # v8.1.18: a STREAK of `session_died` is one line with a count and a
     # time window. A 37-minute DNS outage wrote 50 identical lines into
@@ -2644,6 +2743,7 @@ def write_journal(cfg: dict, st: dict) -> Path:
            "you want kept in that block._", "",
            "## Request", cfg.get("goal", "(no goal)"), "",
            "## Outcome",
+           f"- framework: {framework_label()}",            # v8.1.20
            f"- phase at exit: **{st.get('phase', '?')}**"
            + (f" (ticket {st['current_ticket']})"
               if st.get("current_ticket") else ""),
@@ -2817,11 +2917,12 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
 
 def rebind(root: Path) -> None:
     """Point the module's paths at `root`."""
-    global ROOT, GOAL, STATE, LEDGER, EVENTS, VERDICT, APPROVALS
+    global ROOT, GOAL, STATE, LEDGER, EVENTS, VERDICT, APPROVALS, MANIFEST
     ROOT, GOAL = root, root / "goal.json"
     STATE, LEDGER = root / "loop-state.json", root / "ledger.jsonl"
     EVENTS, VERDICT = root / "events.jsonl", root / "verdict.json"
     APPROVALS = root / "approvals"
+    MANIFEST = root / ".claude" / "driver" / "manifest.json"
 
 
 def find_loop() -> Path:
@@ -3041,7 +3142,8 @@ def phase_status(cfg: dict) -> None:
     alive = bool(name) and sh(
         f"tmux has-session -t {shlex.quote(name)}").returncode == 0
     hours = wall_hours(st, live=alive)
-    out = [f"goal      {cfg.get('goal', '(no goal.json here)')}",
+    out = [f"framework {framework_label()}",           # v8.1.20
+           f"goal      {cfg.get('goal', '(no goal.json here)')}",
            f"phase     {st.get('phase', '?')}"
            + (f"   ticket {st['current_ticket']}"
               if st.get("current_ticket") else ""),
@@ -3248,6 +3350,16 @@ def main() -> None:
               f"re-plan, re-review and gate. If a driver is still "
               f"running, stop it first: its next state save would "
               f"overwrite this.")
+        return
+
+    if args and args[0] == "manifest":
+        # v8.1.20: maintainer command, run in the framework repo at each
+        # release (MAINTENANCE.md section 5). Deployments never run it;
+        # they read the result through `status` and the journal.
+        p = write_manifest()
+        m = load(p, {})
+        print(f"wrote {p.relative_to(ROOT)}: version {m.get('version')}, "
+              f"{len(m.get('files', {}))} template files")
         return
 
     cfg = load(GOAL, None)
