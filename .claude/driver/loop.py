@@ -412,6 +412,10 @@ def validate_goal(cfg: dict) -> None:
     for c in cfg.get("preflight", []):
         if not isinstance(c, dict) or "run" not in c or "name" not in c:
             problems.append(f"preflight entry needs 'name' and 'run': {c}")
+        elif c.get("when", "always") not in ("always", "first-start"):
+            problems.append(f"preflight '{c['name']}': when must be "
+                            f"'always' (default) or 'first-start', not "
+                            f"{c.get('when')!r}")
     # v8.1.16: every role names its model, in full, in the contract. The
     # Ask phase asks the user; the driver refuses a missing role or a
     # tier alias, so "which model ran this loop" is always answerable
@@ -446,7 +450,7 @@ def validate_goal(cfg: dict) -> None:
 
 # ---------- gate 3: preflight (environment preconditions) -------------
 
-def preflight(cfg: dict) -> None:
+def preflight(cfg: dict, resume: bool = False) -> None:
     """Layer-B preflight: what THIS goal needs before it can start.
 
     Each check is a shell command; exit 0 = pass. Runs on every driver
@@ -466,6 +470,19 @@ def preflight(cfg: dict) -> None:
         return
     failed = []
     for c in checks:
+        # v8.1.19: a check tagged `"when": "first-start"` is skipped on
+        # resume. "`<dir>` absent" preconditions go FALSE by design the
+        # moment ticket 1 runs, so every driver restart failed on them
+        # and needed a hand-edit of the worktree's goal.json -- ten
+        # STAGES loops, ~16 restarts, each an iteration plus an edit
+        # (journal/retro-20261015-cross-project.md, B8; JEV loops 4, 9).
+        # Everything else still runs on every start: .env goes stale,
+        # endpoints go down, Docker daemons die.
+        if resume and c.get("when") == "first-start":
+            event("preflight_skipped",
+                  detail=f"{c['name']} -- first-start only; this is a "
+                         f"resume")
+            continue
         rc = sh(c["run"]).returncode
         event("preflight",
               detail=f"{'ok  ' if rc == 0 else 'FAIL'} {c['name']}")
@@ -2714,7 +2731,7 @@ def phase_start(cfg: dict, allow_here: bool) -> None:
     # session, and printed "Loop started" for a driver that was already
     # dying inside tmux where nobody could see it. Observed on the first
     # real run: `check` said FAIL, `start` said started.
-    preflight(cfg)
+    preflight(cfg, resume=STATE.exists())
 
     if allow_here:
         target = ROOT
@@ -3034,7 +3051,7 @@ def main() -> None:
     # is a worktree at all. It spawns nothing, so there is nothing to
     # contain; isolation is reported rather than enforced.
     if args and args[0] == "check":
-        preflight(cfg)
+        preflight(cfg, resume=STATE.exists())
         print("  isolation: "
               + ("linked worktree" if in_linked_worktree()
                  else "primary tree -- `start` will make a worktree"))
@@ -3053,7 +3070,7 @@ def main() -> None:
         return
 
     require_isolation(cfg, allow_here)
-    preflight(cfg)
+    preflight(cfg, resume=STATE.exists())
     ensure_gitignore()
 
     # Before the state file exists, this loop has produced nothing -- so

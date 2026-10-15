@@ -4807,6 +4807,59 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: first-start preflight checks (B8) --------------------
+
+class TestFirstStartPreflight(DriverCase):
+    """STAGES: ten loops whose "<dir> absent" preflight went false by
+    design after ticket 1, so ~16 restarts each needed a hand-edit."""
+
+    CHECKS = [{"name": "env ok", "run": "true"},
+              {"name": "results absent", "run": "false",
+               "when": "first-start"}]
+
+    def test_a_first_start_runs_every_check(self):
+        cfg = self.write_goal(preflight=self.CHECKS)
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    loop.preflight(cfg, resume=False)
+            finally:
+                sys.stderr = real
+
+    def test_a_resume_skips_first_start_checks_and_says_so(self):
+        cfg = self.write_goal(preflight=self.CHECKS)
+        loop.preflight(cfg, resume=True)             # does not die
+        ev = [e for e in self.events() if e["event"] == "preflight_skipped"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("results absent", ev[0]["detail"])
+        ran = [e["detail"] for e in self.events()
+               if e["event"] == "preflight"]
+        self.assertEqual(ran, ["ok   env ok"])
+
+    def test_an_always_check_still_fails_a_resume(self):
+        cfg = self.write_goal(preflight=[
+            {"name": "endpoint", "run": "false"}])
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    loop.preflight(cfg, resume=True)
+            finally:
+                sys.stderr = real
+
+    def test_when_is_validated(self):
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    loop.validate_goal(self.write_goal(preflight=[
+                        {"name": "x", "run": "true", "when": "sometimes"}]))
+            finally:
+                sys.stderr = real
+        loop.validate_goal(self.write_goal(preflight=self.CHECKS))
+
+
 # ---------- v8.1.19: criteria re-read when a gate clears (B7) -------------
 
 class TestCriteriaReloadAtTheGate(DriverCase):
