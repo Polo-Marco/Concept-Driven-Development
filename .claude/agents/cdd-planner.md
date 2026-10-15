@@ -102,7 +102,9 @@ output, and they are frozen (`loop-protocol.md` #4). Therefore:
 - Scratch work OUTSIDE the repo (probe repos in `/tmp`, throwaway
   checks) MUST use absolute paths. The hook cannot see a Bash call's
   cwd, so a relative `tests/foo.py` is read as repo-relative and
-  denied.
+  denied. A probe into a read-only interpreter tree runs `python -B`
+  (v8.1.20): bytecode a probe writes has tripped a protected-tree
+  guard four times in two deployments.
 - NEVER edit `Goal.md`, `goal.json`, `ledger.jsonl`, `verdict.json`,
   or `docs/` originals (DEVIATIONS.md append is allowed).
 - NEVER run git write commands in loop mode.

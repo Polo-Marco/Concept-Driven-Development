@@ -145,6 +145,65 @@ goal justified by this loop's number. Record the provenance in
 baseline, results/…") so the Evaluator's contract review can check the
 bar is grounded rather than aspirational.
 
+**A number's provenance is a probe you ran — and so is a fact's**
+(v8.1.20). The rule above asks for a citation; six of seven deployments
+on 2026-10-15 showed that a citation is not enough and that stopping
+bars are not the only place the failure lives
+(`journal/retro-20261015-cross-project.md`, S2 and R1). Thirteen of
+thirty goals in one deployment, eleven of twenty-seven replans in
+another, three closed-and-reopened loops in a third, and the one loop
+rated *bad* ($74, zero measurement) all trace to a number or a fact in
+`Goal.md` that was recalled, not measured: a count ("50 tasks"), a cap
+("12,288"), an identity (a sha256 nobody recorded), a premise ("D3 is
+pure batching", "sliding cache silently drops keys" — it raises), a
+tolerance (`≤ 0.05 in bf16`, below one ulp at the operating magnitude),
+a throughput bar sized from a different path, a Deadline sized from a
+single unloaded call. So, for **every** number and every stated fact
+that a criterion, a Test Contract, a routing rule or a Planner premise
+will depend on — not only the stopping bars:
+
+> `probe: <the command you ran> → <its raw output>`
+
+written into `Goal.md` next to the number, under five minutes, GPU
+allowed. Same shape as the Evaluator's **Wired?** check for plans: a
+pasted command and its output is the evidence; "known from the last
+run" is not. Specifically:
+
+- A **tolerance** states its dtype and is derived from a measured noise
+  floor or the ulp at the operating magnitude (`0.01 from a 0.0012
+  noise floor`, never `0.05` for bf16 logits of magnitude 16–32).
+- A **time or throughput bar** for a path this loop has not run is
+  `smoke-measured × 1.5` at the run's actual concurrency, with the
+  smoke named; a projection from another path's rate fails this check
+  (three escalations and three replans in one loop came from exactly
+  that, PB pb10).
+- An **Environment / Established-facts** line pastes the raw command
+  and its raw output (`cat -A`, `grep -n`), never a value you parsed or
+  remembered — a `.env` value declared empty because the parser
+  stripped a leading space cost a mid-loop amendment (JEV loop 10); a
+  runtime preflight calls the LOAD function the loop will call, not a
+  class import (JEV loop 9 needed three more packages).
+- A number that cannot be probed in five minutes is not a bar: write
+  the criterion as `>= 0` (measure and record) and pre-register in
+  `Goal.md` what the loop does with each band of the result.
+
+The Evaluator's **Earnable?** check reads these `probe:` lines, and a
+bar or fact without one is a `CRITERIA CONCERN` with one of the two
+dispositions in step 4.
+
+**A trial that depends on a shared-fate service writes its
+infrastructure errors** (v8.1.20, R7). Registry pulls, HF datasets, apt
+mirrors, a model gateway: when one of them fails mid-trial the harness
+records model failures, and the criteria gate reads them as a measured
+result. Three times in one deployment an outage-tainted file read green
+(or recorder-only) at the free gate and was caught 1–1.5 h later by a
+paid audit or a human (DF M0 it 24–25, M1a 19:51). Every such trial's
+metrics file carries `n_infra_error` and `infra_error_rate`, and the
+Goal carries `infra_error_rate <= <threshold>` as a real criterion for
+each such file — so an outage turns the ticket red for free. A resume
+never re-summarises a finished job whose trials carry infrastructure
+exceptions.
+
 **Three more questions, per criterion, before it enters the JSON**
 (v8.1.16). The criteria the user writes are the one defect class that
 recurred in every loop of both 2026-09-02 retros — six defects in four
@@ -210,18 +269,42 @@ Also extract:
   and (v8.1.19) `max_network_wait_min`: how long the driver waits out
   an API or DNS outage before a dead session counts as one (default
   120; the wait is not driver runtime). GPU-hours apply to experiment
-  goals. Propose defaults; make the user confirm. These
+  goals. **`max_replans` by loop kind** (v8.1.20, R4): 5 when the loop
+  builds something new — an environment, a model path, a test harness,
+  a patch mechanism — and 3 for a re-run of a proven harness. Across
+  one deployment the first-of-kind loops replanned 3, 4, 2, 2, 2 times
+  and the re-runs 0, 0, 0, 0, 0; two caps were raised mid-loop and one
+  loop used 4 of 4. When a cap is raised at a gate on an Evaluator's
+  cost estimate, note the estimate so the next Ask can calibrate (one
+  estimate ran 2× high). Propose defaults; make the user confirm. These
   are circuit breakers, not accounting: set them assuming something
   will spin idle overnight, because eventually something will. For a
   first unattended run, prefer tight (`max_iterations` near the ticket
   count, not 20).
 - **Preflight** — see step 3.
-- **Evaluation cadence** — `per-iteration` for experiments and frontier
-  work, `final-pass` for routine builds. In v8.1 `final-pass` does not
-  mean unchecked: the deterministic criteria gate and the regression
-  guard still run every ticket; only the LLM audit is deferred.
+- **Evaluation cadence — by novelty, not by goal type** (v8.1.20, R3).
+  `final-pass` when every ticket reuses proven modules (a re-run of a
+  harness that has produced evidence before, a sweep over an existing
+  trainer, a report); `per-iteration` when any ticket introduces a new
+  mechanism — a new hook, objective, harness path, trainer, patch
+  mechanism, containment lane. The evidence across seven deployments
+  (`journal/retro-20261015-cross-project.md`, S3): the Evaluator was
+  33–62 % of every loop's spend, the cadence was left at
+  `per-iteration` in all but two of ~80 loops, and every one of its
+  outcome-changing catches (EBFT 4, NVFP4 12, PB 6, DF 3) was in a loop
+  that introduced a new mechanism; the two `final-pass` loops lost
+  nothing. `final-pass` does not mean unchecked: the deterministic
+  criteria gate, the regression guard and the output gate still run
+  every ticket, and a criterion's FIRST green and the final pass are
+  always audited. A single ticket can defer its own audit with
+  `**Audit:** deferred` (task-ticket-format.md) — for the no-code Trial
+  ticket on a proven harness inside an otherwise novel loop.
 - **Escalation conditions** beyond protocol failures.
-- **Environment facts** (VM, GPU, paths, datasets) for the Planner.
+- **Environment facts** (VM, GPU, paths, datasets) for the Planner —
+  each as a pasted command and its raw output, per the `probe:` rule in
+  step 2 (v8.1.20). Seven of ten goals in one deployment carried a
+  wrong or under-tested environment fact, and none was caught by a
+  deterministic gate.
 - **Models, one per role, by FULL ID** (v8.1.16). Ask — do not assume —
   which model runs each of Planner, Generator, Evaluator and Monitor,
   and write the answer into `goal.json` `models` using the complete
@@ -317,6 +400,27 @@ Humans read and edit the markdown; you translate it to JSON; the driver
 reads only the JSON. Keep the markdown rich — the prose reasons are
 what make a criterion reviewable — and keep the shape predictable so
 the translation is mechanical rather than interpretive.
+
+**A gate concern has two dispositions, and "acknowledged" is not one**
+(v8.1.20, R2). The contract review flags a bar as unmeasured or
+thin-margin with a `CRITERIA CONCERN:` line. In one deployment the same
+concern was acknowledged at four consecutive gates, missed by one run,
+and became a post-result amendment (0.95 → 0.94); three of ten
+completed loops there passed a criterion only under an amendment made
+after the data existed, and one report carried no trace of it
+(`journal/retro-20261015-cross-project.md`, PB problem 2). At the gate
+the user — or the tower under delegation — picks one:
+
+1. **Amend before data**: change the bar now, in the worktree's
+   `goal.json`; the driver re-reads criteria when the gate clears and
+   records the diff (`criteria_amended`).
+2. **Convert to a recorder**: the criterion becomes `>= 0` and the bar
+   moves into the report, where it is a finding and not a gate.
+
+A concern left "as written" is a decision to stop the loop on that bar;
+say so in the approval note. Any amendment made AFTER a result exists
+must appear in the report's `deviations` (bar, old, new, who, when,
+why); the final audit fails a report that lacks one the events carry.
 
 ```markdown
 # Goal: [one line]
@@ -434,6 +538,15 @@ the loop from here on:
   minutes. NEVER approve on your own judgement: the plan gate is the only
   human checkpoint left in the loop, and this session is interactive, so
   the PreToolUse hook does not restrain you. That restraint is yours.
+  **Under written delegation** (v8.1.20, R12): you may approve within
+  the terms the user wrote down (budget ceilings, what must never be
+  patched, what must never be killed, never push), and the approval
+  note names those terms. One standing clause is not negotiable: every
+  question the Planner or Evaluator addressed to the user — a gate
+  question, a `CRITERIA CONCERN`, an open `ASSUMPTION` — is either
+  answered in the approval note or escalated to the user BEFORE
+  approval. One loop was approved past an unanswered gate question and
+  escalated on it four tickets later (JEV loop 4).
 - `close` → when the loop has finished (or the user has finished it by
   hand), run `python3 .claude/driver/loop.py close`. It writes the
   journal record, deletes the ephemeral artifacts and commits; it never

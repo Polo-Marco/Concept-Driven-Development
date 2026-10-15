@@ -87,6 +87,13 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
   - Major (x.0): new/removed modes, pipeline or file-structure changes.
 - **Commit** with a detailed message (git is the changelog), citing the
   motivating feedback.
+- **Regenerate the manifest** (v8.1.20): `python3 .claude/driver/loop.py
+  manifest` writes `.claude/driver/manifest.json` — the version and a
+  sha256 per template file — and it ships with the release. A deployed
+  tree compares its copy against it and reports `8.1.20+local(2: …)` in
+  `status`, in the journal and as a `template_drift` event, so a
+  hot-patch that never came home is visible where the loop runs. Run it
+  after the version bump and before the commit.
 - **Tag the release:** `git tag v8.1.10` — so projects can diff tags to
   see exactly what to re-copy.
 - **Housekeeping:** move processed journal files to `journal/archive/`;

@@ -63,7 +63,47 @@ Look across loops for:
 - **What worked** — reinforce it, don't just list failures.
 
 Quantify where you can ("3 of the last 5 modify loops flagged Boundary
-overreach"). Cite the specific journal entries.
+overreach"). Cite the specific journal entries. The driver's Outcome
+block now carries the counts a retro used to reconstruct by hand —
+review rounds, Monitor polls and non-HEALTHY verdicts, GPU-hours, each
+trial's wall time, `Filled by:` on the Feedback block — and
+`journal/raw/<record>/` keeps the ledger and events of every closed loop
+(v8.1.19); read them before opening a trace.
+
+### Step 2b: Harness staleness check (every retro; mandatory on a new model generation)
+
+`CLAUDE.md` and `loop-protocol.md` have promised this step since v8.0;
+three of the seven 2026-10-15 retros noted the skill did not contain it
+(`journal/retro-20261015-cross-project.md`, R11). Every loop component
+encodes an assumption about what a role's model cannot be trusted to
+do, and assumptions go stale. For each component, one table row:
+
+| component | assumption it encodes | fired (true / false) | verdict |
+|---|---|---|---|
+
+Components: the deterministic gates (`check_criteria`, evidence gate,
+`plan_problems`, preflight); the contract review (Mode 1); the
+per-ticket and first-green audits (Mode 2); stop, cap and trial
+adjudication (Mode 3); the output gate, retry cap and no-op backstop;
+the Monitor and the driver's stall clock; the Deadline arithmetic; the
+PreToolUse hook (denials: true positives vs false); the human gate
+(approved by whom, after how long); the budgets (what tripped, what
+was raised). For each role: model, effort, sessions, spend, and the
+verdicts that CHANGED an outcome. Read the verdict column honestly —
+"load-bearing", "not exercised", "stale as written" — and send a
+component to `[discuss]` only when the record shows it idle or
+misfiring for a reason the model generation explains.
+
+### Step 2c: Patches that need to go home
+
+Run `git log <framework-tag>..HEAD --oneline -- .claude/ skills/
+CLAUDE.md` (the tag the project was deployed from; `status` prints
+`+local(N: …)` when the tree differs from the shipped manifest,
+v8.1.20). Every commit listed is a hot-patch that exists only in this
+project. For each, produce `git format-patch -1 <sha> -o
+<framework-repo>/journal/hotfixes/` in the retro's Recommendations and
+say what it fixed. Four deployments patched the same three driver and
+hook defects on 2026-10-15 and none of the eleven patches had come home.
 
 ### Step 3: Recommend (minimal, concrete)
 For each pattern, recommend the smallest fix, targeted at the right
@@ -93,6 +133,13 @@ Append a summary to `journal/` (e.g. `journal/retro-YYYYMMDD.md`):
 
 ## Recommendations
 1. [smallest concrete change] → [which file/rule/skill] → [expected effect]
+
+## Harness staleness check
+| component | assumption | fired (true / false) | verdict |
+|---|---|---|---|
+
+## Patches to send home
+- [sha] [what it fixed] → `git format-patch -1 <sha> -o <framework>/journal/hotfixes/`
 
 ## For the user (habits)
 - [direct, kind, specific coaching]

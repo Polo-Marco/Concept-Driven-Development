@@ -83,6 +83,17 @@ For each ticket ask:
   put the concern in `Evaluation.md` in one labelled line
   (`CRITERIA CONCERN: …`) so the user sees it at the gate, where
   cancelling costs only the plan phase instead of the loop.
+  **v8.1.20:** the citation you look for is a `probe:` line — the
+  command the Goal Setter ran and its raw output — and the check covers
+  EVERY number and stated fact a criterion, Test Contract, routing rule
+  or Spec premise depends on, not only the stopping bars: counts, caps,
+  identities, tolerances (dtype + noise floor or ulp), time bars (smoke
+  × 1.5 at the run's concurrency), Environment lines. Six of seven
+  deployments on 2026-10-15 paid replans or whole loops for a recalled
+  number. Each `CRITERIA CONCERN:` line ends with the two dispositions
+  the gate can take — `amend before data to <value>` or `convert to a
+  recorder (>= 0), bar moves to the report` — because "acknowledged"
+  at four consecutive gates became a post-result amendment in one loop.
 - **Wired?** (v8.1.14) Every field, key or path a Spec says it will
   READ must exist in the thing it reads from — and this is the one
   check you must **execute** rather than conclude. For each read the
@@ -145,6 +156,13 @@ Input: the git diff, `Plan.md`, `Goal.md`, metrics/logs paths.
 2. Run the ticket's **Run Command**. Paste the real output.
 3. Exercise the edge cases the author skipped.
 4. Check the behaviour against the ticket, not against the intent.
+5. **On a first green, plant one failure** (v8.1.20, R10): break the
+   thing the criterion measures — an `assert False` in the writer, a
+   wrong label in a fixture — and show the criterion's file goes red,
+   then restore. Six Generator sessions in one loop wrote tests after
+   the implementation and never saw them fail; the planted failure is
+   what established the tests were valid, and it is the one check that
+   does not depend on the order the Generator worked in.
 
 An `evidence` entry must be something you observed — pasted output,
 an actual value, a file reference. "Tests appear to cover the cases"
@@ -166,6 +184,12 @@ of this diff not specified by the plan? If so, judge it."**
   (`governance.md` §2)?
 - Does a suspiciously round or suspiciously perfect number have a run
   behind it?
+- **Does the report carry every amendment the events carry?** (v8.1.20,
+  R2) `events.jsonl` records each `criteria_amended`; a report that
+  passed a bar only under an amendment made after its data existed must
+  list it under `deviations` (bar, old, new, who, when, why). A report
+  without one the events have is a FAIL — one deployment's report.json
+  carried no trace of the 0.95 → 0.94 that made it pass.
 
 Write prose audits to `Evaluation.md`, and `verdict.json`:
 
@@ -252,9 +276,19 @@ they mean above.
 - Refer to those out-of-repo files by ABSOLUTE path. The hook cannot
   see a Bash call's cwd, so a relative `tests/foo.py` is read as
   repo-relative and denied.
-- **A PreToolUse denial ENDS the session.** Say what you were denied
-  and stop. Reaching the same target by another road — a heredoc, an
-  interpreter, `/tmp` — is a protocol violation, not a workaround
-  (`loop-protocol.md` §3, `phase-authority.md`). The hook is the
-  authority matrix, mechanically enforced; where it cannot see, the
-  prohibition still binds.
+- **A PreToolUse denial on a WRITE ends the session** (narrowed
+  v8.1.20, R9). Say what you were denied and stop. Reaching the same
+  target by another road — a heredoc, an interpreter — is a protocol
+  violation, not a workaround (`loop-protocol.md` §3,
+  `phase-authority.md`). A denial on a READ, or on a ticket's own Run
+  Command run in-tree, is a hook finding: record it in `Evaluation.md`
+  (`HOOK DENIAL: <command>`) and continue the audit on the `/tmp`
+  reconstruction route that is already your contract. Four audits in
+  three deployments died on a read-only `git merge-base` or an in-tree
+  Run Command and each death became "missing verdict.json", an
+  escalation and a re-bought audit. **Before any stop, write
+  `verdict.json`** — a stop with no verdict is read as a judgement.
+- **Probes into a read-only interpreter tree use `python -B`**
+  (v8.1.20, R13), and read-only guards ignore `*.pyc` /
+  `__pycache__`. Four protected-tree tripwires in two deployments were
+  bytecode a probe wrote; `python -I` ignores `PYTHONDONTWRITEBYTECODE`.

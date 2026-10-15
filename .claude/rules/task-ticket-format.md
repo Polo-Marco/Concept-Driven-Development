@@ -33,6 +33,7 @@ variant below.
 **Skills to Load:** @skills/[relevant-skill]/SKILL.md
 **Reference Docs:** @docs/[file].md (Section: [Name])   ← optional
 **Process Logging:** [Expensive | none]   ← optional, default none
+**Audit:** [deferred]   ← optional (v8.1.20); only for a no-code Trial ticket on a proven harness
 **Depends On:** [Ticket IDs that must complete first, or "none"]
 **Parallel Group:** [Label, e.g. A | omit for sequential]   ← optional
 **Boundary:** [Exact directories/files the Generator may touch]
@@ -73,6 +74,15 @@ implements a slow/costly pipeline (OCR, long agentic chains, batch
 jobs). The Generator then emits structured stage logs per
 `.claude/rules/governance.md` §3. Default `none` — do NOT set it on
 short, cheap functions (over-engineering).
+
+**Audit:** Optional (v8.1.20). `deferred` skips this ticket's
+per-ticket Evaluator audit under any cadence — the deterministic gate,
+the regression guard and the output gate still run, and a criterion's
+FIRST green or the final pass is never deferred. Use it only for a
+ticket with no code change that re-runs a harness which has produced
+evidence before (a Trial on a proven recorder): one deployment bought 19
+such audits, all PASS, nothing found. Never on a ticket that introduces
+a mechanism — that is what the audit exists for.
 
 **Depends On:** Ticket IDs (Phase/Step) that must be committed before
 this ticket can start. Use `none` for the first ticket. Everything
@@ -186,6 +196,16 @@ case that would have been a false kill. The journal's `## Trials`
 section records each launch's actual wall time, which is the
 measurement the next Deadline is sized from.
 
+**A shared-fate trial writes its infrastructure errors** (v8.1.20, R7).
+When the trial pulls from a registry, a dataset hub, an apt mirror or a
+model gateway, its Metrics Contract names `n_infra_error` and
+`infra_error_rate` beside the science metrics, and the Goal gates on
+`infra_error_rate` as a real criterion. Otherwise an outage reads as a
+measured result: three times in one deployment an outage-tainted file
+read green at the free gate and was caught 1–1.5 h later by a paid
+audit or a human (DF M0 it 24–25). A resume never re-summarises a
+finished job whose trials carry infrastructure exceptions.
+
 **`Disk:` is a contract, not a note.** A 54 GB-per-iteration trial that
 never rotated filled its volume at iteration 7, killed the driver
 mid-write and lost four summary fields; the preflight's `>= 100 GB`
@@ -295,6 +315,24 @@ Before ending the Planner session, verify for each ticket:
   edit the environment script or the goal's preflight, not the Trial
   line?** The same vLLM `PATH` defect cost two replans six days apart,
   each fixing the plan (v8.1.17; problem 4).
+- **Every number a Test Contract, tolerance, routing rule or Spec
+  premise depends on names the probe behind it** (v8.1.20, R1) — the
+  `probe: <command> → <output>` line in `Goal.md`, or one you ran in
+  this session. A tolerance states its dtype and comes from a measured
+  noise floor or the ulp at the operating magnitude; a time or
+  throughput bar for a path this loop has not run is `smoke × 1.5` at
+  the run's actual concurrency, never another path's rate. Six replans
+  in one deployment, three escalations in another, and the sole *bad*
+  loop of a third were numbers asserted from memory
+  (`journal/retro-20261015-cross-project.md`, S2).
+- **What does a stop after this ticket strand?** (v8.1.20, R8) Arm N's
+  intermediates (checkpoints, a merged model, a scratch store) are
+  deleted by the ticket that banks their LAST measurement, never by arm
+  N+1's Trial — a stop after arm 1 left 29 GB and 58 GB on disk twice
+  and tripped three later preflights (STAGES). State the disk the
+  ticket leaves behind on PASS and on a stop; a project that merges
+  models keeps at most one merged student on disk, and the ticket that
+  merges names the directory it deletes first (PB pb13).
 - **A ticket that deletes or supersedes banked evidence lists, in
   `Depends On`, the ticket that PROVES the replacement.** Never destroy
   the current measurement until the replacement has produced one: one

@@ -96,6 +96,15 @@ expensive pipelines.
   written in and is meaningless in the next; fixtures carry their own
   copy. (rebuild-v2's `tests/CLAUDE.md` rule 1, promoted per
   `journal/from-agentrl-retro-20260902.md` rec 6.)
+- **No test writes under a criterion's `source` tree** (v8.1.20, R6) —
+  `results/` or whatever the goal names. Every default output path a
+  writer has is redirected by an autouse fixture into the test's own
+  tmp dir. Twice in one deployment a TDD red run or a fixture overwrote
+  banked evidence (`results/s0-setup/serve_check.json`) before its
+  `tests/CLAUDE.md` rules 2 and 7 stopped it; the 2026-07-31
+  `results/` fixture incident in the ticket-format self-check is the
+  same class. The read-side rule above keeps tests honest; this one
+  keeps the evidence intact.
 
 ## 5. Core File Lifecycle
 

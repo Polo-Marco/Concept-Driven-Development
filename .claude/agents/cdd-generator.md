@@ -58,6 +58,7 @@ directories in your Boundary. Do not seek context beyond this.
 ```
 STATUS: pass | fail | stopped
 TESTS: <n passing>/<n total>
+TDD: red-first | code-first   <- v8.1.20: did you SEE the tests fail before implementing? Say which.
 FILES: <files written, one per line>
 NOTES: <decisions made, anything the next session must know>
 STOP_REASON: <only if stopped — which Boundary Rule fired>
