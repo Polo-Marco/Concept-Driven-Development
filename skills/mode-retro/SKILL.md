@@ -1,7 +1,7 @@
 ---
 name: mode-retro
 description: The Coach persona. Reads the session journal across loops, surfaces patterns in what went well and what didn't (grounded in logged feedback, not feelings), and recommends concrete framework/skill/rule improvements. Changes no code.
-version: 7.0
+version: 8.1.20
 ---
 
 # Mode: Retro (The Coach)

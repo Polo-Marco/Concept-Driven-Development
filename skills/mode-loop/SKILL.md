@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only v8.1 "do" command.
 author: framework
-version: 8.1.19
+version: 8.1.20
 ---
 
 # Mode: Loop (v8.1) — `[loop] <goal>`
