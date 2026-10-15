@@ -4807,6 +4807,53 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: criteria re-read when a gate clears (B7) -------------
+
+class TestCriteriaReloadAtTheGate(DriverCase):
+    """STAGES: seven gate-time goal.json amendments, six restarts to load
+    them, one loop that did not restart and paid three retries."""
+
+    def test_an_amendment_is_loaded_and_recorded(self):
+        cfg = self.write_goal()
+        self.write_goal(criteria=[
+            {"metric": "acc", "op": ">", "value": 0.5,
+             "source": "results/out.json"},
+            {"metric": "n", "op": ">=", "value": 10,
+             "source": "results/out.json"}])
+        loop.reload_criteria(cfg)
+        self.assertEqual(cfg["criteria"][0]["value"], 0.5)
+        self.assertEqual(len(cfg["criteria"]), 2)
+        ev = [e for e in self.events() if e["event"] == "criteria_amended"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("~ acc@results/out.json: > 0.0 -> > 0.5",
+                      ev[0]["detail"])
+        self.assertIn("+ n@results/out.json >= 10", ev[0]["detail"])
+
+    def test_an_unchanged_file_is_silent(self):
+        cfg = self.write_goal()
+        loop.reload_criteria(cfg)
+        self.assertEqual(self.events(), [])
+
+    def test_a_malformed_amendment_is_refused_and_the_old_stand(self):
+        cfg = self.write_goal()
+        self.write_goal(criteria=[{"metric": "acc", "op": "~", "value": 1}])
+        loop.reload_criteria(cfg)
+        self.assertEqual(cfg["criteria"][0]["value"], 0.0)
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("criteria_amendment_refused", kinds)
+        self.assertNotIn("criteria_amended", kinds)
+
+    def test_budgets_reload_still_leaves_criteria_frozen(self):
+        """Protocol #4 between gates: reload_budgets() must not become
+        the back door."""
+        cfg = self.write_goal()
+        self.write_goal(criteria=[{"metric": "acc", "op": ">",
+                                   "value": 0.9,
+                                   "source": "results/out.json"}])
+        loop.reload_budgets(cfg)
+        self.assertEqual(cfg["criteria"][0]["value"], 0.0)
+
+
 # ---------- v8.1.19: a connectivity death is a wait, not an attempt (B3) -
 
 class TestNetworkWaitIsNotAnAttempt(DriverCase):

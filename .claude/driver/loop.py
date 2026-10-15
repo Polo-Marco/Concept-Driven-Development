@@ -1745,6 +1745,58 @@ def reload_budgets(cfg: dict) -> None:
         event("budgets_updated", detail=json.dumps(b, sort_keys=True))
 
 
+def reload_criteria(cfg: dict) -> None:
+    """Re-read `criteria` from goal.json -- ONLY when a gate has just
+    cleared. The one bounded exception to Protocol #4.
+
+    v8.1.19. Criteria were loaded once at startup, so an amendment the
+    user made at the gate -- the one moment they are already editing the
+    goal, with the Evaluator's CRITERIA CONCERN in front of them --
+    reached the driver only through a restart, which costs an iteration
+    and re-runs every preflight. Seven STAGES loops amended at a gate;
+    six restarted, and the seventh (s17) did not and paid three
+    output-gate retries, an adjudication and a restart anyway
+    (journal/retro-20261015-cross-project.md, B7). Immutability stays
+    the rule between gates: nothing else re-reads this key, and every
+    change is written to events.jsonl as `criteria_amended` so the
+    journal shows the contract that actually ran. A malformed amendment
+    is refused (fail-closed) and the loaded criteria stand.
+    """
+    fresh = load(GOAL, None)
+    if not isinstance(fresh, dict) or "criteria" not in fresh:
+        return
+    new, old = fresh["criteria"], cfg.get("criteria", [])
+    if new == old:
+        return
+    bad = []
+    if not isinstance(new, list) or not new:
+        bad.append("criteria must be a non-empty list")
+    else:
+        for i, c in enumerate(new):
+            if not isinstance(c, dict) or any(
+                    k not in c for k in ("metric", "op", "value", "source")):
+                bad.append(f"criteria[{i}]: needs metric, op, value, source")
+            elif c.get("op") not in OPS:
+                bad.append(f"criteria[{i}]: op {c.get('op')!r}")
+    if bad:
+        event("criteria_amendment_refused",
+              detail="goal.json criteria changed at the gate but are "
+                     "malformed; the loaded criteria stand -- "
+                     + "; ".join(bad))
+        return
+    by_key = lambda cs: {crit_key(c): c for c in cs}
+    o, n = by_key(old), by_key(new)
+    diff = ([f"+ {k} {n[k]['op']} {n[k]['value']}" for k in n if k not in o]
+            + [f"- {k}" for k in o if k not in n]
+            + [f"~ {k}: {o[k]['op']} {o[k]['value']} -> "
+               f"{n[k]['op']} {n[k]['value']}"
+               for k in n if k in o and n[k] != o[k]])
+    cfg["criteria"] = new
+    event("criteria_amended",
+          detail="goal.json criteria amended at the gate: "
+                 + "; ".join(diff))
+
+
 def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0) -> dict:
     """Route a Generator stop -- REPLAN, RETRY, or ESCALATE -- decided
     by one bounded read-only Evaluator session, not by the driver.
@@ -2227,6 +2279,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             phase_contract_review(cfg, st)
             wait_approval(st, "replan", f"Replan #{st['replans']}: "
                           + str(v.get("reason", "")))
+            reload_criteria(cfg)              # v8.1.19: the gate exception
             flush_pregate(f"replan #{st['replans']} approved")
             st["phase"] = "iterate"
             save(STATE, st)
@@ -2374,7 +2427,12 @@ def write_journal(cfg: dict, st: dict) -> Path:
                "plan_rejected", "goal_reached", "session_died",
                "hook_denials", "stop_adjudicated", "trial_failed",
                "contract_review_halted", "monitor_overruled",
-               "output_gate", "note", "approval_waiting", "wip_committed")
+               "output_gate", "note", "approval_waiting", "wip_committed",
+               # v8.1.19
+               "criteria_amended", "criteria_amendment_refused",
+               "network_wait", "network_restored", "network_wait_exhausted",
+               "preflight_skipped", "paused", "verdict_missing",
+               "deadline_exceeded")
     evs = []
     # v8.1.18: a STREAK of `session_died` is one line with a count and a
     # time window. A 37-minute DNS outage wrote 50 identical lines into
@@ -3030,6 +3088,7 @@ def main() -> None:
                           "Plan.md ready. Contract review: "
                           + st.get("contract", "not recorded")
                           + ".\nReview it, then approve.")
+            reload_criteria(cfg)              # v8.1.19: the gate exception
             flush_pregate("plan approved")
             st["phase"] = "iterate"
             save(STATE, st)
