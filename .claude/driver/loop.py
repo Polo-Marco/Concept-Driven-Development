@@ -1313,6 +1313,16 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
             # v8.1: bill as we go so a cap can trip DURING a long trial,
             # not only after it ends.
             bill()
+            # v8.1.18: re-read the caps HERE too. Budgets were
+            # hot-reloaded only between iterations (v8.1.6), so a cap
+            # raised while a trial ran was compared against the `cfg`
+            # captured at dispatch: `status` showed 12.2 / 20 GPU-h while
+            # the driver killed the third seed at the old 12.0 and
+            # escalated "budget exhausted" (JEV loop 5, 08:39;
+            # journal/retro-20261015-cross-project.md, B4). The trial is
+            # the only time a GPU cap can trip, so it is the one place
+            # the reload must happen.
+            reload_budgets(cfg)
             if budget_exceeded(st, cfg) in ("max_gpu_hours",
                                             "max_wall_hours"):
                 kill_trial(proc)

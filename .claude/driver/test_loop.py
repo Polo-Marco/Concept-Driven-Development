@@ -4779,6 +4779,41 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.18: a cap raised mid-trial applies to that trial (B4) ---
+
+class TestBudgetReloadInsideTrial(DriverCase):
+    """JEV loop 5: `status` read 12.2 / 20 GPU-h while run_trial killed
+    the third seed against the 12.0 cap captured at dispatch."""
+
+    def test_a_raised_gpu_cap_is_read_while_the_trial_runs(self):
+        self.clock = FakeClock(start=self._real_time.time(), step=600.0)
+        loop.time = self.clock
+        loop.claude = lambda *a, **k: json.dumps({"status": "HEALTHY"})
+        # the FILE carries the raised cap ...
+        cfg = self.write_goal(monitor={"interval_min": 1},
+                              budgets={"max_iterations": 8, "max_usd": 10,
+                                       "max_gpu_hours": 1_000_000})
+        # ... the dispatch-time dict still carries the old, tiny one
+        cfg["budgets"]["max_gpu_hours"] = 0.01
+        body = "**Trial:** sleep 1\n**Monitor Profile:** cuda_oom"
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 1}, cfg))
+        kinds = [e["event"] for e in self.events()]
+        self.assertNotIn("escalate", kinds)
+        self.assertEqual(cfg["budgets"]["max_gpu_hours"], 1_000_000)
+
+    def test_without_a_raise_the_cap_still_trips_during_the_trial(self):
+        self.clock = FakeClock(start=self._real_time.time(), step=600.0)
+        loop.time = self.clock
+        loop.claude = lambda *a, **k: json.dumps({"status": "HEALTHY"})
+        cfg = self.write_goal(monitor={"interval_min": 1},
+                              budgets={"max_iterations": 8, "max_usd": 10,
+                                       "max_gpu_hours": 0.01})
+        body = "**Trial:** sleep 1\n**Monitor Profile:** cuda_oom"
+        self.assertFalse(loop.run_trial("T", body, {"iteration": 1}, cfg))
+        esc = [e for e in self.events() if e["event"] == "escalate"]
+        self.assertTrue(esc and "budget" in esc[0]["detail"])
+
+
 # ---------- v8.1.18: the prompt travels on stdin (B2) --------------------
 
 class TestPromptOnStdin(DriverCase):
