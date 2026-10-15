@@ -124,7 +124,14 @@ repo) and the tcocrai retro it cites.
 4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
    agent session may edit them — a loop that can move its own
    goalposts optimizes the wrong thing. Change of goal = user edits +
-   fresh loop.
+   fresh loop. **One bounded exception** (v8.1.19): the driver re-reads
+   `criteria` at the moment a plan or replan gate clears — the one
+   point where the user is already editing the goal with the
+   Evaluator's CRITERIA CONCERN in front of them — and writes the diff
+   to `events.jsonl` as `criteria_amended`. Between gates nothing
+   re-reads the key. Seven loops of one deployment amended at a gate;
+   six restarted the driver to load it, each restart an iteration and a
+   preflight hand-edit (`journal/retro-20261015-cross-project.md`, B7).
 5. **Trial provenance.** A launched trial's config is immutable.
    Crash-recovery with an identical config may reuse the trial ID; ANY
    parameter change = new trial ID via REPLAN, recorded in the ledger.
@@ -361,6 +368,56 @@ driver now reads the result's own error flag, bills the failed session
 and re-dispatches it once, exactly as for a session that produced no
 output.
 
+**A connectivity death is a wait, not an attempt** (v8.1.19). The
+one-shot re-dispatch bridges a blip; it never bridged a 15–80 minute
+DNS or API outage, and what happened instead was that each dead
+Generator dispatch fell through to the output gate ("the Run Command
+left no log"), was RETRIED, consumed an attempt, then the cap
+adjudicator died of the same outage and the loop escalated — 11 of 16
+escalations and 8 of 27 iterations in one deployment, three attempts
+and an escalation per 37-minute outage in another
+(`journal/retro-20261015-cross-project.md`, B3). When both dispatches
+die with the connectivity class (`EAI_AGAIN`, `ENOTFOUND`,
+`ECONNRESET`, `ETIMEDOUT`, "Can't reach", 529/overloaded) the driver
+stops its runtime clock — an outage is not driver time, exactly as a
+gate is not — emits `network_wait`, probes the API host every 60 s up
+to `budgets.max_network_wait_min` (default 120, hot-reloadable), and
+re-dispatches on `network_restored`. Only a wait that runs out is a
+dead session, and a dead Generator session is NOT an attempt: it skips
+the output gate, consumes no attempt, and escalates as
+`infrastructure` with the ticket unrun — a different human move from a
+judged failure.
+
+**A live Evaluator that wrote no verdict is asked once more**
+(v8.1.19). The dead-session retry covers a session that died; a session
+that exited 0 having written nothing was read straight as ESCALATE and
+woke a human for a forgotten last step (STAGES s8 21:15). Every
+Evaluator dispatch whose contract is a verdict — contract review, Mode
+2, final audit, adjudication — is re-dispatched once with
+`verdict_missing` on the record. A dead session is not asked a third
+time.
+
+**A Trial that dies twice identically is adjudicated, not relaunched**
+(v8.1.19). Protocol #5's relaunch is for nondeterministic deaths; a vLLM
+OOM relaunched verbatim bought nothing (JEV loop 3). The second
+consecutive trial failure in one iteration goes to a Mode-3
+adjudication carrying both logs' tails, and routes as any stop does:
+REPLAN (the Trial line, its config or the environment it assumes is
+defective), RETRY (plausibly nondeterministic — one more launch, granted
+once), or ESCALATE.
+
+**The review cap counts re-reviews, and says what it bought** (v8.1.19).
+The v8.1.17 cap counted every review, including the FIRST review of
+each replan's fresh plan, so with `max_replans` 8 the last replans were
+unreachable and one loop escalated "the contract, not the plan, is what
+keeps failing" after six first reviews of environment-fact replans that
+disputed nothing in `Goal.md` (DF M0). The first review of a plan phase
+is the replan's own cost and is uncounted; only rounds bought because
+the last one said REVISE count, the cap is checked before a revision is
+bought (never pay for a revision nothing will review), and the
+escalation lists each paid round so the reader can see whether the
+REVISE lines dispute the Goal or the plan.
+
 **A session that DIED is not a verdict** (v8.1.13). One dispatch could
 not tell "the auditor judged this unsalvageable" from "the auditor never
 ran": an Evaluator that died on its first token with API Error 529 wrote
@@ -409,6 +466,29 @@ When the clock does confirm one, the driver raises it as an INTERVENE
 even if the Monitor read HEALTHY. A Profile with no `stall_min` never
 kills on stall. Sizing the two keys is the Planner's job
 (`task-ticket-format.md`).
+
+**`Deadline:` is read to size the poll and to warn, never to kill**
+(v8.1.19). Nothing read the v8.1.17 field: a 4× under-estimate on a
+healthy trial had no effect, and a 25 h trial polled every 10 min cost
+137 Monitor sessions and 23 % of its loop for no decision — about 2,600
+polls across seven deployments decided nothing
+(`journal/retro-20261015-cross-project.md`, S4, B12, B13). The driver
+now parses the Deadline's result (`… = N min`), sets the poll interval
+to the longer of the Profile's and Deadline/30, tells every Monitor
+poll "Deadline N min, elapsed M min, over is not by itself a failure",
+and emits `deadline_exceeded` ONCE at 1.5×. A kill still needs the
+Monitor's non-HEALTHY verdict or the driver's stall clock; a kill on
+the Deadline alone would have been the sixth false kill of a healthy
+run in these retros. `validate_goal()` warns on an opus- or fable-class
+Monitor: one loop paid $26, 39 % of its spend, for 68 HEALTHY readings.
+
+**A preflight check can be first-start only** (v8.1.19). Every check
+runs on every start, including resume — right for `.env`, endpoints and
+daemons, wrong for a precondition of the "`<dir>` absent" shape, which
+goes false by design the moment ticket 1 runs. Ten loops of one
+deployment failed every restart on one and hand-edited the worktree's
+`goal.json` each time (B8). A check may carry `"when": "first-start"`;
+on resume it is skipped and `preflight_skipped` names it.
 
 ## Human gates & remote control
 
@@ -465,6 +545,23 @@ workaround was a control tower hand-editing `loop-state.json` under a
 running loop (L5), which is the class of intervention the loop 10
 postmortem exists to warn against.
 
+**Pausing after a ticket is a command** (v8.1.19):
+
+```bash
+python3 .claude/driver/loop.py pause-after "Phase 2, Step 3"
+```
+
+The driver reads the flag at the ticket boundary: after that ticket
+PASSES and its commit lands it emits `paused`, writes the journal and
+exits with the phase still `iterate`, so `start` resumes with the next
+ticket. Three loops of one deployment needed "stop after ticket N"; the
+workarounds were two driver kills at a Generator start and once
+lowering `max_iterations` as a pause, which landed 8 s after the next
+Step was dispatched and deleted the checkpoints the user wanted,
+irrecoverably (`journal/retro-20261015-cross-project.md`, B9). This is
+the fourth user command the scope guard below says a retro must
+demand; it was demanded three times.
+
 **A manual change under a running loop is noted when it is made**
 (v8.1.16):
 
@@ -493,6 +590,15 @@ the whole previous record; 22 files held 53 `## Request` sections.
 The heading is matched as a line now, and a record the old driver
 nested heals on its next rewrite).
 
+**The Feedback block names who filled it** (v8.1.19). `- Filled by:
+[user | operator under delegation]` is a plain fact line, not a gate:
+on 2026-10-15 the user decided a delegated operator may fill the block,
+and seven deployments ran that way. `[retro]` reads the line to weigh
+the rating; nothing refuses a block the operator wrote. The driver's
+own counts — review rounds, Monitor tally, GPU-hours, each trial's wall
+time — now sit in the Outcome block, so the record carries what a retro
+needs without the user's voice.
+
 **`close` refuses a template Feedback block** (v8.1.17). Six of 22
 loops in one deployment closed on the untouched template while the
 8.1.6 warning printed every time — exactly the window of continuous
@@ -508,10 +614,15 @@ line `[retro]` cannot get anywhere else.
 python3 .claude/driver/loop.py close      # add --force if not `done`
 ```
 
-It writes the record, prints the criteria one last time, deletes
+It writes the record, prints the criteria one last time, copies
+`ledger.jsonl` and `events.jsonl` to `journal/raw/<record>/` (v8.1.19 —
+the journal is a projection of them, and once they were deleted no
+Monitor verdict or adjudication text could be re-read), deletes
 `Plan.md`, `Evaluation.md`, `verdict.json`, `goal.json`, `Goal.md`,
 `ledger.jsonl`, `loop-state.json`, `events.jsonl` and the approval
-flags, and commits. It deliberately does NOT merge or delete the
+flags, and commits. Tier-2 traces are archived into the PRIMARY tree's
+`journal/traces/` since v8.1.19; three deployments lost every trace of
+their first campaign when the worktree that held them was removed. It deliberately does NOT merge or delete the
 branch, and does not touch the tree you started from — those are
 irreversible and yours; it prints the commands. Four retros in a row
 flagged unclosed loops while the reminder was already in place, so the

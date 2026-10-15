@@ -109,11 +109,12 @@ expensive pipelines.
 | `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** — deleted after user signs off | Evaluator verdict + audits |
 | `Goal.md` + `goal.json` | **Ephemeral** — frozen at loop start, deleted after sign-off | User-owned goal contract (v8.0) |
-| `ledger.jsonl` | **Ephemeral** — summarized into `journal/` at loop end, then deleted | Trial memory for REPLANs (driver-written) |
+| `ledger.jsonl` | **Ephemeral** — copied to `journal/raw/<record>/` by `close` (v8.1.19), then deleted | Trial memory for REPLANs (driver-written) |
 | `loop-state.json` / `events.jsonl` | Ephemeral, gitignored | Driver state (crash resume) + event feed |
 | `verdict.json` | **Ephemeral** | Machine verdict (Evaluator → driver) |
 | `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[retro]`) |
-| `journal/traces/*.jsonl` | Persistent, gitignored | Full raw session transcripts (Tier 2, Claude Code hook) |
+| `journal/traces/*.jsonl` | Persistent, gitignored; written into the PRIMARY tree (v8.1.19) | Full raw session transcripts (Tier 2, Claude Code hook) |
+| `journal/raw/<record>/` | Persistent | `ledger.jsonl` + `events.jsonl` of a closed loop (v8.1.19) |
 | `skills/` | Persistent, evolving | Execution patterns and rules |
 | `**/CLAUDE.md` (nested) | Persistent, evolving | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | Persistent, user-maintained | External reference docs (immutable to agents) |
@@ -151,6 +152,11 @@ call.
   current loop's file: the Planner appends what it planned and why; the
   Generator appends what it built, commits (SHAs), and any
   stops/retries; the Evaluator appends its verdict.
+- **The `## Feedback` block names who filled it** (v8.1.19: `Filled
+  by: user | operator under delegation`). Under delegated operation the
+  operator fills it and says so; that is an accepted way to run, not a
+  defect, and nothing is gated on the author. The rest of this bullet
+  describes the block when the user writes it.
 - **The user fills the `## Feedback` block** at loop end: a rating
   (good / ok / bad), what went well, and — critically — any
   *instruction that was not followed*. `loop.py close` refuses a
@@ -163,7 +169,10 @@ call.
 **Tier 2 — full raw trace (`journal/traces/*.jsonl`, optional, Claude
 Code only).**
 The complete session transcript — every tool call, input, output, and
-decision — captured automatically by the `SessionEnd` hook in
+decision — written into the PRIMARY tree's `journal/traces/` even when
+the session ran in a per-loop worktree (v8.1.19; three deployments lost
+every trace of a campaign when its worktree was removed), captured
+automatically by the `SessionEnd` hook in
 `.claude/settings.json` (script: `.claude/hooks/archive_transcript.py`).
 Use it to dissect a loop you flagged "bad"; `[retro]` drills into it on
 demand. Cursor has no equivalent, so Tier 2 is Claude-Code-only; Tier 1

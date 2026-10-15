@@ -177,6 +177,14 @@ time (`journal/from-agentrl-retro-20260918.md`, problem 3). Show `K ×
 measured × 1.5` and name the file the measurement came from; when the
 mix of domains changes the per-iteration time, measure per domain. A
 first run with nothing to measure says so and sizes from the smoke.
+**The driver reads the field** (v8.1.19): it takes the last `N min` of
+the arithmetic, sets the Monitor poll interval to the longer of the
+Profile's and Deadline/30, tells every poll the elapsed time against
+it, and emits `deadline_exceeded` once at 1.5×. It never kills on the
+Deadline alone — a 4× under-estimate on a healthy trial (JEVI) is the
+case that would have been a false kill. The journal's `## Trials`
+section records each launch's actual wall time, which is the
+measurement the next Deadline is sized from.
 
 **`Disk:` is a contract, not a note.** A 54 GB-per-iteration trial that
 never rotated filled its volume at iteration 7, killed the driver

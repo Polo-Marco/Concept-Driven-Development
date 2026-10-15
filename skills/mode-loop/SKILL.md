@@ -206,8 +206,11 @@ the tail for it; a one-hour wrap-up dropped both test reads once.
 
 Also extract:
 
-- **Budgets** — max iterations, replans, wall-clock, USD, and GPU-hours
-  for experiment goals. Propose defaults; make the user confirm. These
+- **Budgets** — max iterations, replans, wall-clock, USD, GPU-hours,
+  and (v8.1.19) `max_network_wait_min`: how long the driver waits out
+  an API or DNS outage before a dead session counts as one (default
+  120; the wait is not driver runtime). GPU-hours apply to experiment
+  goals. Propose defaults; make the user confirm. These
   are circuit breakers, not accounting: set them assuming something
   will spin idle overnight, because eventually something will. For a
   first unattended run, prefer tight (`max_iterations` near the ticket
@@ -296,6 +299,14 @@ Rules for preflight checks:
   20260918.md`, problem 2). Where the argv is not known until the
   Planner writes it, the Planner owns the same probe as its first
   ticket (`task-ticket-format.md` self-check).
+- **A check runs on every start, including resume — unless it says
+  otherwise** (v8.1.19). A precondition of the "`<dir>` absent" shape is
+  true once and false by design after ticket 1, so it failed every
+  restart and was hand-edited each time in ten loops of one deployment.
+  Tag it `"when": "first-start"` in `goal.json` and the driver skips it
+  on resume (`preflight_skipped`). Disk a download will consume belongs
+  in the Trial's `Disk:` line, not in a threshold; a file-count glob
+  must exclude the loop's own outputs.
 - Zero checks is a legal answer, but it must be a **stated conclusion**,
   not an omission. Write "no external preconditions" into Goal.md.
 
@@ -428,6 +439,16 @@ the loop from here on:
   journal record, deletes the ephemeral artifacts and commits; it never
   merges the branch. Remind them to fill the `## Feedback` block first —
   `[retro]` reads it, and it is the one part the driver cannot write.
+  Under delegated authority you fill it yourself and set `Filled by:
+  operator under delegation` (v8.1.19); copy the final audit's
+  non-blocking caveats into Notes before `close` deletes Evaluation.md.
+- `pause-after` → when the user wants to inspect something before the
+  next ticket runs (v8.1.19): `python3 .claude/driver/loop.py
+  pause-after "Phase N, Step M"`. The driver finishes that ticket,
+  commits it and exits with the phase still `iterate`; `start` resumes.
+  Never kill the driver or lower `max_iterations` as a pause — the
+  latter once landed 8 s after the next Step was dispatched and deleted
+  the checkpoints the user wanted to inspect.
 - **Any manual change under a running loop gets a note the moment it is
   made** (v8.1.16): `python3 .claude/driver/loop.py note "<what and
   why>"`. A simulator swapped, a hook patched, a budget edited by hand,

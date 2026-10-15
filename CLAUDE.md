@@ -128,7 +128,10 @@ never work around.
    Output files, its Run Command's log and the criteria it owns on
    disk (v8.1.16). A trial's stall is decided by the driver's clock,
    never by the Monitor; contract review is capped per loop, not per
-   replan (v8.1.17). Ledger appended every iteration. Budgets checked —
+   replan (v8.1.17). A connectivity outage is waited out, not billed
+   as attempts; criteria are re-read when a gate clears; a preflight
+   check can be `first-start` only; `loop.py pause-after "<ticket>"`
+   stops cleanly after that ticket's commit (v8.1.19). Ledger appended every iteration. Budgets checked —
    and re-read — every iteration. Any manual change under a running
    loop is recorded with `loop.py note "<text>"`.
 5. Final evaluation verifies ALL `goal.json` criteria → done. The
@@ -154,7 +157,8 @@ at session start); parallel groups follow
   iterations, verdicts, criteria, notable events) on every terminal
   exit and never overwrites the Feedback block; in manual sessions each
   session appends its own. Primary artifact for `[retro]`.
-- **Tier 2 (`journal/traces/*.jsonl`):** full transcripts via the
+- **Tier 2 (`journal/traces/*.jsonl`, in the PRIMARY tree since
+  v8.1.19):** full transcripts via the
   `SessionEnd` hook. Gitignored. Claude Code only.
 
 ## Quick Reference
