@@ -1552,6 +1552,16 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
                 # v8.1: a killed trial is NOT an evaluable trial.
                 return False
     bill()
+    # v8.1.19 (C4): the trial's wall time goes on the record. The next
+    # Planner's Deadline must be arithmetic on a MEASURED number
+    # (v8.1.17), and the measurement lived only in a gitignored log
+    # that one deployment preserved by hand (JEVI).
+    event("trial_done",
+          detail=f"{tid} attempt {attempt}: {(time.time() - trial_start) / 60:.0f} "
+                 f"min wall, exit {proc.returncode}"
+                 + (f", Deadline {deadline:.0f} min" if deadline else ""),
+          minutes=round((time.time() - trial_start) / 60, 1),
+          exit=proc.returncode)
     if proc.returncode != 0:
         event("trial_failed",
               detail=f"trial exited {proc.returncode} -- see "
@@ -2477,6 +2487,7 @@ def phase_final(cfg: dict, st: dict) -> None:
 
 FEEDBACK_BLOCK = """## Feedback (filled by user)
 - Rating: [good | ok | bad]
+- Filled by: [user | operator under delegation]
 - What went well:
 - Instruction(s) not followed:
 - Notes:
@@ -2591,13 +2602,26 @@ def write_journal(cfg: dict, st: dict) -> Path:
         first, last, n, detail = streak
         when = f"`{first}`" if n == 1 else f"`{first}`–`{last}` ×{n}"
         evs.append(f"- {when} **session_died** — {detail}")
+    # v8.1.19 (C4): what every retro had to count by hand -- Monitor
+    # polls and how many said anything, each trial's wall time.
+    polls = non_healthy = overruled = 0
+    trials = []
     if EVENTS.exists():
         for line in EVENTS.read_text().splitlines():
             try:
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if e.get("event") not in notable:
+            kind = e.get("event")
+            if kind == "monitor":
+                polls += 1
+                non_healthy += str(e.get("detail", "")) != "HEALTHY"
+            elif kind == "monitor_overruled":
+                overruled += 1
+            elif kind == "trial_done":
+                trials.append(f"- `{str(e.get('ts', ''))[11:19]}` "
+                              + str(e.get("detail", "")))
+            if kind not in notable:
                 continue
             ts = str(e.get("ts", ""))[11:19]
             if e["event"] == "session_died":
@@ -2630,8 +2654,19 @@ def write_journal(cfg: dict, st: dict) -> Path:
            f" / {b.get('max_usd', '-')} · driver runtime: {hours:.1f}h"
            f" / {b.get('max_wall_hours', '-')}",
            f"- elapsed: {cal:.1f}h calendar — {max(0.0, cal - hours):.1f}h"
-           f" of it waiting on a human", "",
+           f" of it waiting on a human",
+           # v8.1.19 (C4)
+           f"- gpu-hours: {st.get('gpu_hours', 0.0):.2f}"
+           f" / {b.get('max_gpu_hours', '-')}",
+           f"- contract review: {len(st.get('review_log', []))} round(s)"
+           f" bought, {st.get('review_rounds', 0)} of them re-reviews"
+           f" after a REVISE (cap {b.get('max_review_rounds', MAX_REVIEW_ROUNDS)})",
+           f"- monitor: {polls} poll(s) · {non_healthy} non-HEALTHY ·"
+           f" {overruled} overruled by the driver", "",
            "```"] + role_table(cfg, st, live=False) + ["```", ""]
+    if trials:
+        out += ["## Trials (wall time per launch — size the next "
+                "Deadline from these)"] + trials + [""]
     if tick:
         out += ["## Tickets"] + [
             f"- [{'x' if d else ' '}] {i} — {t}" for i, t, _, d in tick

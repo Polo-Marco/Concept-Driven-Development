@@ -4812,6 +4812,64 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: the Outcome block counts what retros counted (C3, C4)
+
+class TestOutcomeBlockCounts(DriverCase):
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(PLAN)
+
+    def state(self):
+        return {"phase": "done", "iteration": 3, "replans": 1,
+                "spent_usd": 1.0, "gpu_hours": 2.5,
+                "review_rounds": 2,
+                "review_log": ["replan #0 revision 0: REVISE -- first "
+                               "review, uncounted",
+                               "replan #0 revision 1: REVISE",
+                               "replan #0 revision 2: OK"],
+                "started": "2026-10-15T10:00:00+08:00",
+                "started_epoch": loop.time.time()}
+
+    def test_c3_the_template_has_a_filled_by_line_and_close_still_refuses(self):
+        self.assertIn("- Filled by: [user | operator under delegation]",
+                      loop.FEEDBACK_BLOCK)
+        # the close guard keys on the Rating line, which is unchanged
+        self.assertEqual(loop.FEEDBACK_BLOCK.splitlines()[1],
+                         "- Rating: [good | ok | bad]")
+
+    def test_c4_review_rounds_gpu_hours_monitor_and_trials(self):
+        cfg = self.write_goal(budgets={"max_iterations": 8, "max_usd": 10,
+                                       "max_gpu_hours": 20})
+        for s in ("HEALTHY", "HEALTHY", "INTERVENE", "HEALTHY"):
+            loop.event("monitor", detail=s)
+        loop.event("monitor_overruled", detail="stall verdict while ...")
+        loop.event("trial_done", detail="Phase 1, Step 1 attempt 1: 83 min "
+                                        "wall, exit 0, Deadline 20 min",
+                   minutes=83.0, exit=0)
+        text = loop.write_journal(cfg, self.state()).read_text()
+        self.assertIn("- gpu-hours: 2.50 / 20", text)
+        self.assertIn("- contract review: 3 round(s) bought, 2 of them "
+                      "re-reviews after a REVISE (cap 6)", text)
+        self.assertIn("- monitor: 4 poll(s) · 1 non-HEALTHY · 1 overruled "
+                      "by the driver", text)
+        self.assertIn("## Trials", text)
+        self.assertIn("83 min wall, exit 0, Deadline 20 min", text)
+        self.assertIn("- Filled by:", text)
+
+    def test_c4_run_trial_records_its_wall_time(self):
+        clock = FakeClock(start=self._real_time.time(), step=600.0)
+        loop.time = clock
+        loop.claude = lambda *a, **k: json.dumps({"status": "HEALTHY"})
+        cfg = self.write_goal(monitor={"interval_min": 1})
+        body = "**Trial:** sleep 1\n**Monitor Profile:** cuda_oom\n"
+        loop.run_trial("Phase 1, Step 1", body, {"iteration": 2}, cfg, 1)
+        done = [e for e in self.events() if e["event"] == "trial_done"]
+        self.assertEqual(len(done), 1)
+        self.assertIn("Phase 1, Step 1 attempt 1:", done[0]["detail"])
+        self.assertIn("exit 0", done[0]["detail"])
+        self.assertGreater(done[0]["minutes"], 0)
+
+
 # ---------- v8.1.19: the driver reads Deadline -- to size and to warn -----
 
 class TestDeadlineIsReadNotEnforced(DriverCase):
