@@ -4500,7 +4500,11 @@ class TestDriverDecidesStall(DriverCase):
                      evidence="no new output for 2 intervals")
         body = "**Trial:** sleep 3\n**Monitor Profile:** stall_min: 120"
         st = {"iteration": 1}
-        self.stamp_log(-10 ** 7)                    # written "later"
+        # v8.1.18: 10**9, not 10**7. The fake clock advances 600 s per
+        # poll while the real `sleep 3` runs, so on a fast machine the
+        # loop spun past a +10**7 s stamp in ~16,700 polls and the
+        # driver raised a real stall -- the test depended on CPU speed.
+        self.stamp_log(-10 ** 9)                    # written "later"
         self.assertTrue(loop.run_trial("T", body, st, self.cfg))
         kinds = [e["event"] for e in self.events()]
         self.assertIn("monitor_overruled", kinds)
@@ -4535,7 +4539,7 @@ class TestDriverDecidesStall(DriverCase):
         store.mkdir(parents=True)
         ckpt = store / "step-12.pt"
         ckpt.write_text("x")
-        t = self._real_time.time() + 10 ** 7        # written "later"
+        t = self._real_time.time() + 10 ** 9        # written "later"
         os.utime(ckpt, (t, t))
         body = ("**Trial:** sleep 3\n**Monitor Profile:**\n"
                 "- stall_min: 30\n- writes: store/\n- noise: none")
