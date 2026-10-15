@@ -45,7 +45,7 @@ TZ = ZoneInfo("Asia/Taipei")  # v8.1.17: one clock everywhere
 CALL_SUMMARY = ""
 
 
-def log_denial(msg: str) -> None:
+def log_denial(msg: str, net: str = "-", token: str = "-") -> None:
     """Leave a trace of the denial where the driver and user can find it.
 
     v8.1.9: `deny()` wrote to the agent's stderr and exited 2, and
@@ -74,15 +74,33 @@ def log_denial(msg: str) -> None:
         # reported as three (journal/from-agentrl-retro-20260902.md,
         # problem 9).
         summary = CALL_SUMMARY[:300].replace("\n", "\\n")
+        # v8.1.18: a denial names the NET that fired and the TOKEN it
+        # matched, and a command the 300-char summary truncates is kept
+        # whole in logs/denials/<stamp>.txt. Thirteen denials in one
+        # deployment and six in another could not be classified after
+        # the fact -- true positive or hook defect -- because the log
+        # held a cut command and a generic message
+        # (journal/retro-20261015-cross-project.md, A5: STAGES problem
+        # 8, DF problem 2). The first four tab-separated fields are
+        # unchanged, so the driver's denials_seen() still counts records.
+        full = "-"
+        if len(CALL_SUMMARY) > 300:
+            fd = os.path.join(d, "denials")
+            os.makedirs(fd, exist_ok=True)
+            full = os.path.join("logs", "denials",
+                                stamp.replace(":", "") + ".txt")
+            with open(os.path.join(root, full), "w") as fh:
+                fh.write(CALL_SUMMARY)
         with open(os.path.join(d, "denials.log"), "a") as fh:
             fh.write(f"{stamp}\t{os.environ.get('CDD_ROLE', '-')}\t"
-                     f"{msg}\t{summary}\n")
+                     f"{msg}\t{summary}\tnet={net} token={token}\t"
+                     f"full={full}\n")
     except Exception:
         pass
 
 
-def deny(msg: str) -> None:
-    log_denial(msg)
+def deny(msg: str, net: str = "-", token: str = "-") -> None:
+    log_denial(msg, net, token)
     print(f"CDD authority: DENIED. {msg} "
           f"(role={os.environ.get('CDD_ROLE')}; see "
           f".claude/rules/phase-authority.md). If this blocks your "
@@ -108,10 +126,20 @@ PROTECTED_ALWAYS = (
 # denials, and an Evaluator audit killed before it ran the test suite.
 # Verified after the fix: `git commit -m x`, `git add -A`,
 # `git  checkout main` and `cd /tmp && git push` are all still denied.
+#
+# v8.1.18: `(?!-)` after the subcommand. `\bmerge\b` matched the
+# `merge` of `git merge-base`, a read-only query, and killed the FINAL
+# Evaluator audit in three deployments -- each patched it locally,
+# none sent the patch home (journal/retro-20261015-cross-project.md,
+# A2a: EBFT M3, NVFP4 L9, DF 10-10). A hyphen continues the subcommand
+# name; it is never a gap before an argument.
 GIT_WRITE = re.compile(
     r"\bgit\b[^|;&\n\r]*\b(commit|add|reset|checkout|push|tag|merge|rebase|"
-    r"stash|rm|mv|restore|switch|cherry-pick|revert|clean|worktree)\b"
+    r"stash|rm|mv|restore|switch|cherry-pick|revert|clean|worktree)\b(?!-)"
 )
+# `git -C <tree>`: the repository a git command acts on, when it is not
+# the working directory (v8.1.18, see git_write_denied()).
+GIT_C = re.compile(r"\bgit\s+(?:-\S+\s+)*?-C\s*(\S+)")
 
 # Read-only invocations whose SUBCOMMAND shares a name with a write.
 # Scrubbed out of the command before GIT_WRITE sees it. Each form here
@@ -229,7 +257,14 @@ def is_core(rel: str) -> bool:
 def in_boundary(rel: str, boundary: list[str]) -> bool:
     if rel.startswith("logs/"):
         return True
-    return any(rel == b or rel.startswith(b.rstrip("/") + "/")
+    # v8.1.18: a Boundary entry written with a trailing slash covers the
+    # directory ITSELF, not only what is under it. `rel == b` compared
+    # `runs/x` against `runs/x/`, so `rm -rf runs/x` was denied for a
+    # ticket whose Boundary named `runs/x/` -- a Generator stop and a
+    # replan, after which every later plan had to remember "no trailing
+    # slash" as folklore (journal/retro-20261015-cross-project.md, A1:
+    # EBFT M5b).
+    return any(rel == b.rstrip("/") or rel.startswith(b.rstrip("/") + "/")
                or rel.startswith(b) for b in boundary)
 
 
@@ -271,7 +306,14 @@ HEREDOC = re.compile(r"<<-?\s*['\"]?\w")
 # problem 2b). The shell's own rule is the one applied: inside double
 # quotes `\"` is a character, and a single-quoted span has no escapes.
 QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
-_META = re.compile(r"[|;&<>]")
+# v8.1.18: a NEWLINE inside a quoted span makes it data too. The target
+# scan splits segments on `\n` AFTER blanking the risky quoted spans, so
+# GNU sed's multi-line append -- `sed -i '1a\` NEWLINE `text' file` --
+# was cut at the newline and its first line `'1a\` became the trailing
+# argument, decided as a write to `1a/` outside the Boundary
+# (journal/retro-20261015-cross-project.md, A4: JEV loop 6). A span that
+# spans lines cannot be a path.
+_META = re.compile(r"[|;&<>\n]")
 LAST_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(sed|mv|cp|install|truncate)\b")
 ALL_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(rm|tee|shred)\b")
 DD_OF = re.compile(r"\bdd\b[^|;&]*?\bof=([^\s|;&]+)")
@@ -321,6 +363,22 @@ def expand(tok: str, env: dict) -> str:
         lambda m: env.get(m.group(1) or m.group(2), m.group(0)), tok)
 
 
+def follow_cd(words: list, env: dict, cwd, root: str):
+    """The working directory after a `cd`/`pushd` segment: an absolute
+    path, a path joined onto the tracked one, or "?" when the hook
+    cannot follow (no argument, `-`, `~`, an unresolved `$`). Shared by
+    the target scan (v8.1.16) and the git net (v8.1.18)."""
+    args = [w for w in words[1:] if not w.startswith("-")]
+    arg = expand(args[0], env).strip("'\"") if args else ""
+    if not arg or arg.startswith("~") or "$" in arg:
+        return "?"
+    if os.path.isabs(arg):
+        return arg
+    if cwd != "?":
+        return os.path.join(cwd or root, arg)
+    return cwd
+
+
 def bash_write_targets(cmd: str) -> list:
     """Best-effort list of paths this command would write. See the
     module docstring for what is intentionally out of scope.
@@ -358,14 +416,7 @@ def bash_write_targets(cmd: str) -> list:
         words = seg.split()
         head = words[0].lstrip("(") if words else ""
         if head in ("cd", "pushd"):
-            args = [w for w in words[1:] if not w.startswith("-")]
-            arg = expand(args[0], env).strip("'\"") if args else ""
-            if not arg or arg.startswith("~") or "$" in arg:
-                cwd = "?"
-            elif os.path.isabs(arg):
-                cwd = arg
-            elif cwd != "?":
-                cwd = os.path.join(cwd or root, arg)
+            cwd = follow_cd(words, env, cwd, root)
             continue
         hits = []                # this segment's targets, unexpanded
         hits += REDIRECT.findall(seg)
@@ -401,7 +452,16 @@ def bash_write_targets(cmd: str) -> list:
                 if not t.startswith("-"):
                     hits.append(t)
         for t in hits:
-            t = expand(t, env).strip("'\"")
+            # v8.1.18: shell grouping is not a path. `( ... | tee
+            # logs/latest.log ) | tail -40` -- the ticket format's own
+            # Run Command shape, wrapped in a subshell -- handed `)` to
+            # the role decision as a write target outside the Boundary
+            # (journal/retro-20261015-cross-project.md, A3: DF 10-10,
+            # JEV loop 1). Brackets glued to a token are stripped from
+            # its ends; a token that was nothing but brackets is dropped.
+            t = expand(t, env).strip("'\"").lstrip("({").rstrip(")}")
+            if not t:
+                continue
             if cwd and t and not os.path.isabs(t):
                 if cwd == "?":
                     continue           # undecidable cwd: fail OPEN
@@ -413,6 +473,63 @@ def bash_write_targets(cmd: str) -> list:
     # path that does not exist under any name the shell will use.
     return [t for t in (t.strip("'\"") for t in out)
             if t and t != "/dev/null" and "$" not in t]
+
+
+def git_write_denied(cmd: str) -> str:
+    """The git write subcommand this command would run against THIS
+    repository, or "" when there is none.
+
+    v8.1.18: a git write is decided on the repository it acts on. The
+    net used to match the subcommand anywhere in the command, so a
+    `git init && git add . && git commit` in a /tmp scratch clone -- the
+    Evaluator reconstructing a prior state, which its contract requires;
+    a Planner probing a dependency's pinned revision -- was denied
+    "driver-only" in three deployments, twice killing the audit that
+    had been bought (journal/retro-20261015-cross-project.md, A2b: EBFT
+    M5c x2, DF 10-10 x2, JEV loop 2). loop-protocol.md section 3 has
+    said since v8.1.9 that scratch is outside the matrix; the git net
+    was the one place that never heard.
+
+    Per segment, like the target scan: a `cd` is followed with the same
+    rule (follow_cd), `git -C <tree>` names the tree explicitly, and a
+    tree that resolves to scratch (is_scratch: outside the repo AND
+    under /tmp) is not this repository. `push` is denied everywhere --
+    a scratch clone can still push to a real remote. Fail-CLOSED on
+    anything unresolved: a quoted or `$`-carrying tree, a `cd` the hook
+    cannot follow, all decide as the project tree.
+    """
+    m = HEREDOC.search(cmd)
+    if m:
+        cmd = cmd[:m.start()]
+    scrubbed = GIT_READONLY.sub(" ", QUOTED.sub(" ", cmd))
+    env, cwd = {}, None
+    root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    for seg in SEGMENT.split(scrubbed):
+        words = seg.split()
+        if not words:
+            continue
+        for name, val in ASSIGN.findall(seg):
+            env[name] = expand(val, env)
+        head = words[0].lstrip("(")
+        if head in ("cd", "pushd"):
+            cwd = follow_cd(words, env, cwd, root)
+            continue
+        hit = GIT_WRITE.search(seg)
+        if not hit:
+            continue
+        sub = hit.group(1)
+        if sub == "push":
+            return sub
+        c = GIT_C.search(seg)
+        tree = expand(c.group(1), env) if c else (cwd or root)
+        if tree == "?" or "$" in tree:
+            return sub                          # unresolved: this repo
+        if not os.path.isabs(tree):
+            tree = os.path.join(root if cwd in (None, "?") else cwd, tree)
+        if is_scratch(tree):
+            continue
+        return sub
+    return ""
 
 
 def check_write(role: str, rel: str, boundary: list):
@@ -537,8 +654,14 @@ def main() -> None:
         # is an interpreter escape, out of scope by the module docstring
         # exactly like `python3 -c`, and it is asserted as a known hole
         # in test_loop.py rather than left to be discovered.
-        if GIT_WRITE.search(GIT_READONLY.sub(" ", QUOTED.sub(" ", cmd))):
-            deny("Git write commands are driver-only in loop mode.")
+        #
+        # v8.1.18: decided per segment, on the repository the command
+        # acts on -- see git_write_denied(). The heredoc truncation and
+        # both scrubs above are applied inside it.
+        sub = git_write_denied(cmd)
+        if sub:
+            deny("Git write commands are driver-only in loop mode.",
+                 net="git", token=sub)
         # Loose net for the driver/user-owned files, kept alongside the
         # precise scan below for the cases quoting or expansion can hide
         # a target from it (`cp goal.json{,.bak}`).
@@ -573,9 +696,11 @@ def main() -> None:
         # precise scan below, which keeps the quoted spans that can be
         # one.
         for seg in SEGMENT.split(QUOTED.sub(" ", cmd).lower()):
-            if any(p in seg for p in PROTECTED_ALWAYS) and re.search(
+            named = [p for p in PROTECTED_ALWAYS if p in seg]
+            if named and re.search(
                     r"(\btee\b|\bsed\s+-i|\bmv\b|\brm\b|\bcp\b)", seg):
-                deny("Goal/ledger/state files are user- or driver-owned.")
+                deny("Goal/ledger/state files are user- or driver-owned.",
+                     net="loose", token=named[0])
         # v8.1: apply the SAME role decision as Write/Edit to the paths a
         # shell command would write. Previously core files and ticket
         # Boundaries were unguarded on this branch, so `echo x >
@@ -590,13 +715,14 @@ def main() -> None:
                 # runs no Run Command, and the observer must not be able
                 # to edit the observation it is classifying.
                 deny("Monitor never writes files — classify and stop. "
-                     f"(shell write to '{rel}')")
+                     f"(shell write to '{rel}')", net="target", token=rel)
             if rel.startswith("logs/") or rel == "logs":
                 continue          # gitignored runtime output; the roles
                                   # that execute a Run Command tee here
             msg = check_write(role, rel, boundary)
             if msg:
-                deny(f"{msg} (shell write to '{rel}')")
+                deny(f"{msg} (shell write to '{rel}')",
+                     net="target", token=rel)
         sys.exit(0)
 
     # ---- Write/Edit family -------------------------------------------
@@ -607,7 +733,7 @@ def main() -> None:
         rel = norm(raw)
         msg = check_write(role, rel, boundary_env())
         if msg:
-            deny(msg)
+            deny(msg, net="write", token=rel)
         sys.exit(0)
 
     sys.exit(0)

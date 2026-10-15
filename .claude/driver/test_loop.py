@@ -4758,6 +4758,102 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.18: five hook false positives from seven deployments ---
+
+class TestHookFalsePositives20261015(HookCaller, unittest.TestCase):
+    """journal/retro-20261015-cross-project.md section 2A. Each case is
+    the real command a deployment was denied on, beside the real denial
+    the fix must not loosen."""
+
+    def test_a1_trailing_slash_boundary_covers_the_directory_itself(self):
+        # EBFT M5b: `rm -rf runs/x` against Boundary `runs/x/` -> stop.
+        self.assertEqual(self.call("generator", "Bash",
+                                   {"command": "rm -rf runs/x"},
+                                   boundary="runs/x/"), self.ALLOW)
+        self.assertEqual(self.call("generator", "Bash",
+                                   {"command": "rm -rf runs/xy"},
+                                   boundary="runs/x/"), self.DENY)
+
+    def test_a2a_merge_base_is_not_a_merge(self):
+        # EBFT M3, NVFP4 L9, DF 10-10: killed the final audit each time.
+        self.assertEqual(self.call("evaluator", "Bash", {
+            "command": "git merge-base HEAD origin/master"}), self.ALLOW)
+        self.assertEqual(self.call("evaluator", "Bash", {
+            "command": "git merge-tree A B"}), self.ALLOW)
+        self.assertEqual(self.call("evaluator", "Bash", {
+            "command": "git merge feature"}), self.DENY)
+
+    def test_a2b_git_writes_in_a_tmp_scratch_tree_are_scratch(self):
+        # EBFT M5c, DF 10-10: the Evaluator's /tmp reconstruction and a
+        # Planner probing a pinned revision, both denied driver-only.
+        for cmd in ("cd /tmp/x && git init -q && git add . && "
+                    "git commit -q -m snapshot",
+                    "git -C /tmp/seta checkout abc123",
+                    "D=/tmp/x; git -C $D add ."):
+            self.assertEqual(self.call("evaluator", "Bash",
+                                       {"command": cmd}), self.ALLOW, cmd)
+
+    def test_a2b_push_and_unresolved_trees_stay_denied(self):
+        for cmd in ("git -C /tmp/seta push",
+                    "cd /tmp && git push",
+                    "cd /tmp && cd - && git add .",      # cd not followed
+                    'cd "/tmp/x" && git add .',          # quoted: data
+                    'git -C "$D" add .',                 # unresolved $
+                    "git commit -m x",
+                    "git log --oneline\ngit add -A"):
+            self.assertEqual(self.call("planner", "Bash",
+                                       {"command": cmd}), self.DENY, cmd)
+
+    def test_a3_shell_grouping_is_not_a_write_target(self):
+        # DF 10-10 11:11: the ticket format's Run Command in a subshell.
+        self.assertEqual(self.call("generator", "Bash", {
+            "command": "( { python3 run.py; pytest -q; } 2>&1 | "
+                       "tee logs/latest.log ) | tail -40"},
+            boundary="src/"), self.ALLOW)
+        self.assertEqual(self.call("generator", "Bash", {
+            "command": "{ echo x > src/a.py; }"}, boundary="src/"),
+            self.ALLOW)
+        self.assertEqual(self.call("generator", "Bash", {
+            "command": "( pytest 2>&1 | tee Plan.md )"}, boundary="src/"),
+            self.DENY)
+        self.assertEqual(self.call("generator", "Bash", {
+            "command": "{ echo x > Architecture.md; }"}, boundary="src/"),
+            self.DENY)
+
+    def test_a4_a_multiline_sed_script_is_not_the_target(self):
+        # JEV loop 6: GNU sed append, read as a write to `1a/`.
+        cmd = "sed -i '1a\\\nimport os' src/x.py"
+        self.assertEqual(self.call("generator", "Bash", {"command": cmd},
+                                   boundary="src/"), self.ALLOW)
+        self.assertEqual(self.call("generator", "Bash", {
+            "command": "sed -i '1a\\\nimport os' Plan.md"},
+            boundary="src/"), self.DENY)
+
+    def test_a5_a_denial_names_its_net_and_keeps_the_whole_command(self):
+        with tempfile.TemporaryDirectory(dir=os.path.expanduser("~")) as d:
+            env = {**os.environ, "CDD_ROLE": "generator",
+                   "CDD_BOUNDARY": "src/", "CLAUDE_PROJECT_DIR": d}
+            long_cmd = "echo x > Architecture.md  # " + "y" * 400
+            for cmd in (long_cmd, "git commit -m x"):
+                subprocess.run([sys.executable, str(HOOK)], env=env,
+                               text=True, capture_output=True,
+                               input=json.dumps({"tool_name": "Bash",
+                                                 "tool_input": {
+                                                     "command": cmd}}))
+            lines = (Path(d) / "logs" / "denials.log").read_text() \
+                .splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn("net=target token=architecture.md", lines[0])
+            self.assertIn("net=git token=commit", lines[1])
+            self.assertIn("full=-", lines[1])          # short: inline
+            full = lines[0].split("full=")[1].strip()
+            self.assertNotEqual(full, "-")
+            self.assertEqual((Path(d) / full).read_text(),
+                             "Bash: " + long_cmd)
+            # the driver counts records by their leading timestamp
+            self.assertTrue(all(ln[:4].isdigit() for ln in lines))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])
