@@ -1641,24 +1641,20 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                              f"({v}, revision {start}) -- resuming "
                              f"without buying it again")
             else:
-                bought = st.get("review_rounds", 0)
-                cap_rounds = cfg.get("budgets", {}).get(
-                    "max_review_rounds", MAX_REVIEW_ROUNDS)
-                if bought >= cap_rounds:
-                    event("escalate", detail=(
-                        f"contract review has been bought {bought} times "
-                        f"in this loop across {st.get('replans', 0)} "
-                        f"replan(s) (cap {cap_rounds}). The contract, not "
-                        f"the plan, is what keeps failing: read the "
-                        f"disputed lines in Evaluation.md against "
-                        f"Goal.md, fix the Goal and start a fresh loop -- "
-                        f"or raise budgets.max_review_rounds in the "
-                        f"worktree's goal.json and restart."))
-                    save(STATE, st)
-                    sys.exit(1)
+                # v8.1.19: the cap counts RE-REVIEWS -- rounds bought
+                # because the last one said REVISE -- not the first
+                # review of each plan phase, which is the replan's own
+                # necessary cost. Counting every round, a cap of 6 with
+                # max_replans 8 made the last replans unreachable, and
+                # DF M0 escalated "the contract, not the plan, keeps
+                # failing" after six FIRST reviews of environment-fact
+                # replans that disputed nothing in Goal.md
+                # (journal/retro-20261015-cross-project.md, B6). The
+                # escalation now lists what each paid round was.
                 if VERDICT.exists():
                     VERDICT.unlink()      # never read a stale verdict
-                st["review_rounds"] = bought + 1
+                if revision:
+                    st["review_rounds"] = st.get("review_rounds", 0) + 1
                 claude(st, "evaluator",
                        "Mode 1 -- contract review. Read Plan.md, Goal.md, "
                        "goal.json, and the Architecture Overview. Audit "
@@ -1671,6 +1667,11 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                 v = load(VERDICT, {}).get("verdict")
                 st["review"] = {"plan_hash": h, "revision": revision,
                                 "verdict": "OK" if v == "OK" else "REVISE"}
+                st.setdefault("review_log", []).append(
+                    f"replan #{st.get('replans', 0)} revision {revision}: "
+                    + ("OK" if v == "OK" else
+                       "REVISE" if v is not None else "no verdict (REVISE)")
+                    + ("" if revision else " -- first review, uncounted"))
                 save(STATE, st)
             if v == "OK":
                 event("contract_ok",
@@ -1690,6 +1691,24 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                    "and revise Plan.md accordingly.")
         if revision == MAX_REVISIONS:
             break                 # out of revisions: do not buy one more
+        # v8.1.19: the per-loop cap is checked HERE, before a revision is
+        # bought that the cap would then refuse to review (the v8.1.4
+        # invariant: never pay for a revision nothing will review).
+        bought = st.get("review_rounds", 0)
+        cap_rounds = cfg.get("budgets", {}).get(
+            "max_review_rounds", MAX_REVIEW_ROUNDS)
+        if bought >= cap_rounds:
+            rounds = "\n  ".join(st.get("review_log", [])) or "-"
+            event("escalate", detail=(
+                f"contract review has been re-bought {bought} times after "
+                f"a REVISE in this loop, across {st.get('replans', 0)} "
+                f"replan(s) (cap {cap_rounds}). Each paid round:\n  "
+                f"{rounds}\nIf the REVISE lines dispute Goal.md, fix the "
+                f"Goal and start a fresh loop; if they dispute the plan, "
+                f"raise budgets.max_review_rounds in the worktree's "
+                f"goal.json and restart."))
+            save(STATE, st)
+            sys.exit(1)
         event("contract_revise", detail=f"round {revision + 1}")
         claude(st, "planner", fix)
     event("escalate", detail=(

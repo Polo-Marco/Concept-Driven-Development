@@ -4596,21 +4596,41 @@ class TestReviewRoundsPerLoop(DriverCase):
 
     def test_the_cap_counts_across_replans(self):
         cfg = self.write_goal(type="build")
-        st = {"review_rounds": loop.MAX_REVIEW_ROUNDS, "replans": 1}
+        st = {"review_rounds": loop.MAX_REVIEW_ROUNDS, "replans": 1,
+              "review_log": ["replan #0 revision 1: REVISE"]}
         with self.assertRaises(SystemExit):
             loop.phase_contract_review(cfg, st)
         esc = [e for e in self.events() if e["event"] == "escalate"]
         self.assertTrue(esc and "max_review_rounds" in esc[0]["detail"],
                         esc)
+        # v8.1.19: the escalation lists each paid round (B6)
+        self.assertIn("replan #0 revision 1: REVISE", esc[0]["detail"])
+        self.assertIn("first review, uncounted", esc[0]["detail"])
         self.assertEqual(st["review_rounds"], loop.MAX_REVIEW_ROUNDS,
-                         "nothing was bought at the cap")
+                         "no re-review was bought at the cap")
 
     def test_each_paid_review_counts_and_a_reused_one_does_not(self):
+        """v8.1.19 (B6): the FIRST review of a plan phase is the replan's
+        own cost and is not counted; only re-reviews after a REVISE are.
+        DF M0 hit the cap on six first reviews of environment-fact
+        replans that disputed nothing in Goal.md."""
         cfg = self.write_goal(type="build")
         st = {}
         with self.assertRaises(SystemExit):     # MAX_REVISIONS exhausted
             loop.phase_contract_review(cfg, st)
-        self.assertEqual(st["review_rounds"], loop.MAX_REVISIONS + 1)
+        self.assertEqual(st["review_rounds"], loop.MAX_REVISIONS)
+        self.assertEqual(len(st["review_log"]), loop.MAX_REVISIONS + 1)
+
+    def test_a_first_review_at_the_cap_is_still_bought(self):
+        """Eight environment-fact replans must each get their one review
+        even when earlier REVISE rounds used up the cap."""
+        cfg = self.write_goal(type="build")
+        calls = []
+        loop.claude = lambda _st, role, *a, **k: (calls.append(role) or "")
+        st = {"review_rounds": loop.MAX_REVIEW_ROUNDS, "replans": 1}
+        with self.assertRaises(SystemExit):
+            loop.phase_contract_review(cfg, st)
+        self.assertEqual(calls, ["evaluator"], "exactly the first review")
 
     def test_the_cap_is_a_budget(self):
         cfg = self.write_goal(type="build",
@@ -4619,7 +4639,7 @@ class TestReviewRoundsPerLoop(DriverCase):
         st = {"review_rounds": 7}
         with self.assertRaises(SystemExit):
             loop.phase_contract_review(cfg, st)
-        self.assertEqual(st["review_rounds"], 10)
+        self.assertEqual(st["review_rounds"], 9)      # 2 re-reviews
 
 
 class TestApiErrorIsADeadSession(DriverCase):
