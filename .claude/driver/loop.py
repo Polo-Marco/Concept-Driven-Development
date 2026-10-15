@@ -446,6 +446,16 @@ def validate_goal(cfg: dict) -> None:
     if problems:
         die("goal.json is not a usable contract:\n  - "
             + "\n  - ".join(problems))
+    # v8.1.19 (B13): a warning, not a refusal -- the Monitor runs every
+    # few minutes and decided nothing in ~2,600 polls across seven
+    # deployments; one loop paid $26 (39 % of its spend) for 68 HEALTHY
+    # readings from an opus Monitor (JEV loop 5).
+    mon = str((models or {}).get("monitor", ""))
+    if "opus" in mon or "fable" in mon:
+        print(f"!! models.monitor is {mon}: the Monitor is a cheap health "
+              f"check that has never decided anything a haiku could not; "
+              f"an opus-class Monitor cost one loop 39 % of its spend.",
+              file=sys.stderr)
 
 
 # ---------- gate 3: preflight (environment preconditions) -------------
@@ -1267,6 +1277,28 @@ def stall_profile(profile: str):
     return stall_min, [x for x in paths if x]
 
 
+DEADLINE_MIN = re.compile(r"(\d+(?:\.\d+)?)\s*min", re.I)
+
+
+def deadline_minutes(body: str):
+    """The ticket's `Deadline:` in minutes, or None. The field is
+    arithmetic (`K × measured × 1.5 = N min`, v8.1.17); the LAST
+    `<number> min` is the result."""
+    hits = DEADLINE_MIN.findall(field(body, "Deadline"))
+    return float(hits[-1]) if hits else None
+
+
+def monitor_interval_min(cfg: dict, deadline) -> int:
+    """v8.1.19 (B13): the poll interval is the Profile's, or Deadline/30
+    if that is longer. ~2,600 Monitor polls across seven deployments
+    produced no decision; a 25 h trial polled every 10 min cost 137
+    sessions and 23 % of its loop (EBFT M3). About thirty looks at a
+    trial is enough to see it die (journal/retro-20261015-cross-
+    project.md, S4, B13)."""
+    base = int(cfg.get("monitor", {}).get("interval_min", 10))
+    return max(base, int(deadline // 30)) if deadline else base
+
+
 def last_write(log: Path, paths: list) -> float:
     """Newest mtime across the trial log and every declared path,
     directories walked. 0.0 when nothing exists yet."""
@@ -1337,7 +1369,15 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
     trial_cmd = field(body, "Trial").strip("` \t\n")
     if not trial_cmd:
         return True                       # build ticket: no trial phase
-    interval = 60 * int(cfg.get("monitor", {}).get("interval_min", 10))
+    # v8.1.19 (B12/B13): the driver reads `Deadline:` -- to size the poll
+    # interval and to WARN. It never kills on it alone: JEVI's Deadline
+    # was 4x under on a healthy trial, and a kill there would have been
+    # the sixth false kill of a healthy run in these retros. The
+    # Monitor is told the number; a kill still needs its non-HEALTHY
+    # verdict (and, for stall, the driver's clock).
+    deadline = deadline_minutes(body)
+    interval = 60 * monitor_interval_min(cfg, deadline)
+    deadline_warned = False
     # v8.1.5: one log per ATTEMPT. This was keyed on the iteration and
     # opened "w", but run_trial runs once per attempt -- so the relaunch
     # that a RETRY buys truncated the log of the failure that bought it.
@@ -1419,8 +1459,22 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
             idle_min = max(0.0, (time.time() - last_write(log, writes))
                            / 60)
             stalled = stall_min is not None and idle_min > stall_min
+            elapsed_min = (time.time() - trial_start) / 60
+            if deadline and not deadline_warned \
+                    and elapsed_min > 1.5 * deadline:
+                deadline_warned = True
+                event("deadline_exceeded",
+                      detail=f"{tid}: {elapsed_min:.0f} min elapsed against "
+                             f"a Deadline of {deadline:.0f} min (x1.5 = "
+                             f"{1.5 * deadline:.0f}). Not a kill: the "
+                             f"Monitor is told; the next Deadline is "
+                             f"sized from this run.")
             rep = claude(st, "monitor",
                          f"Monitor Profile:\n{profile}\n\n"
+                         + (f"Deadline (Planner's arithmetic): {deadline:.0f} "
+                            f"min; elapsed {elapsed_min:.0f} min. Over the "
+                            f"deadline is NOT by itself a failure.\n\n"
+                            if deadline else "") +
                          f"Driver-measured: the last write to the trial "
                          f"log or its declared `writes:` paths was "
                          f"{idle_min:.0f} min ago; stall_min is "

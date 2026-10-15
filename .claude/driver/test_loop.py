@@ -4812,6 +4812,59 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: the driver reads Deadline -- to size and to warn -----
+
+class TestDeadlineIsReadNotEnforced(DriverCase):
+    """JEVI: a 4x-under Deadline had no effect because nothing read it;
+    EBFT M3 polled a 25 h trial 137 times for no decision."""
+
+    BODY = ("**Trial:** sleep 3\n**Monitor Profile:** cuda_oom\n"
+            "**Deadline:** 24 × 5.0 min × 1.5 = 180 min "
+            "(source: logs/trial-3-1.log)\n")
+
+    def test_the_last_minutes_figure_is_the_deadline(self):
+        self.assertEqual(loop.deadline_minutes(self.BODY), 180.0)
+        self.assertIsNone(loop.deadline_minutes("**Trial:** x\n"))
+
+    def test_the_poll_interval_grows_with_the_deadline(self):
+        cfg = {"monitor": {"interval_min": 10}}
+        self.assertEqual(loop.monitor_interval_min(cfg, None), 10)
+        self.assertEqual(loop.monitor_interval_min(cfg, 180), 10)
+        self.assertEqual(loop.monitor_interval_min(cfg, 1500), 50)
+        self.assertEqual(loop.monitor_interval_min({}, 1500), 50)
+
+    def test_overrunning_the_deadline_warns_once_and_never_kills(self):
+        clock = FakeClock(start=self._real_time.time(), step=600.0)
+        loop.time = clock
+        prompts = []
+
+        def monitor(st, role, prompt, *a, **k):
+            prompts.append(prompt)
+            return json.dumps({"status": "HEALTHY"})
+        loop.claude = monitor
+        cfg = self.write_goal(monitor={"interval_min": 1})
+        body = ("**Trial:** sleep 2\n**Monitor Profile:** cuda_oom\n"
+                "**Deadline:** 1 × 2 min × 1.5 = 3 min\n")
+        self.assertTrue(loop.run_trial("T", body, {"iteration": 1}, cfg))
+        warned = [e for e in self.events() if e["event"] == "deadline_exceeded"]
+        self.assertEqual(len(warned), 1, "warn once, not every poll")
+        self.assertIn("Not a kill", warned[0]["detail"])
+        self.assertNotIn("trial_killed", [e["event"] for e in self.events()])
+        self.assertTrue(any("Deadline (Planner's arithmetic): 3 min" in p
+                            for p in prompts))
+
+    def test_an_opus_monitor_is_warned_about_not_refused(self):
+        cfg = self.write_goal(models={**loop.DEFAULT_MODELS,
+                                      "monitor": "claude-opus-5-5"})
+        buf = io.StringIO()
+        real, sys.stderr = sys.stderr, buf
+        try:
+            loop.validate_goal(cfg)                  # no SystemExit
+        finally:
+            sys.stderr = real
+        self.assertIn("models.monitor is claude-opus-5-5", buf.getvalue())
+
+
 # ---------- v8.1.19: a live Evaluator that wrote no verdict (B10) ---------
 
 class TestMissingVerdictIsRedispatchedOnce(DriverCase):
