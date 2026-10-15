@@ -2276,6 +2276,16 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                       "was committed -- see commit_failed")
                 return
             event("ticket_done", detail=f"{tid} @ {sha}")
+            if st.get("pause_after") == tid:
+                # v8.1.19: the pause the user asked for, at the one
+                # boundary where nothing is half-done (see `pause-after`
+                # in main()). Consumed on firing, so `start` resumes.
+                st.pop("pause_after", None)
+                save(STATE, st)
+                event("paused", detail=f"after {tid} as requested -- "
+                                       f"phase stays iterate; `start` "
+                                       f"resumes with the next ticket")
+                return
         elif verdict == "REPLAN":
             st["replans"] = st.get("replans", 0) + 1
             # v8.1.5: say so. Every other consequential transition emits
@@ -2936,11 +2946,46 @@ def main() -> None:
     args = [a for a in argv if not a.startswith("-")]
 
     if args and args[0] in ("status", "approve", "close", "replan",
-                            "note"):
+                            "note", "pause-after"):
         elsewhere = find_loop()
         if elsewhere != ROOT:
             print(f"(the loop is in {elsewhere})")
             rebind(elsewhere)
+
+    if args and args[0] == "pause-after":
+        # v8.1.19: "stop after ticket N" as a command. Three STAGES loops
+        # needed it; the workarounds were two driver kills at a
+        # Generator start and, once, lowering max_iterations as a pause
+        # -- which landed 8 s after the next Step was dispatched and
+        # deleted the e1-e3 checkpoints the user wanted, irrecoverably
+        # (journal/retro-20261015-cross-project.md, B9). This is the
+        # fourth user command the loop-protocol scope guard says a retro
+        # must demand. The driver pauses at the ticket boundary: after
+        # the named ticket PASSES and its commit lands, it writes the
+        # journal and exits with phase `iterate`, so `start` resumes.
+        tid = " ".join(args[1:]).strip()
+        if not tid:
+            die('usage: loop.py pause-after "Phase N, Step M"')
+        st = load(STATE, None)
+        if not isinstance(st, dict):
+            die("no readable loop-state.json here -- no loop to pause")
+        plan = ROOT / "Plan.md"
+        known = list(tickets(plan.read_text())) if plan.exists() else []
+        ids = [i for i, *_ in known]
+        if ids and tid not in ids:
+            die(f"'{tid}' is not a ticket in Plan.md. Tickets: "
+                + ", ".join(ids))
+        if any(i == tid and d for i, _t, _b, d in known):
+            print(f"!! {tid} is already done -- the pause will never fire. "
+                  f"Name a later ticket.")
+        st["pause_after"] = tid
+        save(STATE, st)
+        event("pause_requested", detail=f"pause after {tid}", by="user")
+        print(f"the driver will pause after {tid} PASSES and is committed "
+              f"(phase stays `iterate`; `start` resumes). It reads this "
+              f"flag at the ticket boundary, so a ticket already running "
+              f"finishes first.")
+        return
 
     if args and args[0] == "note":
         # v8.1.16: provenance for the human's hand. Every loop in the

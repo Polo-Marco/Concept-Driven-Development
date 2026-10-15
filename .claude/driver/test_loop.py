@@ -4807,6 +4807,92 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.19: `pause-after` -- stop at a ticket boundary (B9) ------
+
+class TestPauseAfter(DriverCase):
+    """STAGES s6, s9, s18: three loops needed "stop after ticket N"; the
+    workaround once deleted the checkpoints the user wanted."""
+
+    def run_cmd(self, *args):
+        argv, sys.argv = sys.argv, ["loop.py", *args]
+        self.addCleanup(setattr, sys, "argv", argv)
+        class Buf(io.StringIO):          # main() reconfigures stdout
+            def reconfigure(self, **k):
+                pass
+        buf = Buf()
+        real, sys.stdout = sys.stdout, buf
+        try:
+            loop.main()
+        finally:
+            sys.stdout = real
+        return buf.getvalue()
+
+    def test_the_command_records_the_flag_and_validates_the_ticket(self):
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.STATE.write_text(json.dumps({"phase": "iterate"}))
+        out = self.run_cmd("pause-after", "Phase 1, Step 1")
+        self.assertIn("will pause after Phase 1, Step 1", out)
+        self.assertEqual(json.loads(loop.STATE.read_text())["pause_after"],
+                         "Phase 1, Step 1")
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    self.run_cmd("pause-after", "Phase 9, Step 9")
+            finally:
+                sys.stderr = real
+
+    def test_the_driver_pauses_after_that_ticket_passes(self):
+        cfg = self.write_goal(evaluation_cadence="final-pass")
+        (self.tmp / "Plan.md").write_text(PLAN)
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time(),
+              "pause_after": "Phase 1, Step 1"}
+        loop.phase_iterate(cfg, st)
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("paused", kinds)
+        self.assertEqual(st["phase"], "iterate", "resumable")
+        self.assertNotIn("pause_after", st, "consumed on firing")
+        self.assertEqual(calls.count("generator"), 1,
+                         "Step 2 was not dispatched")
+        todo = [i for i, *_r, d in loop.tickets(
+            (self.tmp / "Plan.md").read_text()) if not d]
+        self.assertEqual(todo, ["Phase 1, Step 2"])
+
+    def test_without_the_flag_the_loop_runs_on(self):
+        cfg = self.write_goal(evaluation_cadence="final-pass")
+        (self.tmp / "Plan.md").write_text(PLAN)
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        self.assertEqual(calls.count("generator"), 2)
+        self.assertNotIn("paused", [e["event"] for e in self.events()])
+
+
 # ---------- v8.1.19: first-start preflight checks (B8) --------------------
 
 class TestFirstStartPreflight(DriverCase):
