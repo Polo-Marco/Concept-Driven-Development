@@ -2778,7 +2778,25 @@ def main() -> None:
         st = load(STATE, None)
         if not isinstance(st, dict):
             die("no readable loop-state.json here -- nothing to replan")
-        st["replans"] = st.get("replans", 0) + 1
+        n = st.get("replans", 0) + 1
+        # v8.1.18: flush the ticket's half-built work FIRST, exactly as
+        # the Evaluator-REPLAN path does (`wip(loop): ... before replan`).
+        # This command only wrote state, so on the next start
+        # flush_pregate()'s `git add -A` swept a Generator's attempt-1
+        # files into the `plan(loop): replan #1 approved` commit -- three
+        # authors under one title again, the shape v8.1.7 exists to
+        # prevent, and a per-ticket Boundary audit off `git log` cannot
+        # pass that way (JEV loop 3;
+        # journal/retro-20261015-cross-project.md, B5). A clean tree
+        # commits nothing and says nothing.
+        tid = st.get("current_ticket")
+        if tid and sh("git status --porcelain").stdout.strip():
+            sha = git_commit(f"wip(loop): {tid} before user replan #{n} "
+                             f"-- {reason}")
+            if sha:
+                event("wip_committed", detail=f"{tid} {sha} before user "
+                                              f"replan #{n}")
+        st["replans"] = n
         st["phase"] = "plan"
         st["replan_reason"] = reason
         save(STATE, st)

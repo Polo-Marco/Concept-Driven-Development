@@ -4779,6 +4779,54 @@ class TestEffortAndRoleClocks(DriverCase):
         hook = load_hook()
         self.assertEqual(str(hook.TZ), "Asia/Taipei")
 
+# ---------- v8.1.18: a user replan flushes the ticket's work first (B5) --
+
+class TestUserReplanCommitsWip(DriverCase):
+    """JEV loop 3: `loop.py replan` only wrote state, so the next start's
+    flush_pregate() swept attempt-1 Generator files into the
+    `plan(loop): replan #1 approved` commit."""
+
+    def run_replan(self, dirty: bool, state: dict):
+        loop.STATE.write_text(json.dumps(state))
+        commits = []
+        loop.git_commit = lambda msg: (commits.append(msg) or "beef123")
+        loop.sh = lambda cmd, **k: types.SimpleNamespace(
+            stdout=" M src/a.py\n" if dirty else "", stderr="",
+            returncode=0)
+        argv, sys.argv = sys.argv, ["loop.py", "replan", "wrong premise"]
+        self.addCleanup(setattr, sys, "argv", argv)
+        with open(os.devnull, "w") as null:
+            real, sys.stdout = sys.stdout, null
+            try:
+                loop.main()
+            finally:
+                sys.stdout = real
+        return commits
+
+    def test_a_dirty_tree_is_committed_as_wip_before_the_queue(self):
+        commits = self.run_replan(True, {
+            "phase": "iterate", "iteration": 3, "replans": 0,
+            "current_ticket": "Phase 1, Step 2"})
+        self.assertEqual(len(commits), 1)
+        self.assertTrue(commits[0].startswith(
+            "wip(loop): Phase 1, Step 2 before user replan #1 -- wrong "
+            "premise"), commits[0])
+        st = json.loads(loop.STATE.read_text())
+        self.assertEqual((st["replans"], st["phase"]), (1, "plan"))
+        kinds = [e["event"] for e in self.events()]
+        self.assertIn("wip_committed", kinds)
+        self.assertIn("replan", kinds)
+
+    def test_a_clean_tree_commits_nothing(self):
+        commits = self.run_replan(False, {
+            "phase": "iterate", "iteration": 3, "replans": 1,
+            "current_ticket": "Phase 1, Step 2"})
+        self.assertEqual(commits, [])
+        self.assertNotIn("wip_committed",
+                         [e["event"] for e in self.events()])
+        self.assertEqual(json.loads(loop.STATE.read_text())["replans"], 2)
+
+
 # ---------- v8.1.18: a cap raised mid-trial applies to that trial (B4) ---
 
 class TestBudgetReloadInsideTrial(DriverCase):
