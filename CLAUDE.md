@@ -2,7 +2,7 @@
 
 You are part of a session-based AI development pipeline. You enforce
 governance, honor phase authority, and route to the appropriate Mode
-Skill. In v8.0 the pipeline can run autonomously under a deterministic
+Skill. The pipeline runs autonomously under a deterministic
 driver; your session's role and authority are set per session, and the
 PreToolUse hook enforces them mechanically.
 
@@ -29,7 +29,7 @@ There is no `CHANGELOG.md`. **Git history is the project's changelog.**
 Commit messages MUST be detailed (`.claude/rules/governance.md §1`).
 In loop mode, only the driver commits.
 
-## Pipeline Architecture (v8.0)
+## Pipeline Architecture
 
 ```
                     ┌────────────── [loop] ───────────────┐
@@ -70,7 +70,7 @@ Dormant until the user invokes a command.
 | `[loop] [goal]` | Goal Setter → driver | Read `@skills/mode-loop/SKILL.md` |
 | `[retro]` | Retro | Read `@skills/mode-retro/SKILL.md` |
 
-### Escape hatch (manual 7.0-style operation)
+### Escape hatch (manual operation)
 
 The internal skills remain directly invocable — the driver calls the
 same skills you would. Authority rules apply identically.
@@ -113,40 +113,32 @@ never work around.
 3. Driver: five deterministic gates (machinery / goal-contract
    shape / worktree isolation / preflight / evidence — nothing is
    planned or spent until all five pass; the evidence gate refuses a
-   loop whose criteria read files that already exist) → Planner session → Evaluator contract review
-   (≤2 rounds) → waits at the human gate. User reviews Plan.md,
+   loop whose criteria read files that already exist) → Planner
+   session → Evaluator contract review (≤2 rounds) → waits at the
+   human gate. User reviews Plan.md,
    approves (`loop.py approve`, control tower, or phone). There are no
    mid-loop `[Halt here]` pauses in loop mode.
 4. Driver iterates tickets: Generator (bearings + smoke test → TDD) →
-   trial launch + Monitor polling → Evaluator → `verdict.json` →
-   PASS commit / RETRY ≤3 (each retry carries the verdict that
-   rejected the last attempt) / REPLAN (re-gated) / ESCALATE. A
-   Generator stop is adjudicated by an Evaluator session (REPLAN /
-   RETRY / ESCALATE, v8.1.15) rather than auto-escalated, and so is an
-   exhausted retry cap (v8.1.16); the user can also queue a replan
-   with `loop.py replan "<reason>"`. A ticket PASSes only with its
-   Output files, its Run Command's log and the criteria it owns on
-   disk (v8.1.16). A trial's stall is decided by the driver's clock,
-   never by the Monitor; contract review is capped per loop, not per
-   replan (v8.1.17). A connectivity outage is waited out, not billed
-   as attempts; criteria are re-read when a gate clears; a preflight
-   check can be `first-start` only; `loop.py pause-after "<ticket>"`
-   stops cleanly after that ticket's commit (v8.1.19). Ledger appended every iteration. Budgets checked —
-   and re-read — every iteration. Any manual change under a running
-   loop is recorded with `loop.py note "<text>"`.
+   trial launch + Monitor polling → output gate → Evaluator →
+   `verdict.json` → PASS commit / RETRY ≤3 (each retry carries the
+   verdict that rejected the last attempt) / REPLAN (re-gated) /
+   ESCALATE. A Generator stop, an exhausted retry cap and a trial that
+   dies twice are adjudicated by an Evaluator session, not
+   auto-escalated. A ticket PASSes only with its Output files, its Run
+   Command's log and the criteria it owns on disk. Ledger appended and
+   budgets re-read every iteration. User commands while it runs:
+   `replan`, `pause-after`, `note` (`.claude/rules/loop-protocol.md`).
 5. Final evaluation verifies ALL `goal.json` criteria → done. The
    driver writes the loop's `journal/` record on every terminal exit;
    the user fills its Feedback block and closes the loop with
-   `python3 .claude/driver/loop.py close` — which refuses a template
-   Feedback block (v8.1.17).
+   `python3 .claude/driver/loop.py close`.
 
 Remote control: keep an interactive session in tmux with Remote
 Control enabled as the control tower — `status` and `approve` from
 your phone. See `.claude/rules/loop-protocol.md`.
 
 ### Discuss / Retro / manual sessions
-Unchanged from 7.0 — see `.claude/rules/phase-authority.md` and the
-mode skills. Generator sessions follow
+See `.claude/rules/phase-authority.md` and the mode skills. Generator sessions follow
 `.claude/rules/generator-protocol.md` (now with bearings + smoke test
 at session start); parallel groups follow
 `.claude/rules/parallel-execution.md`.
@@ -157,15 +149,15 @@ at session start); parallel groups follow
   iterations, verdicts, criteria, notable events) on every terminal
   exit and never overwrites the Feedback block; in manual sessions each
   session appends its own. Primary artifact for `[retro]`.
-- **Tier 2 (`journal/traces/*.jsonl`, in the PRIMARY tree since
-  v8.1.19):** full transcripts via the
-  `SessionEnd` hook. Gitignored. Claude Code only.
+- **Tier 2 (`journal/traces/*.jsonl`, always in the PRIMARY tree):**
+  full transcripts via the `SessionEnd` hook. Gitignored. Claude Code
+  only.
 
 ## Quick Reference
 
 - Core principles → `.claude/rules/principles.md`
 - Governance (git, security, logging, TDD, lifecycle) → `.claude/rules/governance.md`
-- **Loop protocol (v8.0)** → `.claude/rules/loop-protocol.md`
+- **Loop protocol** → `.claude/rules/loop-protocol.md`
 - Run logging → `.claude/rules/run-logging.md`
 - Phase authority & boundaries → `.claude/rules/phase-authority.md`
 - Generator execution protocol → `.claude/rules/generator-protocol.md`

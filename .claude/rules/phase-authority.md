@@ -25,7 +25,7 @@ The Discuss and Retro Sessions never touch code (see below).
 | `journal/*.md` | Append | Append | Append |
 | `src/`, `tests/` | — | Read / Write (within Boundary) | **Read only** (may run) |
 
-v8.0 loop additions: `Goal.md`, `goal.json`, `ledger.jsonl`,
+Loop additions: `Goal.md`, `goal.json`, `ledger.jsonl`,
 `loop-state.json`, `events.jsonl` are **read-only to ALL sessions**
 (user- or driver-owned; hook-enforced). `verdict.json` is
 Evaluator-writable only. In loop mode, git commits are DRIVER-only —
@@ -56,7 +56,7 @@ These two sessions exist to *think*, not to build. Neither touches
 - **Retro** reads `journal/` to surface patterns; it may write a retro
   summary into `journal/` but changes nothing else.
 
-## Monitor Session Authority (v8.0)
+## Monitor Session Authority
 
 The Monitor (`.claude/agents/cdd-monitor.md`) is spawned by the driver
 while a trial runs. It may READ the trial log, metrics files, and

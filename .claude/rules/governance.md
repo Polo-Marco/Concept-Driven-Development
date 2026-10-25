@@ -7,11 +7,10 @@ Think Before Coding), which are equally always-on.
 
 ## 1. Version Control (Git)
 
-**Git history is the changelog.** There is no `CHANGELOG.md`. The full
-project history lives in git and any session may read it
-(`git log --oneline`, `git log -p <file>`,
+**Git history is the changelog.** There is no `CHANGELOG.md`. Any
+session may read history (`git log --oneline`, `git log -p <file>`,
 `git diff <planner-commit>..HEAD`). Because history replaces a curated
-changelog, commit messages carry that weight and MUST be detailed.
+changelog, commit messages MUST be detailed.
 
 ### Commit Conventions
 - Semantic prefixes: `plan:`, `feat:`, `fix:`, `refactor:`, `migrate:`,
@@ -23,15 +22,11 @@ changelog, commit messages carry that weight and MUST be detailed.
 - **Evaluator Session:** does NOT commit. `Evaluation.md` is ephemeral.
 - **Retro Session:** does NOT commit code. May commit its `journal/`
   summary.
-- **Loop mode (v8.0):** the driver is the only committer.
-  `plan(loop):` for everything the plan phase produced, committed the
-  moment its human gate clears (v8.1.7 — without it the first ticket
-  commit carried Plan.md, Evaluation.md, Architecture.md and a user
-  budget edit under one ticket's title, breaking "one domain per
-  commit" below and making a per-ticket Boundary audit unpassable);
-  `feat(loop):` per passed ticket (verdict + evidence in the body),
-  `wip(loop):` before a replan or on escalation. Sessions never
-  commit inside a loop.
+- **Loop mode:** the driver is the only committer. `plan(loop):` for
+  everything the plan phase produced, committed the moment its human
+  gate clears; `feat(loop):` per passed ticket (verdict + evidence in
+  the body); `wip(loop):` before a replan or on escalation. Sessions
+  never commit inside a loop.
 - Commit messages must be detailed and informative — they ARE the
   project's changelog. Include what was built, which files changed,
   and any notable decisions.
@@ -55,56 +50,36 @@ One domain per commit. No unrelated changes bundled.
 
 ## 3. Process Logging for Expensive Pipelines (opt-in)
 
-Long or expensive operations — OCR, multi-stage agentic pipelines,
-batch jobs, anything slow or costly to re-run — are painful to debug
-because reproducing a failure burns time and money.
-
-When the Planner flags a ticket as implementing such a pipeline, the
-generated code MUST emit **structured stage logs**:
+When the Planner flags a ticket as implementing a long or expensive
+pipeline (OCR, multi-stage agentic chains, batch jobs), the generated
+code MUST emit **structured stage logs**:
 
 - One log line per pipeline stage: stage name, a short summary of
   inputs (NOT raw payloads / secrets), start/end or duration, and
   success/failure with the error.
 - Use the language's standard logging facility (e.g. Python `logging`),
-  not `print`. Default level INFO for stage boundaries, ERROR on
-  failure.
+  not `print`. INFO for stage boundaries, ERROR on failure.
 - Never log secrets or full sensitive payloads (see §2).
 
-Scope guard (anti-over-engineering, per `principles.md`): this is
-**logging only** — no checkpointing, no result caching, no bespoke log
-framework. Apply it ONLY to pipelines the Planner explicitly flags as
-expensive/long-running. Short, cheap functions do not get this
-treatment.
+Scope guard: this is **logging only** — no checkpointing, no result
+caching, no bespoke log framework — and only for pipelines the Planner
+explicitly flags.
 
 **Run Logging is separate.** Capturing the stdout/stderr of executed
-commands to `logs/latest.log` (so a failing run can be diagnosed
-without pasting a terminal wall of text) is governed by
-`.claude/rules/run-logging.md`. It applies to every run, not just
-expensive pipelines.
+commands to `logs/latest.log` is governed by
+`.claude/rules/run-logging.md` and applies to every run.
 
 ## 4. Test-Driven Development
 
-- Write tests before application logic.
-- TDD is the automated sanity check. It catches regressions and proves
-  basic functionality.
-- The user is the final evaluator. TDD does not replace human judgment.
-  The optional `[evaluate]` session produces a checklist; the user
-  still signs off.
+- Write tests before application logic. TDD catches regressions and
+  proves basic functionality; the user is the final evaluator.
 - **No permanent test reads the live loop contract** (`goal.json`,
-  `Goal.md`) or any other ephemeral loop artifact (v8.1.16). A test
-  that reads the current goal passes or fails with the loop it was
-  written in and is meaningless in the next; fixtures carry their own
-  copy. (rebuild-v2's `tests/CLAUDE.md` rule 1, promoted per
-  `journal/from-agentrl-retro-20260902.md` rec 6.)
-- **No test writes under a criterion's `source` tree** (v8.1.20, R6) —
-  `results/` or whatever the goal names. Every default output path a
-  writer has is redirected by an autouse fixture into the test's own
-  tmp dir. Twice in one deployment a TDD red run or a fixture overwrote
-  banked evidence (`results/s0-setup/serve_check.json`) before its
-  `tests/CLAUDE.md` rules 2 and 7 stopped it; the 2026-07-31
-  `results/` fixture incident in the ticket-format self-check is the
-  same class. The read-side rule above keeps tests honest; this one
-  keeps the evidence intact.
+  `Goal.md`) or any other ephemeral loop artifact. Fixtures carry their
+  own copy.
+- **No test writes under a criterion's `source` tree** (`results/` or
+  whatever the goal names). Every default output path a writer has is
+  redirected by an autouse fixture into the test's own tmp dir, and no
+  test undoes that redirection.
 
 ## 5. Core File Lifecycle
 
@@ -115,83 +90,55 @@ expensive pipelines.
 | `README.md` | Persistent, evolving | User-facing: install, run, test, use |
 | `Plan.md` | **Ephemeral** — deleted after full loop | Task tickets |
 | `Triage.md` | **Ephemeral** — deleted after full loop | Bug hypotheses |
-| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[merge]` working artifacts, deleted after sign-off | Per-source models + conflict map |
+| `Architecture-<source>.md` / `Merge-Analysis.md` | **Ephemeral** — `[merge]` working artifacts | Per-source models + conflict map |
 | `Evaluation.md` | **Ephemeral** — deleted after user signs off | Evaluator verdict + audits |
-| `Goal.md` + `goal.json` | **Ephemeral** — frozen at loop start, deleted after sign-off | User-owned goal contract (v8.0) |
-| `ledger.jsonl` | **Ephemeral** — copied to `journal/raw/<record>/` by `close` (v8.1.19), then deleted | Trial memory for REPLANs (driver-written) |
+| `Goal.md` + `goal.json` | **Ephemeral** — frozen at loop start, deleted by `close` | User-owned goal contract |
+| `ledger.jsonl` | **Ephemeral** — copied to `journal/raw/<record>/` by `close`, then deleted | Trial memory for REPLANs (driver-written) |
 | `loop-state.json` / `events.jsonl` | Ephemeral, gitignored | Driver state (crash resume) + event feed |
 | `verdict.json` | **Ephemeral** | Machine verdict (Evaluator → driver) |
 | `journal/*.md` | Persistent | Per-loop session records + user feedback (for `[retro]`) |
-| `journal/traces/*.jsonl` | Persistent, gitignored; written into the PRIMARY tree (v8.1.19) | Full raw session transcripts (Tier 2, Claude Code hook) |
-| `journal/raw/<record>/` | Persistent | `ledger.jsonl` + `events.jsonl` of a closed loop (v8.1.19) |
+| `journal/traces/*.jsonl` | Persistent, gitignored; written into the PRIMARY tree | Full raw session transcripts (Tier 2, Claude Code hook) |
+| `journal/raw/<record>/` | Persistent | `ledger.jsonl` + `events.jsonl` of a closed loop |
 | `skills/` | Persistent, evolving | Execution patterns and rules |
 | `**/CLAUDE.md` (nested) | Persistent, evolving | Module-specific conventions (Planner-maintained) |
 | `docs/*.md` | Persistent, user-maintained | External reference docs (immutable to agents) |
 | `docs/DEVIATIONS.md` | Persistent, planner-appendable | Tracked departures from reference docs |
-| `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted into Concept/docs via `[discuss]` |
-| `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr (see run-logging.md) |
-| `logs/denials.log` | Ephemeral, gitignored | Every PreToolUse authority denial (hook-written; the driver counts it into a `hook_denials` event) |
-
-There is no `CHANGELOG.md` — git history is the changelog (see §1).
+| `docs/inbox.md` | Persistent, discuss-appendable | Raw idea capture, promoted via `[discuss]` |
+| `logs/latest.log` | Ephemeral, gitignored | Most recent run's stdout/stderr |
+| `logs/denials.log` | Ephemeral, gitignored | Every PreToolUse authority denial |
 
 Only one of Plan.md or Triage.md exists at a time. When the full loop
-(Planner + Generator + optional Evaluator + user evaluation) completes
-successfully, the user deletes the work order file and any
-`Evaluation.md`. They served their purpose.
+completes, the user deletes the work order and any `Evaluation.md`.
 
 ## 6. Session Journal (development-process tracking)
 
-The `journal/` directory records the *development process itself* — not
-the code — so the user can later re-evaluate how a project was built and
-improve the framework (via `[retro]`). It has two tiers:
+`journal/` records the *development process itself* — not the code —
+so `[retro]` can improve the framework. Two tiers:
 
-**Tier 1 — curated summary (`journal/*.md`, primary).**
-A short, agent-written record per loop. This is what `[retro]` reasons
-over. It is NOT a full trace — it captures decisions, not every tool
-call.
+**Tier 1 — curated summary (`journal/*.md`, primary).** A short record
+per loop: decisions, not every tool call.
 
-- **One file per pipeline loop:** `journal/YYYYMMDD-HHMMSS-<mode>.md`
-  (e.g. `journal/20260701-142230-modify.md`).
-- **In loop mode the DRIVER writes it** (v8.1.6), from `ledger.jsonl` +
-  `loop-state.json` + `events.jsonl`, on every terminal exit — done,
-  escalation or crash — and rewrites it on resume. Sessions inside a
-  loop append nothing; they have no state the ledger lacks. The one
-  part the driver never touches is the `## Feedback` block.
-- **In manual sessions each session appends its own record** to the
-  current loop's file: the Planner appends what it planned and why; the
-  Generator appends what it built, commits (SHAs), and any
-  stops/retries; the Evaluator appends its verdict.
-- **The `## Feedback` block names who filled it** (v8.1.19: `Filled
-  by: user | operator under delegation`). Under delegated operation the
-  operator fills it and says so; that is an accepted way to run, not a
-  defect, and nothing is gated on the author. The rest of this bullet
-  describes the block when the user writes it.
-- **The user fills the `## Feedback` block** at loop end: a rating
-  (good / ok / bad), what went well, and — critically — any
-  *instruction that was not followed*. `loop.py close` refuses a
-  template block (v8.1.17); under delegated authority the operator
-  fills it as part of closing, but one line in the user's own words is
-  what `[retro]` is for — in 22 loops of one deployment the user's
-  voice appeared in one block.
-- Keep records short and factual. This is a log, not an essay.
+- One file per pipeline loop: `journal/YYYYMMDD-HHMMSS-<mode>.md`.
+- **In loop mode the DRIVER writes it** from `ledger.jsonl` +
+  `loop-state.json` + `events.jsonl`, on every terminal exit, and
+  rewrites it on resume. Sessions inside a loop append nothing. The
+  driver never touches the `## Feedback` block.
+- **In manual sessions each session appends its own record**: the
+  Planner what it planned and why; the Generator what it built, commit
+  SHAs, stops/retries; the Evaluator its verdict.
+- **The `## Feedback` block** is filled at loop end: `Filled by:
+  user | operator under delegation`, a rating (good / ok / bad), what
+  went well, and any *instruction that was not followed*. `loop.py
+  close` refuses a template block. Under delegation the operator fills
+  it; one line in the user's own words is still what `[retro]` cannot
+  get anywhere else.
+- Keep records short and factual.
 
-**Tier 2 — full raw trace (`journal/traces/*.jsonl`, optional, Claude
-Code only).**
-The complete session transcript — every tool call, input, output, and
-decision — written into the PRIMARY tree's `journal/traces/` even when
-the session ran in a per-loop worktree (v8.1.19; three deployments lost
-every trace of a campaign when its worktree was removed), captured
-automatically by the `SessionEnd` hook in
-`.claude/settings.json` (script: `.claude/hooks/archive_transcript.py`).
-Use it to dissect a loop you flagged "bad"; `[retro]` drills into it on
-demand. Cursor has no equivalent, so Tier 2 is Claude-Code-only; Tier 1
-works in both tools.
-
-- Traces can be large and may contain sensitive context, so
-  `journal/traces/` is **gitignored** — the curated `journal/*.md`
-  summaries stay in git, the raw traces stay local.
-- The agent does NOT write Tier-2 files; the hook does. Never
-  hand-reconstruct a trace into `journal/traces/`.
+**Tier 2 — full raw trace (`journal/traces/*.jsonl`, Claude Code
+only).** The complete transcript, captured by the `SessionEnd` hook
+(`.claude/hooks/archive_transcript.py`) into the PRIMARY tree's
+`journal/traces/` even when the session ran in a worktree. Gitignored
+(large, possibly sensitive). The agent never writes Tier-2 files.
 
 Suggested per-loop skeleton:
 
@@ -210,7 +157,8 @@ Suggested per-loop skeleton:
 ## Evaluator
 [Verdict + top findings, or "skipped"]
 
-## Feedback (filled by user)
+## Feedback
+- Filled by: [user | operator under delegation]
 - Rating: [good | ok | bad]
 - What went well:
 - Instruction(s) not followed:

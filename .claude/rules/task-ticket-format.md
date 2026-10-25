@@ -1,10 +1,10 @@
 # Plan.md Task Ticket Format
 
 Each execution step in Plan.md or Triage.md MUST follow this format.
-The Generator executes these tickets mechanically.
-
-Goals of type `experiment` (v8.0 loop) use the experiment-ticket
-variant below.
+The Generator executes these tickets mechanically. Goals of type
+`experiment` use the experiment-ticket variant below. Rationale for
+every rule here: `docs/loop-orchestration-design.md` §17 (framework
+repo) and `git log -p` of this file.
 
 ## Template
 
@@ -33,7 +33,7 @@ variant below.
 **Skills to Load:** @skills/[relevant-skill]/SKILL.md
 **Reference Docs:** @docs/[file].md (Section: [Name])   ← optional
 **Process Logging:** [Expensive | none]   ← optional, default none
-**Audit:** [deferred]   ← optional (v8.1.20); only for a no-code Trial ticket on a proven harness
+**Audit:** [deferred]   ← optional; only a no-code Trial ticket on a proven harness
 **Depends On:** [Ticket IDs that must complete first, or "none"]
 **Parallel Group:** [Label, e.g. A | omit for sequential]   ← optional
 **Boundary:** [Exact directories/files the Generator may touch]
@@ -56,303 +56,149 @@ error + 1 edge case.
 UX, visual, and integration concerns that TDD cannot catch.
 
 **Architecture:** Which sections of `Architecture.md` the Generator
-must load for this ticket. The Overview section is always loaded
-implicitly — list any additional sections needed (e.g.
-`Overview, API Surface, Data Models`). Use `Full` only if the ticket
+must load. The Overview is always loaded implicitly — list additional
+sections (e.g. `API Surface, Data Models`). `Full` only if the ticket
 genuinely needs the entire document.
 
 **Skills to Load:** `@skills/` references for patterns and rules.
 
-**Reference Docs:** Optional. Pointers to files in `docs/` that
-constrain the implementation (e.g. an API contract or design system).
-When this field is present, the Generator also reads
-`docs/DEVIATIONS.md` to know which parts of the spec have been
-superseded.
+**Reference Docs:** Optional. Files in `docs/` that constrain the
+implementation. When present, the Generator also reads
+`docs/DEVIATIONS.md`.
 
-**Process Logging:** Optional. Set to `Expensive` when the ticket
-implements a slow/costly pipeline (OCR, long agentic chains, batch
-jobs). The Generator then emits structured stage logs per
-`.claude/rules/governance.md` §3. Default `none` — do NOT set it on
-short, cheap functions (over-engineering).
+**Process Logging:** Optional. `Expensive` when the ticket implements a
+slow/costly pipeline; the Generator then emits structured stage logs
+per `governance.md` §3. Default `none`.
 
-**Audit:** Optional (v8.1.20). `deferred` skips this ticket's
-per-ticket Evaluator audit under any cadence — the deterministic gate,
-the regression guard and the output gate still run, and a criterion's
-FIRST green or the final pass is never deferred. Use it only for a
-ticket with no code change that re-runs a harness which has produced
-evidence before (a Trial on a proven recorder): one deployment bought 19
-such audits, all PASS, nothing found. Never on a ticket that introduces
-a mechanism — that is what the audit exists for.
+**Audit:** Optional. `deferred` skips this ticket's per-ticket
+Evaluator audit under any cadence; the deterministic gate, the
+regression guard and the output gate still run, and a criterion's FIRST
+green or the final pass is never deferred. Only for a ticket with no
+code change that re-runs a harness which has already produced evidence
+this loop. Never on a ticket that introduces a mechanism.
 
 **Depends On:** Ticket IDs (Phase/Step) that must be committed before
-this ticket can start. Use `none` for the first ticket. Everything
-depends (directly or transitively) on the Environment Setup ticket.
-This is the dependency graph the Generator uses to know what is ready.
+this one starts; `none` for the first. Everything depends (directly or
+transitively) on the Environment Setup ticket.
 
-**Parallel Group:** Optional. A label (e.g. `A`, `B`). Tickets sharing a
-label are dispatched concurrently by the Generator
-(`.claude/rules/parallel-execution.md`). A group is valid only if its
-members have **pairwise-disjoint Boundaries** and **no member depends on
-another member**. Omit the field for sequential execution (the default).
-The Environment Setup ticket is NEVER grouped — everything depends on
-it. Only group genuinely independent, non-trivial tickets (Simplicity
-First; grouping costs tokens).
+**Parallel Group:** Optional label. Tickets sharing it run concurrently
+(`.claude/rules/parallel-execution.md`). Valid only with
+**pairwise-disjoint Boundaries** and **no member depending on another
+member**. The Environment Setup ticket is NEVER grouped. Group only
+genuinely independent, non-trivial tickets.
 
-**Boundary:** Every file the Generator may touch. Anything outside
-triggers a session stop. If a directory in the Boundary has a
-subdirectory `CLAUDE.md`, its conventions bind the ticket. Within a
-Parallel Group, Boundaries MUST be pairwise disjoint — this is what
-makes concurrent execution race-free.
+**Boundary:** Every file the Generator may touch; anything outside
+stops the session. A subdirectory `CLAUDE.md` inside it binds the
+ticket.
 
-**Run Command:** Exact shell command, copy-pasteable, piped through
-`2>&1 | tee logs/latest.log` so the run's output is captured for
-later diagnosis (see `.claude/rules/run-logging.md`). Example:
-`uv run pytest tests/test_extractor.py -v 2>&1 | tee logs/latest.log`.
-
-Two rules from the 2026-09-02 retros (v8.1.16):
+**Run Command:** Exact shell command piped through
+`2>&1 | tee logs/latest.log` (`run-logging.md`). Two rules:
 
 - **Under ten minutes, or it is a `Trial:`.** A Generator's Bash call
-  is capped at 600 s. An install, an eval or a rollout that needs
-  20–35 minutes cannot be "run in the foreground and waited for": the
-  session abandons it, the process it started dies with the session,
-  and the ticket retries — eight abandoned runs across six iterations
-  in two agentRl loops, each killing vLLM mid-flight
-  (`journal/from-agentrl-retro-20260902.md`, problem 3). Anything slow
-  is either a `Trial:` the driver launches and the Monitor polls, or a
-  Run Command that launches it detached (`nohup … &`, or a scheduler)
-  and polls its completion in sub-600 s waits. The Trials in the same
-  loops never had the problem, because the driver owns them.
-- **Chain the regression sweep with `;`, not `&&`.** When a Run Command
-  runs the ticket's writer and then the regression sweep, a failing
-  writer must not short-circuit the sweep — the sweep is what tells the
-  Evaluator whether the failure is local. `python3 src/run.py; pytest
-  -q 2>&1 | tee logs/latest.log` (rebuild-v2's standing rule 8, now
-  durable).
+  is capped at 600 s. Anything slower is a `Trial:` the driver launches,
+  or is launched detached (`nohup … &`) and polled in sub-600 s waits.
+- **Chain the regression sweep with `;`, not `&&`**, so a failing
+  writer does not short-circuit the sweep that tells the Evaluator
+  whether the failure is local.
 
-## Experiment Tickets (v8.0)
+## Experiment Tickets
 
 For `experiment` goals, tickets REPLACE the Test Contract with:
 
 **Hypothesis:** [what this trial should demonstrate]
-**Trial:** [exact launch command; the DRIVER launches it, not the
-Generator — output goes to logs/trial-<n>.log]
-**Metrics Contract:** [metric names + the exact file/path each is
-written to, e.g. results/gate1.json]
-**Success Threshold:** [metric vs value; must map 1:1 to goal.json
-criteria]
-**Monitor Profile:** [poll interval; known failure signatures, e.g.
-cuda_oom, nan_loss; AND the run's known benign noise, listed as
-non-actionable; plus two keys the DRIVER reads — `stall_min: N` and
-`writes: <path>[, <path>]` (v8.1.17)]
-**Deadline:** [`K × measured min/iteration × 1.5 = N min`, with the
-source of the measurement — `<campaign> iterations.jsonl`, per domain
-if mixed]   ← v8.1.17
+**Trial:** [exact launch command; the DRIVER launches it — output goes
+to logs/trial-<n>.log]
+**Metrics Contract:** [metric names + the exact file each is written
+to, e.g. results/<loop>/gate1.json]
+**Success Threshold:** [metric vs value; maps 1:1 to goal.json criteria]
+**Monitor Profile:** [known failure signatures; the run's known benign
+noise listed as non-actionable; `stall_min: N`; `writes: <path>[, …]`]
+**Deadline:** [`K × measured min/iteration × 1.5 = N min`, naming the
+file the measurement came from]
 **Disk:** [bytes written per iteration/step, and what the trial deletes
-as it goes]   ← v8.1.16
+as it goes]
 
-All other fields (Boundary, Depends On, Architecture, Skills to Load)
-are unchanged.
+All other fields are unchanged. Rules:
 
-**The Monitor Profile is where false kills are prevented** (v8.1.16).
-Five of six Monitor kills across two campaigns were healthy trials: a
-per-call cost line logged 21,788 times, a `TimeoutException` seen once,
-"tasks 55–62 all 0.0" that is a constant of the apparatus, `stall`
-while the log was writing every minute
-(`journal/from-aibench-retro-20260902.md`, problem 1). The one loop
-whose Profile enumerated its noise as non-actionable (`0.0/1.0` runs,
-`Transcript not found`, `Grading failed:`) and defined `stall` by
-last-write time killed nothing healthy. Write the Profile against the
-run's scar tissue, not against a generic list.
-
-**`stall` is decided by the driver's clock, from two Profile keys**
-(v8.1.17). `stall_min: N` is the minutes of silence that mean a stall;
-`writes:` lists the files or directories the trial writes as it
-progresses (checkpoints, a metrics store), so a quiet log during a
-checkpoint write is not silence. The driver takes the newest mtime
-across the trial log and those paths; a Monitor `stall` verdict its
-clock does not confirm is overruled, and a stall it confirms is raised
-without the Monitor. Without `stall_min` the driver never kills on
-stall. Five healthy trials were killed on a model's stall reading in
-one deployment, and its driver was patched three times in three days
-toward this rule (`journal/from-agentrl-retro-20260918.md`, problem 1).
-Set `stall_min` from the run's longest legitimate silence (an eval
-pass, a checkpoint write), padded — not from the poll interval.
-
-**`Deadline:` is arithmetic on a measured number, never a round one**
-(v8.1.17). A 540-minute cap was derived from a mean over a
-monotonically increasing series; a 900-minute cap assumed ~52 min per
-iteration where the airline domain took ~155, and the segment expired
-at 23/24. Both numbers sat in the store's `iterations.jsonl` the whole
-time (`journal/from-agentrl-retro-20260918.md`, problem 3). Show `K ×
-measured × 1.5` and name the file the measurement came from; when the
-mix of domains changes the per-iteration time, measure per domain. A
-first run with nothing to measure says so and sizes from the smoke.
-**The driver reads the field** (v8.1.19): it takes the last `N min` of
-the arithmetic, sets the Monitor poll interval to the longer of the
-Profile's and Deadline/30, tells every poll the elapsed time against
-it, and emits `deadline_exceeded` once at 1.5×. It never kills on the
-Deadline alone — a 4× under-estimate on a healthy trial (JEVI) is the
-case that would have been a false kill. The journal's `## Trials`
-section records each launch's actual wall time, which is the
-measurement the next Deadline is sized from.
-
-**A shared-fate trial writes its infrastructure errors** (v8.1.20, R7).
-When the trial pulls from a registry, a dataset hub, an apt mirror or a
-model gateway, its Metrics Contract names `n_infra_error` and
-`infra_error_rate` beside the science metrics, and the Goal gates on
-`infra_error_rate` as a real criterion. Otherwise an outage reads as a
-measured result: three times in one deployment an outage-tainted file
-read green at the free gate and was caught 1–1.5 h later by a paid
-audit or a human (DF M0 it 24–25). A resume never re-summarises a
-finished job whose trials carry infrastructure exceptions.
-
-**`Disk:` is a contract, not a note.** A 54 GB-per-iteration trial that
-never rotated filled its volume at iteration 7, killed the driver
-mid-write and lost four summary fields; the preflight's `>= 100 GB`
-was a check on the start, not the run, and a Monitor polling every 8
-minutes cannot police 54 GB per 13 minutes
-(`journal/from-agentrl-retro-20260902.md`, problem 6). The trial must
-rotate; the Planner must show the arithmetic (self-check below). Spec granularity rule: experiment tickets are detailed
-about OUTCOMES and interfaces, light on implementation path — granular
-technical detail specified upfront cascades errors when wrong.
-Provenance: a launched trial's config is immutable; any parameter
-change = new trial via REPLAN (see .claude/rules/loop-protocol.md).
+- **The Monitor Profile is where false kills are prevented.** Enumerate
+  the run's own noise (per-call cost lines, a URL printed every call, a
+  constant-zero task) as non-actionable, against the run's scar tissue,
+  not a generic list.
+- **`stall` is the driver's clock.** `stall_min` is sized from the run's
+  longest legitimate silence (an eval pass, a checkpoint write), padded;
+  `writes:` lists what the trial writes as it progresses. Without
+  `stall_min` the driver never kills on stall.
+- **`Deadline:` is arithmetic on a measured number, never a round one**;
+  per domain when the mix changes the per-iteration time. A first run
+  sizes from the smoke and says so. The driver reads it to size the
+  poll and to warn, never to kill. The journal's `## Trials` section
+  records each launch's actual wall time for the next Deadline.
+- **A shared-fate trial writes its infrastructure errors.** When the
+  trial pulls from a registry, a hub, a mirror or a gateway, the Metrics
+  Contract names `n_infra_error` and `infra_error_rate`, and the Goal
+  gates on the rate. A resume never re-summarises a finished job whose
+  trials carry infrastructure exceptions.
+- **`Disk:` is a contract.** K iterations × the figure < `df` at launch,
+  or the trial rotates; show the arithmetic.
+- Experiment tickets are detailed about OUTCOMES and interfaces, light
+  on implementation path. A launched trial's config is immutable; any
+  parameter change = new trial via REPLAN.
 
 ## Planner Self-Check
 
 Before ending the Planner session, verify for each ticket:
-- Could the Generator execute without asking questions?
-- Is every function signature typed?
-- Is every error case explicit?
-- Does the Boundary list every file that will be touched?
-- Is the Test Contract specific enough to write tests from?
-- Does Manual Verification tell the user exactly what to check?
-- Does the **Architecture:** field list every section the ticket needs?
-- Is the ticket scoped to the minimum change (no speculative work)?
-- If it's an expensive/long-running pipeline, is **Process Logging**
-  set to `Expensive`?
-- If a Reference Doc applies, is it listed (and any deviation logged
-  in `docs/DEVIATIONS.md`)?
-- Is **Depends On** correct — does it list every ticket whose output
-  this one consumes?
+
+- Could the Generator execute without asking questions? Every
+  signature typed, every error case explicit, Test Contract specific
+  enough to write tests from, Manual Verification concrete?
+- Does the Boundary list every file that will be touched — including,
+  for every symbol the ticket retires, renames or changes, each file
+  that imports or calls it (grep the consumers)?
+- Does **Architecture:** list every section the ticket needs?
+- Is the ticket the minimum change? **Process Logging** set only for
+  an expensive pipeline? Reference Docs listed, deviations logged?
+- Is **Depends On** complete? Does a ticket that deletes or supersedes
+  banked evidence depend on the ticket that PROVES the replacement?
+- Can each Spec step be executed with only the inputs available at
+  that point?
 - Does some ticket's **Run Command** actually WRITE each `goal.json`
-  criterion's `source` file? On `build`/`modify` goals the driver runs
-  nothing of its own, so a metrics file produced only by a human step —
-  or sitting behind an `if __name__ == "__main__"` that no Run Command
-  invokes — makes every ticket pass and the final criteria gate
-  escalate on numbers that were never written.
-- And its converse: is each criterion's `source` file writable by **at
-  most one** ticket, and does that ticket's **Boundary** name the FILE
-  rather than its parent directory? A whole-tree entry (`results/`) on
-  a ticket that does not produce the evidence lets anything running in
-  that session — a test fixture, a default output path — write the file
-  its own criteria are read from. On 2026-07-31 `results/` sat in four
-  tickets' Boundaries; a schema ticket's fixture wrote `acc=0.6` and
-  three criteria read green four iterations before the harness existed.
-  The driver enforces this before paying for a contract review
-  (`plan_problems()`), so a plan that fails it comes straight back.
-  Zero owners is legal: on an `experiment` goal the driver launches the
-  trial, so its metrics file belongs in no Boundary at all.
-- Is each criterion's `source` a path only THIS loop can write? A
-  stable pointer (`results/<bench>/latest.json`) or a single unversioned
-  file (`results/test-summary.json`) carries the previous loop's number
-  into this one, and `check_criteria()` reads the file, not the run.
-  The driver refuses such a start (`evidence_gate()`), so a plan that
-  assumes one never gets written; the Planner's job here is to make
-  every Run Command WRITE the versioned path the criteria name, not a
-  convenience alias next to it.
-- If the plan pins a third-party harness/framework, does the
-  Environment Setup ticket's **Run Command** EXERCISE its runtime path
-  (import + one trivial invocation, e.g. registering the expected
-  task) rather than only installing it? An install that succeeds
-  proves nothing about the runtime dependency graph, and each missing
-  link then surfaces alone, in a later ticket, as a Generator stop
-  (2026-08-02: three escalations at tickets 7–8 for one under-tested
-  Step 1). This is the second net — the first is a `Preflight` check in
-  `Goal.md`, which fails before the Planner is paid for at all
-  (`skills/mode-loop/SKILL.md` §3).
-- For every **Parallel Group**: are the members' Boundaries pairwise
-  disjoint, and does no member depend on another member? Is the
-  Environment Setup ticket kept out of all groups? Is grouping actually
-  worth it (multiple independent, non-trivial tickets)?
-- For each Spec step: can it be executed with only the inputs
-  available at that point? A circular or unsatisfiable step leaves the
-  Generator no legal move but to stop.
-- For experiment tickets: does every Success Threshold map to a
-  goal.json criterion, and does the Metrics Contract name the exact
-  file the driver/Evaluator will read?
-- **Does any Run Command run longer than ~5 minutes** (an install, an
-  eval, a rollout)? Then it is a `Trial:` the driver launches, or it is
-  launched detached and polled in sub-600 s waits — a Generator's Bash
-  call is capped at 600 s, and a session that abandons a run kills what
-  it started (v8.1.16; Run Command rules above).
-- **For every symbol a ticket retires, renames or changes: did you grep
-  its CONSUMERS, and does the Boundary name each file that imports or
-  calls it?** A plan written from `git diff --stat` plus the
-  definitions has not been written: three manual sessions in one week
-  shipped importers in no Boundary, a spec that contradicted a
-  function's documented design, and four merge revisions — and each
-  time the fix was the same grep, learned in-loop and written nowhere
-  (`journal/from-aibench-retro-20260902.md`, problem 6).
-- For experiment tickets: **K iterations × the `Disk:` figure <
-  `df` at launch, or the trial rotates as it goes.** Show the
-  arithmetic in the ticket (v8.1.16).
-- For experiment tickets: **is `Deadline:` K × a MEASURED minutes-per-
-  iteration × 1.5, with its source named?** A round number with no
-  source fails this check (v8.1.17). And does the Monitor Profile carry
-  `stall_min` and `writes:`, sized from the run's longest legitimate
-  silence?
-- **Before the first GPU smoke of a new training path: is there a
-  GPU-free config-probe ticket?** List every assertion the new argv can
-  trip — `validate_config`, micro-batch divisibility, offload/dtype
-  combinations, Hydra `+` append, a `ref.*` field required by a flag —
-  and probe them without a GPU, as one deployment's `validate_config`
-  ticket did in seven seconds. Nine of 49 replans in that deployment
-  were framework configuration facts discovered by a failed GPU smoke
-  (`journal/from-agentrl-retro-20260918.md`, problem 2).
-- **If a replan's cause was an environment fact** — a `PATH` the JIT
-  needs, a cache location, a driver version — **does the fix ticket
-  edit the environment script or the goal's preflight, not the Trial
-  line?** The same vLLM `PATH` defect cost two replans six days apart,
-  each fixing the plan (v8.1.17; problem 4).
-- **Every number a Test Contract, tolerance, routing rule or Spec
-  premise depends on names the probe behind it** (v8.1.20, R1) — the
-  `probe: <command> → <output>` line in `Goal.md`, or one you ran in
-  this session. A tolerance states its dtype and comes from a measured
-  noise floor or the ulp at the operating magnitude; a time or
-  throughput bar for a path this loop has not run is `smoke × 1.5` at
-  the run's actual concurrency, never another path's rate. Six replans
-  in one deployment, three escalations in another, and the sole *bad*
-  loop of a third were numbers asserted from memory
-  (`journal/retro-20261015-cross-project.md`, S2).
-- **What does a stop after this ticket strand?** (v8.1.20, R8) Arm N's
-  intermediates (checkpoints, a merged model, a scratch store) are
-  deleted by the ticket that banks their LAST measurement, never by arm
-  N+1's Trial — a stop after arm 1 left 29 GB and 58 GB on disk twice
-  and tripped three later preflights (STAGES). State the disk the
-  ticket leaves behind on PASS and on a stop; a project that merges
-  models keeps at most one merged student on disk, and the ticket that
-  merges names the directory it deletes first (PB pb13).
-- **A ticket that deletes or supersedes banked evidence lists, in
-  `Depends On`, the ticket that PROVES the replacement.** Never destroy
-  the current measurement until the replacement has produced one: one
-  ticket discarded both arms' ten repeats before the new protocol had
-  run, and they were restored by hand at close
-  (`journal/from-aibench-retro-20260902.md`, problem 9).
+  criterion's `source` file? Is each `source` writable by **at most
+  one** ticket, whose Boundary names the FILE, not its directory
+  (`plan_problems()` enforces this)? Zero owners is legal on an
+  `experiment` goal, where the driver launches the trial.
+- Is each `source` a path only THIS loop can write (`evidence_gate()`
+  refuses a stable pointer or an unversioned file)?
+- Does the Environment Setup ticket's Run Command EXERCISE a pinned
+  harness's runtime path (import + one trivial invocation), not only
+  install it?
+- Does any Run Command run longer than ~5 minutes? Then it is a
+  `Trial:` or launched detached.
+- **Every number** a Test Contract, tolerance, routing rule or Spec
+  premise depends on names its probe (`probe: <command> → <output>` in
+  `Goal.md`, or one you ran). A tolerance states its dtype and comes
+  from a measured noise floor; a time bar for a path this loop has not
+  run is `smoke × 1.5` at the run's actual concurrency.
+- Before the first GPU smoke of a new training path: is there a
+  GPU-free config-probe ticket that trips every assertion the new argv
+  can trip?
+- If a replan's cause was an environment fact, does the fix ticket edit
+  the environment script or the goal's preflight, not the Trial line?
+- What does a stop after this ticket strand? Arm N's intermediates are
+  deleted by the ticket that banks their LAST measurement; state the
+  disk left behind on PASS and on a stop.
+- For every **Parallel Group**: Boundaries pairwise disjoint, no
+  intra-group dependency, Environment Setup kept out, grouping worth it?
+- For experiment tickets: every Success Threshold maps to a `goal.json`
+  criterion; the Metrics Contract names the exact file; `Deadline:` is
+  K × MEASURED × 1.5 with its source; the Profile carries `stall_min`
+  and `writes:`; `Disk:` arithmetic fits `df` or the trial rotates.
 
 Every gap becomes a potential Generator hallucination.
 
 ## `[Halt here]` Flags (manual mode only)
 
-The Planner does NOT place `[Halt here]` flags. These are placed
-by the user after reviewing Plan.md. When the Generator encounters
-a ticket with `[Halt here]`, it commits current work and stops.
-
-**Loop mode ignores these flags** (v8.1). The driver never reads them —
-it never did — and `[loop]` no longer asks you to place them. A
-pre-placed pause requires guessing which ticket will need inspection
-before any output exists; loop mode replaces that with event-driven
-stops (deterministic criteria gate, regression guard, budget caps,
-ESCALATE) and declares environment preconditions up front via the
-`Preflight` section of `Goal.md`. The flag remains live for the manual
-`start execution` escape hatch (`generator-protocol.md` §3f).
+Placed by the user after reviewing Plan.md, never by the Planner. The
+manual Generator (`start execution`) commits current work and stops at
+a flagged ticket. **Loop mode ignores these flags**: the driver stops by
+event (criteria gate, regression guard, budget caps, ESCALATE,
+`pause-after`) and declares preconditions in `Goal.md`'s `Preflight`.

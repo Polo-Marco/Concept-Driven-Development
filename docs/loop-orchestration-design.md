@@ -468,3 +468,212 @@ an open `approve` channel is a remote trigger for autonomous code
 execution; keep secrets out of digests (`governance.md §2`). The phone
 talks ONLY to the driver, never to Claude sessions — the remote
 surface stays as dumb and auditable as the loop.
+
+## 17. Rationale register (moved out of the rules in 8.1.21)
+
+Until 8.1.20 every rule in `.claude/rules/` and `.claude/agents/` carried
+its own incident narrative, version tag and journal citation inline.
+That made the always-loaded set (CLAUDE.md + 8 rule files) ~15,000
+words, read by every session including each Monitor poll, and turned
+the rules into a second changelog (`journal/from-opd-pipe-retro-20261025.md`,
+maintainer observation). The rules now state the rule; this register
+keeps the WHY, one entry per rule, pointing at the record. `git log -p`
+of each rule file holds the full original prose.
+
+### Hook (loop-protocol.md §3)
+- **Shell write-target scan** (v8.1): core files and Boundaries were
+  unguarded on the shell path.
+- **Denials visible; over-denial not free** (v8.1.9): a `2>&1` matched
+  as a write to `goal.json` killed a read-only audit (2026-08-02).
+- **Decide on the resolved target, never the token** (v8.1.11): eight
+  false positives in aibench's first eight loops, 42 % of all stops —
+  bare `>`, `>=`, quoted `--format`, heredoc body, `git log` batch,
+  listing forms of `tag`/`stash`/`worktree`, `cp` trailing argument
+  (which also LEAKED a write to `Architecture.md`).
+- **Expansion is not a path** (v8.1.13): `$M` reached the role
+  decision as a file called `$m`; assignments resolved per segment, a
+  global last-write-wins fix failed OPEN on
+  `M=Architecture.md; echo x > $M; M=/tmp/ok`.
+- **Quoted span is data on the git net** (v8.1.14): `echo "--- git
+  worktree ---"` and `grep "git commit"` denied; killed contract review
+  round 3, driver read silence as REVISE.
+- **Heredoc body is data on every scan** (v8.1.13): a Planner writing
+  `cat > Plan.md <<'EOF'` denied for prose naming `git`.
+- **Relative paths decided where the shell writes; quoted spans data
+  on EVERY net** (v8.1.16): ~110 denials across twelve loops in the
+  two 2026-09-02 retros; `cd` tracked per segment.
+- **`/tmp` is scratch**: two-sided test (outside repo AND under
+  `/tmp`), symlinks resolved.
+
+### Gates and criteria (§6–7)
+- **`check_criteria` fail-closed; first green buys an audit** (v8.1.6):
+  the regression guard defends an unearned green as readily as a real
+  one.
+- **`metric@source` identity; `criteria_due`** (v8.1.12): six criteria
+  under four names in one loop, thirteen under nine in another; a
+  stable `latest.json` pointer started a loop with four criteria green
+  off the previous loop's records — `evidence_gate()` refuses it.
+- **`plan_problems()` single owner, file not tree** (v8.1.6): on
+  2026-07-31 `results/` sat in four Boundaries; a schema ticket's
+  fixture wrote `acc=0.6` and three criteria read green four
+  iterations before the harness existed.
+
+### Review and commits
+- **Review bounded by money** (v8.1.7): two consecutive builds spent
+  59 % of the run ($5.48, six sessions, zero tickets) before the gate.
+- **Review EXECUTES the Wired? class** (v8.1.14): every aibench review
+  finding was a read of a non-existent field/key/path; one passed
+  review and stopped the Generator six minutes after the gate.
+- **Review cap per loop across replans** (v8.1.17): 16 rounds across 6
+  replans, ~$150 of $218 before any measurement, four replans were
+  GOAL defects (`journal/from-agentrl-retro-20260918.md`, problem 5).
+- **First review of each plan phase uncounted; cap checked before a
+  revision is bought** (v8.1.19): DF M0 escalated "the contract keeps
+  failing" after six first reviews of environment-fact replans.
+- **Review remembered with the Plan.md hash** (v8.1.16): a restart
+  mid-review re-bought the review of an unchanged plan.
+- **`plan(loop):` commit at the gate** (v8.1.7): the first ticket commit
+  carried Plan.md, Evaluation.md, Architecture.md and a budget edit —
+  three authors in one commit.
+
+### Verdict routing
+- **Retry carries WHY; no-op twice escalates** (v8.1.6).
+- **Generator stop adjudicated** (v8.1.15): REPLAN fired zero times in
+  fifteen loops because its only entrance was a Mode-2 verdict; every
+  plan defect woke a human (`journal/retro-20260824-aibench.md`).
+- **Output gate** (v8.1.16): three PASSes in two aibench loops with
+  nothing on disk, each caught one iteration and one opus audit later.
+- **Retry cap adjudicated** (v8.1.16): three converging attempts
+  stopped by the counter; attempt 4 passed on a human's say-so an hour
+  later (`journal/from-aibench-retro-20260902.md`, problem 4).
+- **Trial dying twice identically adjudicated** (v8.1.19): a vLLM OOM
+  relaunched verbatim bought nothing (JEV loop 3).
+- **Replan of an environment fact fixes the environment** (v8.1.17):
+  the vLLM flashinfer `PATH` defect cost identical replans on 09-02 and
+  09-08 (`journal/from-agentrl-retro-20260918.md`, problem 4).
+
+### Dead sessions and outages
+- **Dead session re-dispatched once** (v8.1.13): an API 529 on the
+  first token read as ESCALATE on a loop whose 2.7 h trial had
+  succeeded.
+- **API error inside a valid result is dead too** (v8.1.17): `is_error:
+  true`, exit 0 — the retry never fired for the fault it was written
+  for (problem 8).
+- **Connectivity death is a wait** (v8.1.19): 11 of 16 escalations and
+  8 of 27 iterations in one deployment were a 15–80 min DNS outage
+  billed as attempts (`journal/retro-20261015-cross-project.md`, B3).
+- **Live Evaluator with no verdict asked once more** (v8.1.19): STAGES
+  s8 21:15 woke a human for a forgotten last step.
+
+### Monitor
+- **Monitor memory; driver overrules** (v8.1.16): five of six kills
+  across two campaigns were healthy trials — a per-call cost line read
+  HEALTHY five polls and as a crash on the sixth.
+- **Stall is the driver's clock** (v8.1.17): five healthy trials killed
+  on a model's stall reading; one deployment patched its driver three
+  times in three days toward this rule (problem 1).
+- **Deadline sizes the poll, warns, never kills** (v8.1.19): a 25 h
+  trial polled every 10 min cost 137 Monitor sessions and 23 % of its
+  loop; ~2,600 polls across seven deployments decided nothing (S4, B12,
+  B13). A 4× under-estimate on a healthy trial (JEVI) would have been a
+  false kill. One loop paid $26 for 68 HEALTHY readings on an opus
+  Monitor (v8.1.18).
+
+### Gates, commands, housekeeping
+- **Criteria re-read at a gate → `criteria_amended`** (v8.1.19): seven
+  loops amended at a gate, six restarted the driver to load it (B7).
+- **`approval_waiting` every 4 h; delegation rule** (v8.1.17): a plan
+  gate outlasted a 24.6 h GPU rental with the driver silent.
+- **`replan` is a command** (v8.1.15): the workaround was a tower
+  hand-editing `loop-state.json` under a running loop (L5).
+- **`pause-after`** (v8.1.19): lowering `max_iterations` as a pause
+  landed 8 s after the next Step and deleted checkpoints (B9).
+- **`note`** (v8.1.16): every agentRl loop had a hand in it that
+  surfaced later as "the record does not match the run".
+- **Driver writes the journal on every exit; Feedback block matched as
+  a line** (v8.1.6, v8.1.17): 22 files held 53 `## Request` sections
+  after nested rewrites.
+- **`Filled by:`** (v8.1.19): seven deployments ran delegated; in 22
+  loops the user's voice appeared in one block.
+- **`close` refuses a template block** (v8.1.17): six of 22 loops
+  closed on the untouched template (problem 7a).
+- **`close` copies ledger + events to `journal/raw/`; traces into the
+  PRIMARY tree** (v8.1.19): three deployments lost every trace of a
+  campaign when the worktree was removed.
+- **Budgets hot-reloadable; worktree copy wins; seeded once** (v8.1.6,
+  v8.1.9): a resume re-copied the primary tree's goal and reverted an
+  approved budget raise twice in one loop.
+- **`max_wall_hours` meters runtime** (v8.1.7): a loop that sat 3.6 h
+  at the gate escalated the instant the approval landed.
+- **Preflight `first-start`** (v8.1.19): ten loops failed every restart
+  on a "`<dir>` absent" check and hand-edited `goal.json` (B8).
+
+### Ticket format
+- **Under ten minutes or it is a Trial** (v8.1.16): eight abandoned
+  runs across six iterations, each killing vLLM mid-flight
+  (`journal/from-agentrl-retro-20260902.md`, problem 3).
+- **`;` not `&&` for the sweep**: rebuild-v2's standing rule 8.
+- **Monitor Profile enumerates noise** (v8.1.16): the one loop that did
+  killed nothing healthy (`journal/from-aibench-retro-20260902.md`,
+  problem 1).
+- **Deadline from a measured number** (v8.1.17): a 540-min cap from a
+  mean over a rising series; a 900-min cap assuming ~52 min where the
+  airline domain took ~155 (problem 3).
+- **Infra errors are metrics** (v8.1.20, R7): three outage-tainted
+  files read green at the free gate (DF M0 it 24–25).
+- **`Disk:` is a contract** (v8.1.16): 54 GB/iteration filled the
+  volume at iteration 7 and killed the driver mid-write (problem 6).
+- **Consumers grep** (v8.1.16): three manual sessions in one week
+  shipped importers in no Boundary (`journal/from-aibench-retro-20260902.md`,
+  problem 6).
+- **GPU-free config probe** (v8.1.17): nine of 49 replans were framework
+  configuration facts found by a failed GPU smoke (problem 2).
+- **Numbers name their probe** (v8.1.20, R1): six replans in one
+  deployment, three escalations in another, the sole bad loop of a
+  third (`journal/retro-20261015-cross-project.md`, S2).
+- **What a stop strands** (v8.1.20, R8): 29 GB and 58 GB left twice,
+  three later preflights tripped (STAGES; PB pb13).
+- **Never destroy evidence before its replacement exists**: both arms'
+  ten repeats discarded before the new protocol ran
+  (`journal/from-aibench-retro-20260902.md`, problem 9).
+- **Exercise a pinned harness's runtime path** (2026-08-02): three
+  escalations at tickets 7–8 for one under-tested Step 1.
+- **`Audit: deferred`** (v8.1.20): one deployment bought 19 audits of
+  no-code Trial re-runs, all PASS, nothing found.
+- **No test reads the live goal; no test writes under a `source` tree**
+  (v8.1.16, v8.1.20 R6): rebuild-v2 `tests/CLAUDE.md` rules 1, 2, 7;
+  `results/s0-setup/serve_check.json` overwritten twice.
+
+### Evaluator
+- **Grounded?** (v8.1.13): 2026-08-18 the plan gave the live probe
+  three read paths of the nested shape
+  (`journal/from-aibench-retro-20260819.md`).
+- **Earnable?** (v8.1.15, v8.1.20): a never-measured `>= 0.90`
+  escalated at 0.8978 hours after the science was finished; six of
+  seven deployments on 2026-10-15 paid for a recalled number.
+- **Wired? one paste per criterion** (v8.1.16): a criterion named a key
+  the harness cannot emit; three rounds of reading passed it
+  (`journal/from-agentrl-retro-20260902.md`, problem 2).
+- **Ceiling** (v8.1.7): three review passes that each rebuilt a
+  four-ticket plan cost 59 % of the loop
+  (`journal/retro-20260731-toy-816.md`, problem 2).
+- **Plant one failure on first green** (v8.1.20, R10): six Generator
+  sessions in one loop wrote tests after the implementation.
+- **Report carries every amendment** (v8.1.20, R2): a report.json with
+  no trace of the 0.95 → 0.94 that made it pass.
+- **Write denial ends the session; read denial is a finding** (v8.1.20,
+  R9): four audits in three deployments died on a read-only
+  `git merge-base`.
+- **`python -B`** (v8.1.20, R13): four protected-tree tripwires were
+  bytecode a probe wrote.
+
+### Planner / Generator agent files
+- **No Ask phase in loop mode** (v8.1.8): the toy copied no `skills/`,
+  so nobody knew what a headless Planner did with "STOP. Loop until
+  the user says 'proceed to spec'" (`journal/retro-20260731-toy-816.md`,
+  problem 5).
+- **Goal-type → skill mapping stated in the agent file** (v8.1.5): the
+  Planner ran `find . -iname "*mode-experiment*"` and re-derived the
+  driver's contract from `loop.py`.
+- **Prompt on stdin** (v8.1.18): a 128 KB replan prompt hit E2BIG in
+  three deployments (`journal/retro-20261015-cross-project.md`, B2).

@@ -74,6 +74,21 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
   logged feedback, surgical edits, assumptions stated first.
 - Every change must trace to a journal entry, an inbox item, or an
   explicit user request — cite it in the commit message.
+- **Rules state the rule; the register keeps the why** (8.1.21). A
+  rule file or agent file carries the imperative, what the driver does
+  about it, and at most a pointer. No version tags, no dates, no
+  incident narrative, no journal citation in template text — those go
+  to `docs/loop-orchestration-design.md` §17 (one entry per rule) and
+  to the commit message. The always-loaded set (`CLAUDE.md` + every
+  `.claude/rules/*.md`) is read by EVERY session including each Monitor
+  poll; in one deployment it was ~15,000 words × 660 sessions.
+- **Word caps, checked before a release** (8.1.21):
+  `wc -w CLAUDE.md .claude/rules/*.md .claude/agents/*.md`. Each rule
+  file ≤ 1,200 words, except `loop-protocol.md` ≤ 2,000 and
+  `task-ticket-format.md` ≤ 1,500; `CLAUDE.md` ≤ 1,200; each agent file
+  ≤ 1,000 except `cdd-evaluator.md` ≤ 1,700. A rule that needs more
+  words than the cap allows is two rules, or one rule and a register
+  entry. Growing a cap is a release decision, named in the commit.
 
 ### 5. Version + ship
 

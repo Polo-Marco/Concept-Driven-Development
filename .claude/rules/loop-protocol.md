@@ -1,14 +1,15 @@
-# Loop Protocol (v8.1)
+# Loop Protocol
 
 The `[loop]` pipeline: a deterministic driver orchestrates fresh
 Planner / Generator / Evaluator / Monitor sessions until the goal's
 success criteria are verifiably met — or the loop escalates to the
-user. Full rationale: `docs/loop-orchestration-design.md` (framework
-repo) and the tcocrai retro it cites.
+user. This file states the rules. The incident behind each one lives in
+`docs/loop-orchestration-design.md` §17 (framework repo) and in
+`git log -p` of this file; a session needs neither.
 
 ## Control principles
 
-1. **The driver is dumb.** `.claude/driver/loop.py` — a deterministic
+1. **The driver is dumb.** `.claude/driver/loop.py` is a deterministic
    state machine. It spawns sessions, parses JSON artifacts, branches
    on verdicts, enforces budgets, owns long-running processes, and is
    the ONLY thing that commits during a loop. The Planner calls nobody.
@@ -17,421 +18,200 @@ repo) and the tcocrai retro it cites.
    definition (`.claude/agents/cdd-*.md`). Process boundary = session
    boundary.
 3. **Authority is enforced.** The PreToolUse hook
-   (`.claude/hooks/enforce_authority.py`) denies git writes, boundary
-   breaches, and protected-file edits per role (`CDD_ROLE` /
-   `CDD_BOUNDARY` env). An agent that hits a denial STOPS and reports;
-   working around it is a protocol violation. Verified 2026-07-30:
-   `--dangerously-skip-permissions` skips permission *prompts*, not
-   hooks, so the driver's enforcement layer is intact.
-
-   The hook decides `Write`/`Edit` exactly (they carry a `file_path`) and
-   scans `Bash` for the write targets a model reaches for by accident —
-   redirects, `tee`, `sed -i`, `mv`/`cp`, `rm`, `dd` — applying the same
-   role decision to each (v8.1; before this, core files and Boundaries
-   were unguarded on the shell path). `logs/` stays writable for the
-   roles that execute a Run Command, and the Monitor writes nothing at
-   all. Interpreter escapes (`python3 -c`, heredocs, expansion) are
-   **knowingly out of scope**: a shell is Turing-complete, a pattern
-   matcher is not. Adversarial containment is the VM plus the worktree —
-   if a role needs real confinement, confine the process, do not grow
-   the hook into a shell parser.
-
-   **A denial is visible, and over-denial is not free** (v8.1.9). The
-   hook appends one line per denial to `logs/denials.log` and the driver
-   turns the count into a `hook_denials` event, because a denial used to
-   exist only on the agent's stderr — so a hook FALSE POSITIVE cost a
-   transcript dig to diagnose. It costs more than that to have: on
-   2026-08-02 the shell net matched the `>` of `2>&1` as a write to
-   `goal.json` and killed a read-only Evaluator audit mid-loop, which
-   the loop then paid to re-run. The net tests per shell segment now and
-   leaves redirects to the precise target scan, which decides them
-   exactly. Denying a command that merely NAMES a protected file is a
-   defect, not caution.
-
-   **Decide on the resolved target, never on the token** (v8.1.11). The
-   same class recurred eight times across the aibench deployment's first
-   eight loops — 42% of every reason a loop stopped — because the net
-   kept judging syntax it had mistaken for a path: a bare `>`, a `>=`
-   comparison, a `>` inside a quoted `--format` string, a heredoc body,
-   a `git log` and a later bare `add` on another line of the same batch,
-   the listing forms of `tag`/`stash`/`worktree`, a redirect handed to
-   `cp`'s trailing-argument rule. Two rules follow from it: git is
-   decided by SUBCOMMAND, not by verb; and a redirect's own syntax is
-   never a target. Both directions matter — the same `cp` bug that
-   denied a read-only copy also LEAKED a write to `Architecture.md`,
-   because the trailing argument it decided was `/dev/null`.
-
-   **A name the shell will expand is not a path** (v8.1.13). The same
-   rule one layer down: `$M` reached the role decision as a
-   repo-relative file called `$m`, so `M=/tmp/eval-check; cp -r src
-   "$M/"` — the Evaluator's contractual reconstruction — was denied.
-   Assignments are resolved INCREMENTALLY now, per shell segment,
-   against the ones that precede it; anything still carrying a `$` is
-   dropped, which is the fail-OPEN "expansion is out of scope" always
-   promised. Position IS the rule: a fix that resolved assignments
-   globally, last-write-wins, made `M=Architecture.md; echo x > $M;
-   M=/tmp/ok` fail OPEN on a core file. That fix was written under a
-   running loop and cost the loop; this one ships with the
-   reverse-order case in the test suite.
-
-   **A quoted span is data too** (v8.1.14). Same rule, last place it
-   was missing. The target scan blanks quoted spans carrying shell
-   metacharacters but keeps the rest, correctly — there a quoted span
-   may BE a target (`tee 'Plan.md'`). On the git net it can be nothing:
-   `git` is a command only where the shell would execute it. So
-   `echo "--- git worktree ---" && git worktree list` was denied on the
-   ECHO LABEL while the real listing next to it was scrubbed correctly,
-   and `grep "git commit" logs/x` was denied for naming what it was
-   searching for. It killed contract review round 3 of a loop; the
-   driver read the silence as REVISE, spent the last revision, and
-   escalated a plan nothing had reviewed. Sixth false positive of this
-   class. It fails OPEN on `sh -c "git push"`, which is an interpreter
-   escape and out of scope by the same docstring that has always said
-   so — asserted by a test, so the hole is visible rather than found.
-
-   **A heredoc body is DATA on every scan, not just one** (v8.1.13). The
-   truncation lived inside the target scan, so the git net and the loose
-   net still read the body as shell — and a Planner writing the file it
-   OWNS (`cat > Plan.md <<'PLANEOF'`) was denied "Git write commands are
-   driver-only" because prose in the plan put `git` and a subcommand
-   word on one line. A rule applied in one of the three places that need
-   it is not shipped.
-
-   **A relative path is decided where the shell would write it, and a
-   quoted span is data on EVERY net** (v8.1.16). Two shapes were behind
-   nearly all of ~110 denials across twelve loops in the two
-   2026-09-02 retros — five sessions killed, one plan reshaped to
-   route around the net. A `cd` is now tracked per segment, exactly as
-   assignments are, so `cd /tmp && echo x > notes.txt` is scratch and
-   `cd src/pkg && echo x > ../../Architecture.md` is a core-file write
-   (it used to be ALLOWED: `../../` against the repo root resolved
-   outside it). A `cd` the hook cannot follow drops the later relative
-   targets — the documented fail-OPEN. And the loose co-occurrence net
-   blanks quoted spans before it looks for a verb, so a `grep` pattern
-   containing `rm` is not a removal; an escaped `\"` no longer ends a
-   double-quoted span; and the listing forms take their options
-   (`git worktree list --porcelain`). Each pinned by a test beside the
-   real denial it must not loosen.
-
-   **`/tmp` is scratch, and scratch is outside the matrix.** Every role
-   may write there through `Write` and through the shell alike; the
-   Evaluator's contract requires it, since reconstructing a prior state
-   is how a claim gets checked independently. Scratch is a TWO-sided
-   test on the resolved path: outside the repo AND under `/tmp`. A
-   symlink from `/tmp` back into the tree is decided as the file it
-   points at, and a project that itself lives under `/tmp` is not one
-   big carve-out.
-4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned. No
-   agent session may edit them — a loop that can move its own
-   goalposts optimizes the wrong thing. Change of goal = user edits +
-   fresh loop. **One bounded exception** (v8.1.19): the driver re-reads
-   `criteria` at the moment a plan or replan gate clears — the one
-   point where the user is already editing the goal with the
-   Evaluator's CRITERIA CONCERN in front of them — and writes the diff
-   to `events.jsonl` as `criteria_amended`. Between gates nothing
-   re-reads the key. Seven loops of one deployment amended at a gate;
-   six restarted the driver to load it, each restart an iteration and a
-   preflight hand-edit (`journal/retro-20261015-cross-project.md`, B7).
+   (`.claude/hooks/enforce_authority.py`) denies git writes, Boundary
+   breaches and protected-file edits per role (`CDD_ROLE` /
+   `CDD_BOUNDARY`). A denial means STOP and report; working around it
+   is a protocol violation. `--dangerously-skip-permissions` skips
+   prompts, not hooks.
+   - `Write`/`Edit` are decided exactly. `Bash` is scanned for write
+     targets (redirects, `tee`, `sed -i`, `mv`/`cp`, `rm`, `dd`) and
+     git subcommands, deciding on the RESOLVED target, never on a
+     token: a redirect's own syntax, a quoted span, a heredoc body and
+     a `grep` pattern are data; `cd` and assignments are tracked per
+     shell segment; anything still unresolved (`$VAR`, an interpreter
+     escape such as `python3 -c`) fails OPEN by design. Real
+     confinement is the VM plus the worktree, not the hook.
+   - `/tmp` is scratch for every role: the resolved path must be
+     outside the repo AND under `/tmp`; a symlink is decided as its
+     target. `logs/` stays writable for roles that execute a Run
+     Command; the Monitor writes nothing.
+   - Every denial is appended to `logs/denials.log` and surfaces as a
+     `hook_denials` event. Denying a command that merely NAMES a
+     protected file is a hook defect: report it as a hotfix, do not
+     route around it.
+4. **Goal immutability.** `Goal.md` + `goal.json` are user-owned; no
+   session edits them. Change of goal = user edits + fresh loop. One
+   bounded exception: the driver re-reads `criteria` when a plan or
+   replan gate clears and records the diff as `criteria_amended`.
+   Between gates nothing re-reads the key.
 5. **Trial provenance.** A launched trial's config is immutable.
-   Crash-recovery with an identical config may reuse the trial ID; ANY
+   Crash-recovery with an identical config may reuse the trial ID; any
    parameter change = new trial ID via REPLAN, recorded in the ledger.
-6. **Anything rule-bound is decided by code, not by a model.** (v8.1)
-   The driver owns five deterministic gates and runs them before it
-   spends anything: `machinery()` (the loop's own parts are installed
-   and the hook is wired), `validate_goal()` (the contract is
-   well-formed and has at least one machine-checkable criterion),
-   `require_isolation()` (not the primary working tree), `preflight()`
-   (the environment preconditions declared in `Goal.md`), and
-   `evidence_gate()` (nothing already exists at a path a criterion
-   reads its number from — v8.1.12). Once a plan exists,
-   `plan_problems()` checks that at most one ticket can write each
-   criterion's `source` file and that it names the file rather than its
-   tree (v8.1.6) — a plan that fails goes back to the Planner before a
-   contract review is paid for. `check_criteria()` then reads every
-   criterion straight off disk. All fail CLOSED — a
-   missing source file, an unparseable artifact or an absent metric is a
-   failure, never a pass. Rationale: the Ask phase already forces every
-   criterion into metric + op + value + source, so handing the
-   comparison to a probabilistic model adds cost and removes certainty.
+6. **Anything rule-bound is decided by code, not by a model.** Five
+   gates run before anything is spent: `machinery()`, `validate_goal()`,
+   `require_isolation()`, `preflight()`, `evidence_gate()` (nothing may
+   already exist at a path a criterion reads). `plan_problems()` sends
+   a plan back before a review is paid for when more than one ticket
+   can write a criterion's `source`, or a Boundary names its tree
+   instead of the file. `check_criteria()` reads every criterion off
+   disk. All fail CLOSED.
 7. **Deterministic is necessary, not sufficient.** `check_criteria()`
-   proves a number met its threshold; it cannot prove the number was
-   earned. Provenance stays with the Evaluator, which must EXECUTE
-   rather than read. Keep both checks — the cheap one being free is not
-   a reason to delete the expensive one.
-
-   **A criterion recorded green by `check_criteria()` alone has met a
-   threshold, not earned one** (v8.1.6), and the regression guard
-   inherits that uncertainty: it will defend an unearned green as
-   readily as a real one, so deleting forged evidence reads to it as a
-   regression. This is why the iteration where a criterion FIRST reads
-   green always buys an Evaluator audit, even under `final-pass`
-   cadence — provenance is worth paying for at the moment the colour
-   changes, not five committed tickets later.
-
-   **A criterion is identified by `metric@source`, and is evidence only
-   once its owner has run** (v8.1.12). Two rules, one failure class:
-
-   - The green set was keyed on the bare metric name, so two criteria
-     measuring the same quantity in different files were one entry —
-     six criteria under four names in one loop, thirteen under nine in
-     another. A regression in one of a colliding pair was invisible
-     while the other stayed green, and `first_green` fired once for the
-     pair, so the second criterion's first green bought no audit.
-   - `criteria_due()` defers a criterion whose `source` a LATER ticket
-     owns. Until that ticket runs, the file at that path is not this
-     loop's result; it is whatever was there before. Such a criterion
-     is neither green NOR red — out of the green set and out of the
-     regression comparison — so clearing stale evidence costs nothing.
-     Everything is due by the final gate, which still requires all of
-     it green.
-
-   Prefer to make the class impossible rather than detected: give each
-   criterion a `source` path only THIS loop can write. A stable pointer
-   (`results/<bench>/latest.json`) is the shape that fails — it is what
-   made one loop start with four criteria already green off the
-   previous loop's records, carrying the very harness pin that loop
-   existed to replace. `evidence_gate()` refuses such a start.
+   proves a number met its bar, not that it was earned. Provenance is
+   the Evaluator's, which must EXECUTE rather than read. A criterion is
+   identified by `metric@source`; it is evidence only once the ticket
+   that owns its `source` has run (`criteria_due()`), and the iteration
+   where it FIRST reads green always buys an audit, under any cadence.
+   Give each criterion a `source` only THIS loop can write — a stable
+   pointer such as `results/<bench>/latest.json` is refused at start.
 
 ## The loop
 
 ```
 goal.json → [gates: machinery, contract shape, isolation, preflight, evidence]
-          → Planner → Evaluator contract review (OK|REVISE, ≤2 rounds
-                      AND ≤ half of max_usd)
+          → Planner → Evaluator contract review (OK|REVISE)
           → HUMAN GATE (approve once; also after each REPLAN)
           → `plan(loop):` commit of everything the plan phase produced
           → per ticket: Generator (bearings + smoke test → TDD/impl)
                         → driver launches Trial, Monitor polls
-                        → check_criteria() + regression guard (free)
+                        → output gate + check_criteria() + regression guard
                         → Evaluator → verdict.json  (cadence-dependent)
-          → final: check_criteria() hard gate, THEN Evaluator provenance
-          → PASS: driver marks [x], commits, next ticket
-            RETRY: same ticket, ≤3 attempts, each carrying the verdict
-                   that rejected the last one
-            REPLAN: fresh Planner + ledger + Evaluation.md, ≤ budget
+          → PASS: driver marks [x], commits `feat(loop):`, next ticket
+            RETRY: same ticket, ≤3 attempts, each carrying the last verdict
+            REPLAN: `wip(loop):`, fresh Planner + ledger, re-gated
             ESCALATE: stop, notify user
-          → final evaluation of ALL Goal.md criteria → done
+          → final: check_criteria() hard gate, THEN Evaluator provenance
           → loop.py close: journal record, housekeeping
 ```
 
-**A replan that fixes an environment fact fixes the environment**
-(v8.1.17). vLLM's flashinfer JIT needing the venv `bin/` on `PATH` cost
-a replan on 09-02 and the identical replan on 09-08, because both fixes
-edited the Trial line and the next loop started from the same
-environment (`journal/from-agentrl-retro-20260918.md`, problem 4). When
-the ledger's reason for a replan is a `PATH`, a cache, a driver or
-library version, the fix ticket edits the project's environment script
-(`scripts/env.sh` or equivalent) or adds a `Preflight` check the next
-`Goal.md` inherits — never only the command that tripped on it.
+## What the driver guarantees
 
-**A retry carries WHY** (v8.1.6). The Generator dispatch on attempt 2+
-includes the previous verdict's `reason` and `evidence`; retrying a
-ticket verbatim can only help a nondeterministic fault. And a Generator
-session that changed **nothing** twice is a protocol failure, not a
-retryable one — the driver fingerprints the tree around each dispatch
-and escalates rather than buying a third identical session. The
-exception is a RETRY caused by a trial that did not complete:
-relaunching an unchanged config is exactly what that retry is for
-(Protocol #5).
+Sessions rely on these; none of them is a session's job.
 
-**Contract review is capped per loop, across replans** (v8.1.17).
-`MAX_REVISIONS` and the pre-gate share bound one plan phase; each
-replan opens a fresh one. One loop bought 16 review rounds across 6
-replans — ~$150 of $218 before or between measurements — and four of
-the replans were defects in the GOAL, which no plan can fix, so the
-user never saw one consolidated question
-(`journal/from-agentrl-retro-20260918.md`, problem 5). The driver
-counts every paid round in `loop-state.json` (`review_rounds`) and at
-six escalates naming the disputed lines' home: Evaluation.md against
-Goal.md. `budgets.max_review_rounds` overrides it, hot-reloadable like
-every cap.
+- **Contract review** is bought at most twice per plan phase and only
+  while the pre-gate phases have spent under half of `max_usd`; the
+  first review is always bought. Rounds bought because the last said
+  REVISE count toward `budgets.max_review_rounds` (default 6) across
+  replans; the first review of each plan phase does not. A verdict is
+  remembered with the hash of the `Plan.md` it judged. The gate banner
+  states whether the plan was reviewed OK or the review was cut short.
+- **Commits**: `plan(loop):` the moment a gate clears, `feat(loop):`
+  per passed ticket, `wip(loop):` before a replan or escalation.
+- **A retry carries WHY**: attempt 2+ receives the verdict that
+  rejected the last one. A Generator that changed nothing twice is
+  escalated, except when the retry exists to relaunch a trial that did
+  not complete.
+- **Output gate**: before any audit, every **Output:** path the
+  Boundary covers exists, a ticket with a Run Command left a log
+  written during this dispatch, and no criterion the ticket OWNS reads
+  red. A miss is a RETRY naming what is missing; no audit is bought.
+- **Verdict routing**: metric failures → RETRY/REPLAN; protocol
+  failures (Boundary breach, worker death, missing artifact) →
+  ESCALATE. Trial budget is never spent on a defect no trial can fix.
+- **Adjudication (Mode 3)** instead of auto-escalation for: a
+  Generator `STATUS: stopped`, an exhausted retry cap (RETRY granted
+  once more, with what must change), and a trial that dies twice
+  identically in one iteration. Routes REPLAN / RETRY / ESCALATE;
+  fail-CLOSED — an adjudicator that wrote nothing decides nothing.
+- **Dead sessions**: a non-zero exit, or a result carrying
+  `is_error: true`, is re-dispatched once. When both dispatches die of
+  the connectivity class the driver stops its runtime clock, emits
+  `network_wait`, probes every 60 s up to `budgets.max_network_wait_min`
+  (default 120) and re-dispatches on `network_restored`; a Generator
+  dispatch that dies this way is NOT an attempt and escalates as
+  `infrastructure`. A live Evaluator that wrote no verdict is asked
+  once more (`verdict_missing`).
+- **Monitor**: the driver polls, acts and kills; the Monitor only
+  classifies. `stall` is the driver's clock — `now − max(mtime(trial
+  log), mtime(Profile writes:))` against `stall_min`; no `stall_min`,
+  no stall kill. A kill whose quoted evidence sat in a window a prior
+  poll judged HEALTHY is overruled (`monitor_overruled`). `Deadline:`
+  sizes the poll to the longer of the Profile's and Deadline/30, is
+  reported to every poll, and emits `deadline_exceeded` once at 1.5×;
+  it never kills on its own.
+- **Preflight** runs on every start; a check with `"when":
+  "first-start"` is skipped on resume (`preflight_skipped`).
+- **Budgets are hot-reloadable** from the WORKTREE's `goal.json` every
+  iteration (criteria stay frozen). `start` seeds the goal files into
+  a fresh worktree once and never overwrites them. `max_wall_hours`
+  meters driver runtime, not the calendar: the clock stops at gates and
+  between runs. Every restart consumes an iteration; size
+  `max_iterations` with headroom.
+- **A replan that fixes an environment fact fixes the environment**:
+  when the ledger's reason is a `PATH`, cache, driver or library
+  version, the fix ticket edits the project's environment script or
+  adds a `Preflight` check — never only the Trial line.
 
-**Contract review is bounded by money, not only by rounds** (v8.1.7).
-`MAX_REVISIONS` was the sole bound and no budget was consulted between
-rounds, so a review could eat an arbitrary share of `max_usd` before
-the one gate where the user can still intervene cheaply — two
-consecutive `build` loops spent their pre-gate budget this way
-(2026-07-31: $5.48, 59% of the run, six sessions, zero tickets). Once
-the pre-gate phases have spent half of `max_usd` the driver stops
-buying rounds and hands the plan to the human gate, which is free. The
-FIRST review is always bought: skipping it would not bound a cost, it
-would delete the safety gate. The gate banner then states what it is
-handing you — reviewed OK, or review cut short — because a gate that
-misreports itself is worse than no gate.
+## Monitor
 
-**The contract review EXECUTES one class of check** (v8.1.14). It was
-a document review by design, and the aibench deployment's every
-contract-review finding was one class: the plan reads a field, key or
-path that does not exist in the thing it reads from. A reader aimed at
-two different data shapes; a `doc_hash` that is one constant value
-across 900 rows; `sample_outcomes()` reading `repeat["harness"]` and a
-`domain` the declared record shape does not carry. Each cost minutes of
-careful reading, each falls out of one command in seconds, and reading
-missed one outright — it passed review and the Generator stopped six
-minutes after the human gate. The **Wired?** check therefore requires a
-pasted command and its output, not a conclusion. The v8.1.7 ceiling
-stands and gets its line drawn: EXISTENCE is a spot-check and is
-required, BEHAVIOUR is building and is forbidden — list the keys of a
-shape, never write the function that reads them. A probe that needs a
-fixture or a stub has crossed it, and the crossing is itself the
-finding.
+While a trial runs the driver spawns `cdd-monitor` (cheap model) each
+poll with the log tail, the Monitor Profile, its last three verdicts
+and the driver's stall measurement. It returns
+`HEALTHY | INTERVENE | KILL_ESCALATE`; the driver kills and retries
+with a fix for crash-class signatures (max 2 interventions) and
+escalates otherwise. Profile keys the driver reads — `stall_min`,
+`writes:`, benign noise — are the Planner's job
+(`task-ticket-format.md`). Never an opus- or fable-class Monitor model.
 
-**The plan phase commits at its gate** (v8.1.7). The driver commits
-`git add -A`, so with nothing flushed between the Planner and ticket 1,
-the first `feat(loop):` commit carried Plan.md, Evaluation.md,
-verdict.json, Architecture.md, a user budget edit and the journal
-record under one ticket's title — three authors in one commit, and a
-per-ticket Boundary audit read off `git log` cannot work that way. A
-`plan(loop):` commit now lands the moment the gate clears (and after
-each replan gate), so `feat(loop):` carries exactly one ticket
-(governance.md §1).
+## Human gates & remote control
 
-**Verdict routing:** metric-based failures → RETRY/REPLAN. Protocol
-failures (boundary breach, worker death, missing artifact) → ESCALATE
-immediately. Never burn trial budget on a defect no trial can fix.
+Gates: plan approval, every replan, every ESCALATE — all event-driven;
+the driver blocks on `approvals/<gate>.approved`. A gate that stays
+open emits `approval_waiting` every 4 h. Under written delegation an
+operator may approve a gate that has waited longer than the shorter of
+4 h or 20 % of a rental, and notes it.
 
-**A Generator stop is adjudicated, not auto-escalated** (v8.1.15).
-REPLAN — fresh Planner + ledger + human re-gate, built for exactly the
-"plan is defective" case — fired ZERO times in fifteen deployed loops,
-because its only entrance was an Evaluator Mode-2 verdict and a
-Generator stop returned before any Evaluator ran. Every plan defect
-the Generator caught woke a human to do what a Planner session does:
-a Spec contradicting a fact `Goal.md` declared established
-(2026-08-18 12:23), three consecutive escalations at tickets 7–8 all
-downstream of one under-tested setup ticket (2026-08-02), and the
-"Boundary excludes the root cause" stops of loops 6–7 — while the
-manual pipeline handled the same event the same week with a Planner
-revision session whose only human touch was a `git revert`
-(journal/retro-20260824-aibench.md). The old routing's rationale —
-never burn trial budget on a defect no trial can fix — argues against
-RETRY, not against replanning: a REPLAN burns no trial budget. So on
-`STATUS: stopped` the driver now dispatches one bounded read-only
-Evaluator session (Mode 3, `cdd-evaluator.md`) over the stop report,
-`Plan.md`, `Goal.md` and the ledger, and routes its verdict: **REPLAN**
-(plan defect — the existing path: ledger, fresh Planner, contract
-review, human re-gate) / **RETRY** (the Generator misread an executable
-spec; the retry carries what it missed, per the v8.1.6 mechanism) /
-**ESCALATE** (the defect implicates the goal contract, authority, or
-anything no replan can fix). Fail-CLOSED: an adjudicator that died or
-wrote junk decides nothing, and the stop escalates with the
-Generator's own report, exactly as before. The human still approves
-every replan at its gate — the touchpoint changes shape from diagnosis
-to approval, and `max_replans` still bounds the spend.
+There is no mid-loop `[Halt here]`: preconditions go in `Goal.md`'s
+`Preflight`, and the loop stops by event (failed criterion, regression,
+budget, escalation, or `pause-after`). Read a sample of the loop's
+diffs after every loop; it is the remaining guard against a codebase
+you no longer understand.
 
-**A ticket PASSes only with its outputs on disk** (v8.1.16). The
-verdict chain tested `trial_ok` and `regressed` and nothing else, so a
-ticket could PASS having produced nothing — three times in two aibench
-loops: both owned criteria printing FAIL, two of four Output files never
-written, stage 3 of a Run Command never run — each caught one iteration
-and one opus audit later. Before any Evaluator is paid for, the driver
-now checks that every **Output:** path the ticket's Boundary covers
-exists, that a ticket with a Run Command left a log written during
-this dispatch, and that no criterion this ticket OWNS reads red. A miss
-is a RETRY carrying exactly what is missing; no audit is bought. It is
-also the exemption the no-op backstop needed: a Generator that
-abandoned a long run changed nothing because the run never finished,
-and "change nothing, run it again" is precisely that retry.
+**Control tower (recommended):** one interactive Claude Code session in
+tmux with Remote Control enabled. It reads `events.jsonl` /
+`loop-state.json` / `ledger.jsonl` for `status` and writes the approval
+flag on your `approve`; it acts only on your instruction.
+**Push (optional):** `.claude/driver/notify.sh` (see the `.example`);
+allowlist your device, keep secrets out of digests.
 
-**The retry cap is adjudicated, not merely hit** (v8.1.16). Three
-attempts on one ticket each fixed a real defect and were converging;
-the counter stopped them, and attempt 4 passed on a human's say-so an
-hour later. A ticket that exhausts its attempts now takes the v8.1.15
-route once, with the ledger's three verdicts: REPLAN / ESCALATE as for
-a stop, or RETRY meaning one more attempt carrying what it must do
-differently — granted once. Fail-closed as before.
+## User commands
 
-**The Monitor has a memory, and the driver checks it** (v8.1.16). Five
-of six Monitor kills across two campaigns were healthy trials — a
-per-call cost line read HEALTHY for five polls and as a crash on the
-sixth. The Monitor is handed its last three verdicts, and the driver
-overrules any INTERVENE / KILL_ESCALATE whose quoted evidence appeared
-in a window a prior poll judged HEALTHY (`monitor_overruled`). The
-Profile-side rules — enumerate benign noise, define `stall` by
-last-write time — live in `task-ticket-format.md`, where the one loop
-that followed them killed nothing healthy.
+```bash
+python3 .claude/driver/loop.py start                  # or resume
+python3 .claude/driver/loop.py status
+python3 .claude/driver/loop.py approve [plan|replan]  # the pending gate
+python3 .claude/driver/loop.py replan "<reason>"      # stop the driver first
+python3 .claude/driver/loop.py pause-after "Phase N, Step M"
+python3 .claude/driver/loop.py note "<what you changed and why>"
+python3 .claude/driver/loop.py close                  # --force if not done
+```
 
-**A contract review is remembered with the plan it reviewed**
-(v8.1.16). The round counter lived in the driver's local scope, so a
-restart mid-review re-bought the review of an unchanged plan and reset
-the revision cap. `loop-state.json` now carries the hash of the
-`Plan.md` a verdict was written for; on resume an unchanged plan gets
-its verdict back, and the round count continues. Within one run every
-revision is still reviewed.
+- `replan` queues a fresh plan phase (reason + any `Evaluation.md`
+  handed to the Planner, re-reviewed, re-gated); counts against
+  `max_replans`.
+- `pause-after` stops cleanly after the named ticket PASSES and its
+  commit lands (`paused`; phase stays `iterate`, `start` resumes).
+- `note` records a manual change under a running loop at the moment it
+  is made; it shows under the journal's Notable events. When the loop
+  is stopped at an escalation, let the audit finish before touching
+  anything it reads.
+- `close` writes the journal record, prints the criteria, copies
+  `ledger.jsonl` + `events.jsonl` to `journal/raw/<record>/`, deletes
+  the ephemeral loop files and approval flags, and commits. It refuses
+  a template `## Feedback` block until `Rating:` is filled (`--force`
+  overrides). It never merges or deletes the branch; it prints those
+  commands.
 
-**An API error inside a valid result is a dead session too** (v8.1.17).
-The CLI reports an upstream failure as well-formed JSON — `is_error:
-true`, `subtype: error_*`, exit 0 — so the v8.1.13 retry, keyed on
-unparseable output, never fired for the fault it was written for: an
-API 529 killed a Planner that then "wrote nothing", and the replan was
-charged (`journal/from-agentrl-retro-20260918.md`, problem 8). The
-driver now reads the result's own error flag, bills the failed session
-and re-dispatches it once, exactly as for a session that produced no
-output.
+## Housekeeping (driver responsibility, not memory)
 
-**A connectivity death is a wait, not an attempt** (v8.1.19). The
-one-shot re-dispatch bridges a blip; it never bridged a 15–80 minute
-DNS or API outage, and what happened instead was that each dead
-Generator dispatch fell through to the output gate ("the Run Command
-left no log"), was RETRIED, consumed an attempt, then the cap
-adjudicator died of the same outage and the loop escalated — 11 of 16
-escalations and 8 of 27 iterations in one deployment, three attempts
-and an escalation per 37-minute outage in another
-(`journal/retro-20261015-cross-project.md`, B3). When both dispatches
-die with the connectivity class (`EAI_AGAIN`, `ENOTFOUND`,
-`ECONNRESET`, `ETIMEDOUT`, "Can't reach", 529/overloaded) the driver
-stops its runtime clock — an outage is not driver time, exactly as a
-gate is not — emits `network_wait`, probes the API host every 60 s up
-to `budgets.max_network_wait_min` (default 120, hot-reloadable), and
-re-dispatches on `network_restored`. Only a wait that runs out is a
-dead session, and a dead Generator session is NOT an attempt: it skips
-the output gate, consumes no attempt, and escalates as
-`infrastructure` with the ticket unrun — a different human move from a
-judged failure.
+The driver writes the loop's `journal/` record on EVERY terminal exit —
+done, escalation, crash — and rewrites it on resume, never touching the
+`## Feedback` block, whose `Filled by:` line names its author (user, or
+operator under delegation). The Outcome block carries the driver's own
+counts (review rounds, Monitor tally, GPU-hours, trial wall times).
+Tier-2 traces are archived into the PRIMARY tree's `journal/traces/`
+even when the session ran in a worktree.
 
-**A live Evaluator that wrote no verdict is asked once more**
-(v8.1.19). The dead-session retry covers a session that died; a session
-that exited 0 having written nothing was read straight as ESCALATE and
-woke a human for a forgotten last step (STAGES s8 21:15). Every
-Evaluator dispatch whose contract is a verdict — contract review, Mode
-2, final audit, adjudication — is re-dispatched once with
-`verdict_missing` on the record. A dead session is not asked a third
-time.
-
-**A Trial that dies twice identically is adjudicated, not relaunched**
-(v8.1.19). Protocol #5's relaunch is for nondeterministic deaths; a vLLM
-OOM relaunched verbatim bought nothing (JEV loop 3). The second
-consecutive trial failure in one iteration goes to a Mode-3
-adjudication carrying both logs' tails, and routes as any stop does:
-REPLAN (the Trial line, its config or the environment it assumes is
-defective), RETRY (plausibly nondeterministic — one more launch, granted
-once), or ESCALATE.
-
-**The review cap counts re-reviews, and says what it bought** (v8.1.19).
-The v8.1.17 cap counted every review, including the FIRST review of
-each replan's fresh plan, so with `max_replans` 8 the last replans were
-unreachable and one loop escalated "the contract, not the plan, is what
-keeps failing" after six first reviews of environment-fact replans that
-disputed nothing in `Goal.md` (DF M0). The first review of a plan phase
-is the replan's own cost and is uncounted; only rounds bought because
-the last one said REVISE count, the cap is checked before a revision is
-bought (never pay for a revision nothing will review), and the
-escalation lists each paid round so the reader can see whether the
-REVISE lines dispute the Goal or the plan.
-
-**A session that DIED is not a verdict** (v8.1.13). One dispatch could
-not tell "the auditor judged this unsalvageable" from "the auditor never
-ran": an Evaluator that died on its first token with API Error 529 wrote
-nothing, and the absent `verdict.json` was read as ESCALATE — stopping a
-loop whose 2.7h trial had already SUCCEEDED, for a human, a hand-made
-commit and a restart, which costs an iteration. `claude()` now checks
-the exit code and re-dispatches ONCE, after a pause, because the fault
-this exists for is an overloaded upstream. What is retried is the
-SESSION, never the ticket — re-running the ticket is exactly what would
-re-run the trial. A session that dies twice still escalates, but says
-so: the ticket's work is intact and UNJUDGED, which is a different human
-move from a live session that refused to write a verdict.
-
-## Machine-readable artifacts (JSON — agents corrupt JSON less than MD)
+## Machine-readable artifacts
 
 | File | Writer | Reader |
 |---|---|---|
@@ -444,230 +224,12 @@ move from a live session that refused to write a verdict.
 The trial ledger is the loop's memory: a replanning Planner MUST read
 every record and never re-propose a failed hypothesis/config.
 
-## Monitor
-
-While a trial runs, the driver spawns `cdd-monitor` (cheap model)
-every N minutes with the log tail + Monitor Profile. It classifies —
-`HEALTHY | INTERVENE | KILL_ESCALATE` — and the DRIVER acts: kill +
-RETRY-with-fix for crash-class signatures (max 2 interventions),
-escalate otherwise. The Monitor never edits, never kills, never
-retunes parameters.
-
-**The stall decision is the driver's** (v8.1.17). Five healthy trials
-in one deployment were killed on a Monitor `stall` verdict — twice in
-one loop, twice in another with ~1.5 h lost, once more the day after —
-and the deployment patched its own driver three times in three days,
-converging on one rule (`journal/from-agentrl-retro-20260918.md`,
-problem 1). It is written here once: the driver measures `now − max(
-mtime(trial log), mtime(any file under the Profile's `writes:` paths))`
-against the Profile's `stall_min`, tells the Monitor the number, and
-overrules any `stall` its clock does not confirm (`monitor_overruled`).
-When the clock does confirm one, the driver raises it as an INTERVENE
-even if the Monitor read HEALTHY. A Profile with no `stall_min` never
-kills on stall. Sizing the two keys is the Planner's job
-(`task-ticket-format.md`).
-
-**`Deadline:` is read to size the poll and to warn, never to kill**
-(v8.1.19). Nothing read the v8.1.17 field: a 4× under-estimate on a
-healthy trial had no effect, and a 25 h trial polled every 10 min cost
-137 Monitor sessions and 23 % of its loop for no decision — about 2,600
-polls across seven deployments decided nothing
-(`journal/retro-20261015-cross-project.md`, S4, B12, B13). The driver
-now parses the Deadline's result (`… = N min`), sets the poll interval
-to the longer of the Profile's and Deadline/30, tells every Monitor
-poll "Deadline N min, elapsed M min, over is not by itself a failure",
-and emits `deadline_exceeded` ONCE at 1.5×. A kill still needs the
-Monitor's non-HEALTHY verdict or the driver's stall clock; a kill on
-the Deadline alone would have been the sixth false kill of a healthy
-run in these retros. `validate_goal()` warns on an opus- or fable-class
-Monitor: one loop paid $26, 39 % of its spend, for 68 HEALTHY readings.
-
-**A preflight check can be first-start only** (v8.1.19). Every check
-runs on every start, including resume — right for `.env`, endpoints and
-daemons, wrong for a precondition of the "`<dir>` absent" shape, which
-goes false by design the moment ticket 1 runs. Ten loops of one
-deployment failed every restart on one and hand-edited the worktree's
-`goal.json` each time (B8). A check may carry `"when": "first-start"`;
-on resume it is skipped and `preflight_skipped` names it.
-
-## Human gates & remote control
-
-Gates: plan approval (once), every replan, and every ESCALATE — three,
-all event-driven. The driver blocks on `approvals/<gate>.approved` flag
-files.
-
-**A gate that has waited says so again** (v8.1.17). One push at open
-was one push: a plan gate outlasted a 24.6 h GPU rental with the driver
-silent (`journal/from-agentrl-retro-20260918.md`, problem 8). The
-driver now emits `approval_waiting` every 4 h a gate stays open, and
-`notify.sh` pushes it like any event. Under delegated authority the
-rule is: a gate that has waited longer than the shorter of 4 h or 20 %
-of a rental may be approved by the operator, and the approval is noted
-(`loop.py note`).
-
-**No mid-loop `[Halt here]`** (v8.1). The driver never implemented it,
-and asking for it required guessing which ticket would need inspection
-before any output existed. What replaces it: environment preconditions
-are declared up front in `Goal.md`'s `Preflight` section and verified
-deterministically, and the loop stops by event — failed criterion,
-regression, exhausted budget, escalation. Because there is no scheduled
-human checkpoint left, the budget caps and the criteria gate are
-load-bearing, not advisory. Read a sample of the loop's diffs after
-every loop; it is the only remaining guard against a codebase you no
-longer understand.
-
-**Control tower (recommended):** one interactive Claude Code session
-in tmux on the VM with Remote Control enabled. From the phone, message
-it: it reads `events.jsonl` / `loop-state.json` / `ledger.jsonl` to
-answer `status`, and writes the approval flag on your `approve`. When
-it surfaces a decision to you, Remote Control pushes to your phone.
-The tower session is interactive (no `CDD_ROLE`), so the hook does not
-restrict it — it acts only on your instruction.
-
-**Push (optional):** `.claude/driver/notify.sh` — see
-`notify.sh.example` (ntfy/Telegram). Allowlist your device on any
-command topic; keep secrets out of digests (governance.md §2).
-
-**Replanning is a command, not a state-file edit** (v8.1.15):
-
-```bash
-python3 .claude/driver/loop.py replan "<reason>"
-```
-
-The user-initiated half of the same REPLAN route: it queues a fresh
-plan phase with your reason, and the next driver start re-plans
-(handing the Planner the reason plus any `Evaluation.md` on disk),
-re-reviews, and waits at the gate. Stop a running driver first — its
-next state save would overwrite the queue. It counts against
-`max_replans`; budgets are hot-reloadable if you need to raise the cap.
-Recommended by two consecutive retros before it shipped: the recorded
-workaround was a control tower hand-editing `loop-state.json` under a
-running loop (L5), which is the class of intervention the loop 10
-postmortem exists to warn against.
-
-**Pausing after a ticket is a command** (v8.1.19):
-
-```bash
-python3 .claude/driver/loop.py pause-after "Phase 2, Step 3"
-```
-
-The driver reads the flag at the ticket boundary: after that ticket
-PASSES and its commit lands it emits `paused`, writes the journal and
-exits with the phase still `iterate`, so `start` resumes with the next
-ticket. Three loops of one deployment needed "stop after ticket N"; the
-workarounds were two driver kills at a Generator start and once
-lowering `max_iterations` as a pause, which landed 8 s after the next
-Step was dispatched and deleted the checkpoints the user wanted,
-irrecoverably (`journal/retro-20261015-cross-project.md`, B9). This is
-the fourth user command the scope guard below says a retro must
-demand; it was demanded three times.
-
-**A manual change under a running loop is noted when it is made**
-(v8.1.16):
-
-```bash
-python3 .claude/driver/loop.py note "<what you changed and why>"
-```
-
-One event in `events.jsonl`, shown under the journal's Notable events.
-Every loop of the agentRl deployment had a hand in it — a simulator
-swapped, a hook patched, `max_replans` edited, checkpoints deleted —
-and each later surfaced as "the record does not match the run" because
-nothing recorded it at the moment it happened. And when the loop stops
-at an escalation, let the audit finish before touching anything it is
-reading: relaunching a writer regenerates a clean artifact in under a
-second; a hand-edit breaks the claim the loop needs to make next.
-
-## Housekeeping (driver responsibility, not memory)
-
-**The driver writes the loop's `journal/` record** (v8.1.6) — goal,
-outcome, tickets, criteria, every ledger row and the notable events —
-on EVERY terminal exit, including an escalation and a crash, not only
-on `done`. It never overwrites the `## Feedback` block, which is yours
-— and only that block (v8.1.17: the driver's own header sentence names
-`## Feedback`, and the carry-over split on it, so every rewrite nested
-the whole previous record; 22 files held 53 `## Request` sections.
-The heading is matched as a line now, and a record the old driver
-nested heals on its next rewrite).
-
-**The Feedback block names who filled it** (v8.1.19). `- Filled by:
-[user | operator under delegation]` is a plain fact line, not a gate:
-on 2026-10-15 the user decided a delegated operator may fill the block,
-and seven deployments ran that way. `[retro]` reads the line to weigh
-the rating; nothing refuses a block the operator wrote. The driver's
-own counts — review rounds, Monitor tally, GPU-hours, each trial's wall
-time — now sit in the Outcome block, so the record carries what a retro
-needs without the user's voice.
-
-**`close` refuses a template Feedback block** (v8.1.17). Six of 22
-loops in one deployment closed on the untouched template while the
-8.1.6 warning printed every time — exactly the window of continuous
-delegated running, where the reminder scrolls past
-(`journal/from-agentrl-retro-20260918.md`, problem 7a). `close` now
-prints the block and exits 1 until `Rating:` is filled; `--force`
-still closes. One line in your own words is enough, and it is the
-line `[retro]` cannot get anywhere else.
-
-**Closing is a command, not a memory exercise:**
-
-```bash
-python3 .claude/driver/loop.py close      # add --force if not `done`
-```
-
-It writes the record, prints the criteria one last time, copies
-`ledger.jsonl` and `events.jsonl` to `journal/raw/<record>/` (v8.1.19 —
-the journal is a projection of them, and once they were deleted no
-Monitor verdict or adjudication text could be re-read), deletes
-`Plan.md`, `Evaluation.md`, `verdict.json`, `goal.json`, `Goal.md`,
-`ledger.jsonl`, `loop-state.json`, `events.jsonl` and the approval
-flags, and commits. Tier-2 traces are archived into the PRIMARY tree's
-`journal/traces/` since v8.1.19; three deployments lost every trace of
-their first campaign when the worktree that held them was removed. It deliberately does NOT merge or delete the
-branch, and does not touch the tree you started from — those are
-irreversible and yours; it prints the commands. Four retros in a row
-flagged unclosed loops while the reminder was already in place, so the
-missing part was never the reminder.
-
-**Budgets are hot-reloadable** (v8.1.6): the driver re-reads the
-`budgets` block of `goal.json` at every iteration, so raising a cap
-mid-loop no longer needs a restart. Criteria stay frozen (Protocol #4).
-
-**Edit the WORKTREE's `goal.json`** — that is the copy the running
-driver reads, and editing it needs no restart, so it costs no
-iteration. `start` seeds `Goal.md`/`goal.json` into a fresh worktree
-ONCE and never overwrites them again (v8.1.9); it used to re-copy the
-primary tree's version on every resume, which reverted an approved
-budget raise twice in one loop and — since a restart itself consumes an
-iteration — made each repair round pay for the failure it was
-repairing: three `budget exhausted: max_iterations` escalations for a
-loop that had finished its work. If the two copies differ, `start`
-prints which one wins.
-
-**`max_wall_hours` meters DRIVER RUNTIME, not the calendar** (v8.1.7).
-The clock runs only while the driver process is working: it stops at
-every human gate and does not run between runs. It used to be
-`now - started_epoch`, which billed the loop for time it was not alive
-— a loop that sat 3.6h at the plan gate escalated `budget exhausted:
-max_wall_hours` the instant the approval landed, before one ticket ran,
-with $0 spent since resume. That contradicted this file's own pitch of
-approving from your phone, i.e. with no SLA. A run that crashed is
-credited only up to its last recorded event, which is the last moment
-the driver can be proven alive. `status` shows both clocks: calendar
-age next to the start time, metered runtime under `budgets`.
-
-**Every driver restart consumes an iteration** — `iteration` counts
-dispatches, and a resume re-dispatches the ticket it was on. Size
-`max_iterations` with headroom for interruptions; do not expect the
-counter to forgive them, because a cap a restart can reset is a cap a
-crash loop can defeat.
-
 ## Scope guards
 
-- Batch = sequential queue of goals; one loop at a time in v8.0.
-- Worktree-per-loop is recommended for experiment goals (runaway
-  containment); merge conflicts always escalate — no auto-resolution.
-- No `[monitor]` or `[batch]` commands. A fourth user command must
-  be demanded by a retro, not anticipated.
+- Batch = sequential queue of goals; one loop at a time.
+- Worktree-per-loop for experiment goals; merge conflicts always
+  escalate — no auto-resolution.
+- No `[monitor]` or `[batch]` commands. A fourth user command must be
+  demanded by a retro, not anticipated.
 - On each new model generation, `[retro]` stress-tests which loop
-  components are still load-bearing (every component encodes an
-  assumption about what the model can't do; assumptions go stale).
+  components are still load-bearing.
