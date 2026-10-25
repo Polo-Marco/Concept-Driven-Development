@@ -264,3 +264,36 @@ prompt-cache thrash (feedback-inbox item #6) is moving the driver from
 `claude -p` to the Agent SDK. Still an optimisation, not correctness —
 but it is also the only way to get real per-call cost data feeding the
 USD cap, so it is worth more than "annoyance" now that the cap is live.
+
+## 2026-10-25 — GPU utilisation: two directions held for a later retro
+
+From the opd-pipe retro (20 loops): driver runtime 126.4 h, trials
+68.5 h, so the GPU sat idle ~46 % of the time — Evaluator sessions
+33.1 h (26 %), Generator 16.9 h, Planner + review 9.7 h. 8.1.21/8.2.1
+took the cheap half (auto-deferred Trial re-run audits, `Audit:
+deferred`, `models.evaluator_audit`, one Trial per decision). Two
+structural options were discussed and deliberately NOT built; a retro
+must demand them:
+
+1. **A GPU lock instead of a loop lock.** Loops in one project run
+   back-to-back, so loop N's final audit (30–54 min) and loop N+1's
+   plan phase + gate (30–60 min) could overlap. Each loop already has
+   its own worktree, state and branch; the shared resource is the GPU.
+   Sketch: `start` admits a second driver in another worktree,
+   `run_trial()` takes `flock` on one lock file, traces stay
+   append-only in the primary tree. Relaxes the "one loop at a time"
+   scope guard for the CPU phases only. Estimated gain ~1 h per loop
+   boundary.
+2. **Speculative execution across the audit boundary.** Dispatch ticket
+   N+1 (Generator, then Trial) while ticket N's audit runs; commit N on
+   PASS, on RETRY kill N+1's trial and restore its Boundary. Safe under
+   the Parallel Group invariant (N+1's Boundary disjoint from N's Output
+   and criteria sources). Expected value is positive (audit failure
+   ~2–5 %, gain 20–50 min per ticket), but the driver is a blocking
+   single-`st` state machine with `save()` everywhere — `pause-after`
+   broke on exactly that class in 8.1.20 — so this is a refactor, not a
+   branch. Not before 1 has shipped and the audit is still the largest
+   idle source.
+
+Baseline caveat: the 68.5 GPU-h figure is wall hours; `GPUs:` (8.1.21)
+makes the next retro's number the first trustworthy one.

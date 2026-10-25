@@ -2,7 +2,7 @@
 name: mode-loop
 description: The Goal Setter + loop launcher. Verifies the loop machinery is installed, interrogates the user into a measurable Goal.md (human-readable source of truth) plus a derived goal.json machine mirror, declares the loop's preconditions, and hands off to the deterministic driver. The only "do" command.
 author: framework
-version: 8.1.21
+version: 8.2.1
 ---
 
 # Mode: Loop — `[loop] <goal>`
@@ -191,6 +191,15 @@ Also extract:
   | evaluator | `claude-opus-5-5` | `high` | the component that pays for itself in every retro |
   | monitor | `claude-haiku-4-5` | `low` | runs every few minutes; never an opus-class model |
 
+  **The routine per-ticket audit may run on a cheaper tier.**
+  `models.evaluator_audit` (and `effort.evaluator_audit`) applies ONLY
+  to the per-ticket Mode 2 audit; a criterion's first green, the final
+  pass, contract review and adjudication stay on `models.evaluator`.
+  Propose `claude-sonnet-5-5` / `medium` for a loop that re-runs a
+  proven harness, and leave it unset for a loop that introduces a new
+  mechanism; `status` shows the tier's own row so a retro can compare
+  what each tier found.
+
   **Effort is asked per role too**: `low | medium | high | xhigh | max`,
   written to `goal.json` `effort`. `status` and the journal show each
   role's model, effort, sessions, minutes and spend. Cost is the user's
@@ -303,9 +312,11 @@ number, and why it matters.
               "max_usd": 60, "max_network_wait_min": 120},
   "evaluation_cadence": "per-iteration",
   "models": {"planner": "claude-opus-5-5", "generator": "claude-sonnet-5-5",
-             "evaluator": "claude-opus-5-5", "monitor": "claude-haiku-4-5"},
+             "evaluator": "claude-opus-5-5", "monitor": "claude-haiku-4-5",
+             "evaluator_audit": "claude-sonnet-5-5"},
   "effort": {"planner": "high", "generator": "medium",
-             "evaluator": "high", "monitor": "low"},
+             "evaluator": "high", "monitor": "low",
+             "evaluator_audit": "medium"},
   "monitor": {"interval_min": 10},
   "escalate_if": ["free-text conditions the Evaluator must honor"]
 }

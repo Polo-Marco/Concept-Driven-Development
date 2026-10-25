@@ -52,8 +52,8 @@ error types, edge cases. No judgment calls for the Generator.
 **Test Contract:** Named test cases. Minimum: 1 success + 1 validation
 error + 1 edge case.
 
-**Manual Verification:** What the user checks after the full loop.
-UX, visual, and integration concerns that TDD cannot catch.
+**Manual Verification:** What the user checks after the loop: UX,
+visual and integration concerns TDD cannot catch.
 
 **Architecture:** Which sections of `Architecture.md` the Generator
 must load. The Overview is always loaded implicitly — list additional
@@ -63,8 +63,7 @@ genuinely needs the entire document.
 **Skills to Load:** `@skills/` references for patterns and rules.
 
 **Reference Docs:** Optional. Files in `docs/` that constrain the
-implementation. When present, the Generator also reads
-`docs/DEVIATIONS.md`.
+implementation; the Generator then also reads `docs/DEVIATIONS.md`.
 
 **Process Logging:** Optional. `Expensive` when the ticket implements a
 slow/costly pipeline; the Generator then emits structured stage logs
@@ -77,19 +76,18 @@ green or the final pass is never deferred. The driver applies the same
 skip on its own to a Trial ticket whose Generator changed nothing in
 the tree. Never write it on a ticket that introduces a mechanism.
 
-**Depends On:** Ticket IDs (Phase/Step) that must be committed before
-this one starts; `none` for the first. Everything depends (directly or
-transitively) on the Environment Setup ticket.
+**Depends On:** Ticket IDs committed before this one starts; `none`
+for the first. Everything depends, transitively, on the Environment
+Setup ticket.
 
 **Parallel Group:** Optional label. Tickets sharing it run concurrently
-(`.claude/rules/parallel-execution.md`). Valid only with
-**pairwise-disjoint Boundaries** and **no member depending on another
-member**. The Environment Setup ticket is NEVER grouped. Group only
-genuinely independent, non-trivial tickets.
+(`.claude/rules/parallel-execution.md`), valid only with
+**pairwise-disjoint Boundaries** and **no intra-group dependency**. The
+Environment Setup ticket is NEVER grouped; group only independent,
+non-trivial tickets.
 
 **Boundary:** Every file the Generator may touch; anything outside
-stops the session. A subdirectory `CLAUDE.md` inside it binds the
-ticket.
+stops the session. A nested `CLAUDE.md` inside it binds the ticket.
 
 **Run Command:** Exact shell command piped through
 `2>&1 | tee logs/latest.log` (`run-logging.md`). **Under ten minutes,
@@ -136,11 +134,14 @@ All other fields are unchanged. Rules:
   Contract names `n_infra_error` and `infra_error_rate`, and the Goal
   gates on the rate. A resume never re-summarises a finished job whose
   trials carry infrastructure exceptions.
-- **`Disk:` is a contract.** K iterations × the figure < `df` at launch,
-  or the trial rotates; show the arithmetic.
+- **`Disk:` is a contract.** K × the figure < `df` at launch, or the
+  trial rotates; show the arithmetic.
 - Detailed about OUTCOMES and interfaces, light on implementation
   path. A launched trial's config is immutable; a parameter change is a
   new trial via REPLAN.
+- **One Trial per decision, not per arm.** Arms with a pre-registered
+  early stop get their own tickets; arms that run regardless share one
+  Trial ticket, so no audit idles the GPU between them.
 
 ## Planner Self-Check
 
@@ -153,8 +154,8 @@ Before ending the Planner session, verify for each ticket:
   for every symbol the ticket retires, renames or changes, each file
   that imports or calls it (grep the consumers)?
 - Does **Architecture:** list every section the ticket needs?
-- Is the ticket the minimum change? **Process Logging** set only for
-  an expensive pipeline? Reference Docs listed, deviations logged?
+- Minimum change? **Process Logging** only for an expensive pipeline?
+  Reference Docs listed, deviations logged?
 - Is **Depends On** complete? Does a ticket that deletes or supersedes
   banked evidence depend on the ticket that PROVES the replacement?
 - Can each Spec step be executed with only the inputs available at

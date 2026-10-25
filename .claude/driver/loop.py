@@ -94,6 +94,26 @@ DEFAULT_MODELS = {"planner": "claude-opus-5-5",
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_EFFORT = {"planner": "high", "generator": "medium",
                   "evaluator": "high", "monitor": "low"}
+# 8.2.1: optional per-tier overrides. `evaluator_audit` is the model
+# and effort for the per-ticket Mode 2 audit ONLY -- never the first
+# green, the final pass, contract review or adjudication, which stay on
+# `evaluator`. The Evaluator was 53 % of one deployment's spend with
+# the GPU idle for every minute of it (journal/from-opd-pipe-retro-
+# 20261025.md, problem 6); this lets a loop buy the routine audit from
+# a cheaper model and keep the expensive one where the colour changes.
+MODEL_TIERS = ("evaluator_audit",)
+
+
+def session_choice(cfg: dict, role: str, tier: str = "") -> tuple:
+    """(billing key, model, effort) for a dispatch. A tier falls back to
+    its role when goal.json names nothing for it."""
+    key = f"{role}_{tier}" if tier else role
+    models, effort = cfg.get("models", {}), cfg.get("effort", {})
+    if tier and key not in models and key not in effort:
+        key = role
+    model = models.get(key) or models.get(role, DEFAULT_MODELS[role])
+    eff = effort.get(key) or effort.get(role, DEFAULT_EFFORT[role])
+    return key, model, eff
 # A full model ID: family, then a version -- `claude-opus-5`,
 # `claude-fable-5-1`, `claude-haiku-4-5`. `opus`, `sonnet`, `haiku`,
 # `claude-opus` and `default` are aliases and are rejected.
@@ -520,22 +540,24 @@ def validate_goal(cfg: dict) -> None:
                         f"({', '.join(ROLES)}), e.g. "
                         + json.dumps(DEFAULT_MODELS))
     else:
-        for role in ROLES:
+        for role in list(ROLES) + [t for t in MODEL_TIERS if t in models]:
             m = models.get(role)
             if not isinstance(m, str) or not MODEL_ID.match(m):
                 problems.append(
                     f"models.{role}: {m!r} is not a full model ID with a "
-                    f"version (e.g. {DEFAULT_MODELS[role]!r}; bare tiers "
-                    f"like 'opus' are aliases and are refused)")
+                    f"version (e.g. {DEFAULT_MODELS[role.split('_')[0]]!r};"
+                    f" bare tiers like 'opus' are aliases and are refused)")
     effort = cfg.get("effort", {})
     if not isinstance(effort, dict):
         problems.append("effort: must be an object, one level per role, "
                         f"e.g. {json.dumps(DEFAULT_EFFORT)}")
     else:
         for role, lvl in effort.items():
-            if role not in ROLES or lvl not in EFFORT_LEVELS:
+            if (role not in ROLES and role not in MODEL_TIERS) \
+                    or lvl not in EFFORT_LEVELS:
                 problems.append(
-                    f"effort.{role}: {lvl!r} -- roles are {ROLES}, "
+                    f"effort.{role}: {lvl!r} -- roles are {ROLES} "
+                    f"(tiers {MODEL_TIERS}), "
                     f"levels are {EFFORT_LEVELS}")
     if problems:
         die("goal.json is not a usable contract:\n  - "
@@ -779,7 +801,7 @@ def session_errored(out: dict) -> bool:
 
 
 def claude(st: dict, role: str, prompt: str, boundary: str = "",
-           timeout: int = 7200) -> str:
+           timeout: int = 7200, tier: str = "") -> str:
     """Spawn one fresh headless session with hook-enforced authority.
 
     Bills the session onto the CALLER'S state dict.
@@ -794,8 +816,7 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     consistent and no field needs special monotonic semantics.
     """
     cfg = load(GOAL, {})
-    model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
-    effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
+    key, model, effort = session_choice(cfg, role, tier)   # 8.2.1
     sys_prompt = (AGENTS / f"cdd-{role}.md").read_text()
     env = {**os.environ, "CDD_ROLE": role, "CDD_BOUNDARY": boundary}
     # v8.1.18: the prompt travels on STDIN, not argv. A replan prompt
@@ -815,7 +836,7 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     # gate, so `status` looked identical whether the Planner was
     # thinking or the driver was dead. One line per session is the
     # cheapest heartbeat there is.
-    event("session", detail=f"{role} ({model}, effort {effort}) started")
+    event("session", detail=f"{key} ({model}, effort {effort}) started")
     # v8.1.17: per-role time and spend, visible while it runs. `status`
     # shows "planner running 20m" from `session_running`, and a table of
     # sessions / minutes / spend per role from `roles` (user request,
@@ -874,11 +895,11 @@ def claude(st: dict, role: str, prompt: str, boundary: str = "",
     minutes = (time.time() - t0) / 60
     usd = out.get("total_cost_usd", 0.0) if isinstance(out, dict) else 0.0
     tot = st.setdefault("roles", {}).setdefault(
-        role, {"sessions": 0, "minutes": 0.0, "usd": 0.0})
+        key, {"sessions": 0, "minutes": 0.0, "usd": 0.0})
     tot["sessions"] += 1
     tot["minutes"] = round(tot["minutes"] + minutes, 2)
     tot["usd"] = round(tot["usd"] + usd, 4)
-    event("session_done", detail=f"{role} finished in {minutes:.1f}m, "
+    event("session_done", detail=f"{key} finished in {minutes:.1f}m, "
                                  f"${usd:.2f}", minutes=round(minutes, 2),
           usd=round(usd, 4))
     new_denials = denial_records()[denials_before:]
@@ -2108,7 +2129,7 @@ def reload_criteria(cfg: dict) -> None:
                  + "; ".join(diff))
 
 
-def evaluator_verdict(st: dict, prompt: str) -> None:
+def evaluator_verdict(st: dict, prompt: str, tier: str = "") -> None:
     """Dispatch an Evaluator session whose contract is to write
     verdict.json, and re-dispatch ONCE if a LIVE session came back
     without one.
@@ -2123,7 +2144,7 @@ def evaluator_verdict(st: dict, prompt: str) -> None:
     """
     if VERDICT.exists():
         VERDICT.unlink()                  # never read a stale verdict
-    claude(st, "evaluator", prompt)
+    claude(st, "evaluator", prompt, tier=tier)
     if not VERDICT.exists() and not st.get("session_died"):
         event("verdict_missing",
               detail="evaluator returned without verdict.json -- "
@@ -2132,7 +2153,7 @@ def evaluator_verdict(st: dict, prompt: str) -> None:
                + "\n\nYour previous session ended WITHOUT writing "
                  "verdict.json. Write Evaluation.md and verdict.json this "
                  "time: a missing verdict is read as ESCALATE and wakes a "
-                 "human.")
+                 "human.", tier=tier)
 
 
 def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0,
@@ -2583,7 +2604,8 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                               f"fixture, a stale artifact or a default "
                               f"output path." if first_green else "")
                            + carry_text(st, audit=True)
-                           + " Write Evaluation.md and verdict.json.")
+                           + " Write Evaluation.md and verdict.json.",
+                        tier="" if first_green else "audit")
                     # v8.1.13: name which of the two it was. Both dead
                     # sessions and a live session that wrote no verdict
                     # arrive here, and they need different human moves:
@@ -3286,9 +3308,11 @@ def role_table(cfg: dict, st: dict, live: bool = True) -> list:
     # v8.1.18: 28-wide model column -- `claude-haiku-4-5-20251001low`
     # overflowed the 22 (JEVI; retro-20261015, C7).
     rows = ["roles       model                       effort  sessions  time     spend"]
-    for role in ROLES:
-        model = cfg.get("models", {}).get(role, DEFAULT_MODELS[role])
-        effort = cfg.get("effort", {}).get(role, DEFAULT_EFFORT[role])
+    shown = list(ROLES) + [t for t in MODEL_TIERS
+                     if t in cfg.get("models", {}) or t in st.get("roles", {})]
+    for role in shown:
+        base, _, tier = role.partition("_")
+        _k, model, effort = session_choice(cfg, base, tier)
         t = st.get("roles", {}).get(role, {})
         mins = t.get("minutes", 0.0)
         clock = f"{int(mins // 60)}h{int(mins % 60):02d}m" if mins >= 60 \

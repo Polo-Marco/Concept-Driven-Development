@@ -1,4 +1,4 @@
-# Concept-Driven Development (CDD) 8.1.21
+# Concept-Driven Development (CDD) 8.2.1
 
 A session-based AI development pipeline that runs itself. You state a
 goal whose success criteria a machine can check, approve one plan, and a
@@ -143,7 +143,7 @@ The framework repo is itself a CDD project: retros and feedback from
 real projects go into `journal/`, `[retro] all` surfaces patterns, and a
 Maintainer session applies accepted recommendations, bumps the version
 and tags a release. Deployed projects upgrade by diffing tags
-(`git diff v8.1.20..v8.1.21 -- CLAUDE.md .claude/ skills/`) and
+(`git diff v8.1.21..v8.2.1 -- CLAUDE.md .claude/ skills/`) and
 re-copying — never by patching template files in place. Git history is
 the changelog. Playbook: [`MAINTENANCE.md`](MAINTENANCE.md).
 

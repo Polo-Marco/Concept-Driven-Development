@@ -6097,6 +6097,75 @@ class TestAutoDeferredTrialAudit(DriverCase):
         self.assertEqual(len(self.drive(st)), 3)
 
 
+class TestEvaluatorAuditTier(DriverCase):
+    """8.2.1: `models.evaluator_audit` buys the routine per-ticket audit
+    from a cheaper model; first green, final, contract review and
+    adjudication stay on `models.evaluator` (opd-pipe problem 6: the
+    Evaluator was 53 % of spend with the GPU idle throughout)."""
+
+    VALID = TestValidateGoal.VALID
+
+    def test_session_choice_falls_back_to_the_role(self):
+        cfg = {"models": dict(loop.DEFAULT_MODELS)}
+        self.assertEqual(loop.session_choice(cfg, "evaluator", "audit"),
+                         ("evaluator", "claude-opus-5-5", "high"))
+        cfg["models"]["evaluator_audit"] = "claude-sonnet-5-5"
+        self.assertEqual(loop.session_choice(cfg, "evaluator", "audit"),
+                         ("evaluator_audit", "claude-sonnet-5-5", "high"))
+        cfg["effort"] = {"evaluator_audit": "medium"}
+        self.assertEqual(loop.session_choice(cfg, "evaluator", "audit")[2],
+                         "medium")
+        self.assertEqual(loop.session_choice(cfg, "evaluator")[0],
+                         "evaluator")
+
+    def test_validate_accepts_a_full_id_and_refuses_an_alias(self):
+        ok = dict(self.VALID, models=dict(self.VALID["models"],
+                                          evaluator_audit="claude-sonnet-5"),
+                  effort={"evaluator_audit": "medium"})
+        loop.validate_goal(ok)
+        bad = dict(self.VALID, models=dict(self.VALID["models"],
+                                           evaluator_audit="sonnet"))
+        with open(os.devnull, "w") as null:
+            real, sys.stderr = sys.stderr, null
+            try:
+                with self.assertRaises(SystemExit):
+                    loop.validate_goal(bad)
+            finally:
+                sys.stderr = real
+
+    def test_only_the_routine_audit_uses_the_tier(self):
+        cfg = self.write_goal(models=dict(loop.DEFAULT_MODELS,
+                                          evaluator_audit="claude-sonnet-5-5"))
+        (self.tmp / "Plan.md").write_text(CARRY_PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+        self.results({"metrics": {"acc": 0.5}})
+        seen = []
+
+        def fake(_st, role, prompt, *a, **k):
+            if role == "evaluator":
+                seen.append((prompt[:40], k.get("tier", "")))
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok", "evidence": []}))
+            return "done"
+        loop.claude = fake
+        st = self.iterate_state()
+        loop.phase_iterate(cfg, st)
+        loop.phase_final(cfg, st)
+        tiers = [t for _p, t in seen]
+        # ticket 1: first green -> full evaluator; 2 and 3: audit tier;
+        # final: full evaluator
+        self.assertEqual(tiers, ["", "audit", "audit", ""])
+
+    def test_status_shows_the_tier_row_once_it_has_spent(self):
+        cfg = self.write_goal(models=dict(loop.DEFAULT_MODELS,
+                                          evaluator_audit="claude-sonnet-5-5"))
+        st = {"roles": {"evaluator_audit": {"sessions": 3, "minutes": 12.0,
+                                             "usd": 1.5}}}
+        text = "\n".join(loop.role_table(cfg, st, live=False))
+        self.assertIn("evaluator_audit", text)
+        self.assertIn("claude-sonnet-5-5", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1,
                   argv=[a for a in sys.argv if a != "-v"])

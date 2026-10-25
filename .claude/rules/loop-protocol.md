@@ -107,16 +107,17 @@ Sessions rely on these; none of them is a session's job.
   the ticket OWNS reads red. A miss is a RETRY naming what is missing;
   no audit is bought.
 - **Audit cadence**: a criterion's first green and the final pass are
-  always audited. A per-ticket audit is skipped for `Audit: deferred`
-  and, automatically, for a Trial ticket whose Generator changed
-  nothing in the tree (a harness re-run).
+  always audited, on `models.evaluator`. A per-ticket audit is skipped
+  for `Audit: deferred` and, automatically, for a Trial ticket whose
+  Generator changed nothing in the tree (a harness re-run); when it
+  runs, it uses `models.evaluator_audit` if the goal names one.
 - **Carry**: a verdict's `carry` lines (findings judged non-blocking)
   are kept in `loop-state.json` and handed to every later Generator
   dispatch, every later audit and the final audit, which must mark each
   resolved or not applicable.
 - **Verdict routing**: metric failures → RETRY/REPLAN; protocol
   failures (Boundary breach, worker death, missing artifact) →
-  ESCALATE. Trial budget is never spent on a defect no trial can fix.
+  ESCALATE.
 - **Adjudication (Mode 3)** instead of auto-escalation for: a
   Generator `STATUS: stopped`, an exhausted retry cap (RETRY granted
   once more, with what must change), and a trial that dies twice
@@ -138,8 +139,8 @@ Sessions rely on these; none of them is a session's job.
   sizes the poll to the longer of the Profile's and Deadline/30, is
   reported to every poll, and emits `deadline_exceeded` once at 1.5×;
   it never kills on its own.
-- **Preflight** runs on every start; a check with `"when":
-  "first-start"` is skipped on resume (`preflight_skipped`).
+- **Preflight** runs on every start; `"when": "first-start"` checks
+  are skipped on resume (`preflight_skipped`).
 - **GPU-hours** are a trial's wall time × its ticket's `**GPUs:**`
   (default 1); `max_gpu_hours` bounds that number.
 - **Budgets are hot-reloadable** from the WORKTREE's `goal.json` every
