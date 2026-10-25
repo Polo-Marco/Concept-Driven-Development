@@ -102,8 +102,18 @@ Sessions rely on these; none of them is a session's job.
   not complete.
 - **Output gate**: before any audit, every **Output:** path the
   Boundary covers exists, a ticket with a Run Command left a log
-  written during this dispatch, and no criterion the ticket OWNS reads
-  red. A miss is a RETRY naming what is missing; no audit is bought.
+  written during this dispatch, a ticket with a Test Contract left its
+  first failing test run in `logs/tdd-red-<n>.log`, and no criterion
+  the ticket OWNS reads red. A miss is a RETRY naming what is missing;
+  no audit is bought.
+- **Audit cadence**: a criterion's first green and the final pass are
+  always audited. A per-ticket audit is skipped for `Audit: deferred`
+  and, automatically, for a Trial ticket whose Generator changed
+  nothing in the tree (a harness re-run).
+- **Carry**: a verdict's `carry` lines (findings judged non-blocking)
+  are kept in `loop-state.json` and handed to every later Generator
+  dispatch, every later audit and the final audit, which must mark each
+  resolved or not applicable.
 - **Verdict routing**: metric failures → RETRY/REPLAN; protocol
   failures (Boundary breach, worker death, missing artifact) →
   ESCALATE. Trial budget is never spent on a defect no trial can fix.
@@ -130,6 +140,8 @@ Sessions rely on these; none of them is a session's job.
   it never kills on its own.
 - **Preflight** runs on every start; a check with `"when":
   "first-start"` is skipped on resume (`preflight_skipped`).
+- **GPU-hours** are a trial's wall time × its ticket's `**GPUs:**`
+  (default 1); `max_gpu_hours` bounds that number.
 - **Budgets are hot-reloadable** from the WORKTREE's `goal.json` every
   iteration (criteria stay frozen). `start` seeds the goal files into
   a fresh worktree once and never overwrites them. `max_wall_hours`
@@ -156,9 +168,12 @@ escalates otherwise. Profile keys the driver reads — `stall_min`,
 
 Gates: plan approval, every replan, every ESCALATE — all event-driven;
 the driver blocks on `approvals/<gate>.approved`. A gate that stays
-open emits `approval_waiting` every 4 h. Under written delegation an
-operator may approve a gate that has waited longer than the shorter of
-4 h or 20 % of a rental, and notes it.
+open emits `approval_waiting` every 4 h. When `Evaluation.md` carries a
+`CRITERIA CONCERN:` or `OPEN ASSUMPTION:` line the gate also emits
+`approval_needs_human` listing them. Under written delegation an
+operator may approve a gate that carries no such event, or one that
+has waited longer than the shorter of 4 h or 20 % of a rental, and
+notes it (`approve --note "<why>"`).
 
 There is no mid-loop `[Halt here]`: preconditions go in `Goal.md`'s
 `Preflight`, and the loop stops by event (failed criterion, regression,
@@ -178,7 +193,7 @@ allowlist your device, keep secrets out of digests.
 ```bash
 python3 .claude/driver/loop.py start                  # or resume
 python3 .claude/driver/loop.py status
-python3 .claude/driver/loop.py approve [plan|replan]  # the pending gate
+python3 .claude/driver/loop.py approve [plan|replan] [--note "<why>"]
 python3 .claude/driver/loop.py replan "<reason>"      # stop the driver first
 python3 .claude/driver/loop.py pause-after "Phase N, Step M"
 python3 .claude/driver/loop.py note "<what you changed and why>"
@@ -188,8 +203,10 @@ python3 .claude/driver/loop.py close                  # --force if not done
 - `replan` queues a fresh plan phase (reason + any `Evaluation.md`
   handed to the Planner, re-reviewed, re-gated); counts against
   `max_replans`.
-- `pause-after` stops cleanly after the named ticket PASSES and its
-  commit lands (`paused`; phase stays `iterate`, `start` resumes).
+- `pause-after` writes `approvals/pause-after`; the driver reads it at
+  the ticket boundary and stops cleanly after the named ticket PASSES
+  and its commit lands (`paused`; phase stays `iterate`, `start`
+  resumes). It can be issued while the driver is running or waiting.
 - `note` records a manual change under a running loop at the moment it
   is made; it shows under the journal's Notable events. When the loop
   is stopped at an escalation, let the audit finish before touching

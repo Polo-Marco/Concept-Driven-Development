@@ -5265,8 +5265,9 @@ class TestPauseAfter(DriverCase):
         loop.STATE.write_text(json.dumps({"phase": "iterate"}))
         out = self.run_cmd("pause-after", "Phase 1, Step 1")
         self.assertIn("will pause after Phase 1, Step 1", out)
-        self.assertEqual(json.loads(loop.STATE.read_text())["pause_after"],
-                         "Phase 1, Step 1")
+        # 8.1.21: a flag file, not a state key (see pause_requested())
+        self.assertEqual(loop.pause_requested(), "Phase 1, Step 1")
+        self.assertNotIn("pause_after", json.loads(loop.STATE.read_text()))
         with open(os.devnull, "w") as null:
             real, sys.stderr = sys.stderr, null
             try:
@@ -5812,6 +5813,325 @@ class TestHookFalsePositives20261015(HookCaller, unittest.TestCase):
                              "Bash: " + long_cmd)
             # the driver counts records by their leading timestamp
             self.assertTrue(all(ln[:4].isdigit() for ln in lines))
+
+
+# ---------- 8.1.21: the opd-pipe retro batch -----------------------------
+
+class TestPauseAfterSurvivesTheDriversSaves(DriverCase):
+    run_cmd = TestPauseAfter.run_cmd
+    """opd-pipe e007-l2b: `pause-after` was issued while the driver sat
+    at the plan gate; the driver's next save(STATE, st) overwrote the
+    key and it ran through Phase 2, Step 2."""
+
+    def test_a_running_drivers_save_does_not_erase_the_request(self):
+        cfg = self.write_goal(evaluation_cadence="final-pass")
+        (self.tmp / "Plan.md").write_text(PLAN)
+        loop.STATE.write_text(json.dumps({"phase": "gate"}))
+        self.run_cmd("pause-after", "Phase 1, Step 1")
+        # the driver, holding its own copy, saves without the key
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.save(loop.STATE, st)
+        self.results({"metrics": {"acc": 0.5}})
+        loop.git_commit = lambda msg: "abc1234"
+        calls = []
+
+        def fake(_st, role, prompt, *a, **k):
+            calls.append(role)
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok"}))
+            return "STATUS: pass"
+        loop.claude = fake
+        loop.phase_iterate(cfg, st)
+        self.assertIn("paused", [e["event"] for e in self.events()])
+        self.assertEqual(calls.count("generator"), 1)
+        self.assertEqual(loop.pause_requested(), "", "consumed on firing")
+
+    def test_close_removes_a_stale_request(self):
+        loop.APPROVALS.mkdir(exist_ok=True)
+        loop.pause_flag().write_text("Phase 9, Step 9\n")
+        loop.sh("git init -q .")
+        loop.sh("git config user.name t")
+        loop.sh("git config user.email t@t")
+        cfg = self.write_goal(type="build")
+        st = {"phase": "done", "iteration": 1,
+              "started": "2026-07-31T10:22:18+00:00"}
+        loop.save(loop.STATE, st)
+        rec = loop.write_journal(cfg, st)
+        rec.write_text(rec.read_text().replace(
+            "- Rating: [good | ok | bad]", "- Rating: ok"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            loop.phase_close(cfg, st, False)
+        self.assertFalse(loop.pause_flag().exists())
+
+
+class TestGpuHoursCountGpus(DriverCase):
+    """opd-pipe e007-l1b: 5.1 h wall on two GPUs was billed 5.1 GPU-h."""
+
+    def test_the_field_is_parsed_and_defaults_to_one(self):
+        self.assertEqual(loop.gpu_count("**GPUs:** 4\n**Trial:** x"), 4)
+        self.assertEqual(loop.gpu_count("**GPUs:** 2 (A100)\n"), 2)
+        self.assertEqual(loop.gpu_count("**Trial:** x"), 1)
+        self.assertEqual(loop.gpu_count("**GPUs:** 0"), 1)
+
+    def test_the_bill_is_wall_hours_times_gpus(self):
+        clock = FakeClock(step=1800.0)          # 30 min per poll
+        loop.time = clock
+        cfg = self.write_goal(monitor={"interval_min": 1})
+        st = {"iteration": 1}
+        body = "**Trial:** sleep 0.2\n**GPUs:** 3\n**Monitor Profile:** none"
+        loop.claude = lambda *a, **k: '{"status": "HEALTHY"}'
+        loop.run_trial("T", body, st, cfg)
+        self.assertGreater(st["gpu_hours"], 0.0)
+        # every poll is 0.5 wall-hours; billed x3 -> a multiple of 1.5
+        self.assertAlmostEqual(st["gpu_hours"] / 1.5,
+                               round(st["gpu_hours"] / 1.5), places=6)
+
+
+class TestApproveNote(DriverCase):
+    approve = TestApproveGate.approve
+    """opd-pipe e007-l1: `approve --note "..."` was read as a gate name."""
+
+    def test_a_note_rides_along_with_the_approval(self):
+        loop.save(loop.STATE, {"phase": "gate", "pending_gate": "plan"})
+        r = self.approve("--note", "delegated: no open concern, within 4h")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.tmp / "approvals" / "plan.approved").exists())
+        notes = [e for e in self.events() if e["event"] == "note"]
+        self.assertTrue(notes and "delegated" in notes[0]["detail"])
+        self.assertIn("approval of plan", notes[0]["detail"])
+
+    def test_a_stray_word_is_refused_as_not_a_gate(self):
+        loop.save(loop.STATE, {"phase": "gate", "pending_gate": "plan"})
+        r = self.approve("looks fine")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not a gate", r.stderr)
+        self.assertFalse((self.tmp / "approvals" / "plan.approved").exists())
+
+
+class TestOverviewCap(DriverCase):
+    """opd-pipe problem 4: the Overview grew 39 -> 1,657 lines and the
+    Generators sampled read none of it."""
+
+    def arch(self, n):
+        body = "\n".join(f"- line {i}" for i in range(n))
+        (self.tmp / "Architecture.md").write_text(
+            f"# Architecture\n\n## Overview\n{body}\n\n## API Surface\n"
+            + "\n".join("- api" for _ in range(200)) + "\n")
+
+    def test_counts_only_the_overview(self):
+        self.arch(12)
+        self.assertEqual(loop.overview_lines(
+            (self.tmp / "Architecture.md").read_text()), 12)
+        self.assertEqual(loop.overview_lines("# A\n\n## Data\nx\n"), 0)
+
+    def test_an_oversized_overview_is_a_plan_problem(self):
+        cfg = self.write_goal()
+        self.arch(loop.OVERVIEW_MAX_LINES + 1)
+        probs = loop.plan_problems(cfg, PLAN)
+        self.assertTrue(any("Overview" in p for p in probs), probs)
+        self.arch(loop.OVERVIEW_MAX_LINES)
+        self.assertEqual(loop.plan_problems(cfg, PLAN), [])
+
+
+CARRY_PLAN = """# Plan
+
+### Phase 1, Step 1: First ticket
+**Boundary:** src/
+
+### Phase 1, Step 2: Second ticket
+**Boundary:** src/other/
+
+### Phase 1, Step 3: Third ticket
+**Boundary:** src/third/
+"""
+
+
+class TestCarry(DriverCase):
+    """opd-pipe problem 2: 28 Non-blocking lines, three of which came
+    true later because nothing handed them to the next session."""
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(CARRY_PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+
+    def test_a_carry_line_reaches_later_generators_and_the_final_audit(self):
+        cfg = self.write_goal()
+        self.results({"metrics": {"acc": 0.5}})
+        prompts = []
+
+        def fake(_st, role, prompt, *a, **k):
+            prompts.append((role, prompt))
+            if role == "evaluator":
+                v = {"verdict": "PASS", "reason": "ok", "evidence": []}
+                if "'Phase 1, Step 1'" in prompt:
+                    v["carry"] = ["reference forward keeps gradients; "
+                                  "peak memory will show it"]
+                loop.VERDICT.write_text(json.dumps(v))
+            return "done"
+        loop.claude = fake
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        loop.phase_iterate(cfg, st)
+        loop.phase_final(cfg, st)
+        gens = [p for r, p in prompts if r == "generator"]
+        self.assertNotIn("Carried findings", gens[0])
+        self.assertIn("keeps gradients", gens[1])
+        self.assertIn("keeps gradients", gens[2])
+        final = [p for r, p in prompts if "FINAL evaluation" in p]
+        self.assertTrue(final and "keeps gradients" in final[0])
+        self.assertIn("resolved / does not apply", final[0])
+        self.assertEqual(st["carry"][0]["from"], "Phase 1, Step 1")
+        self.assertIn("carry", [e["event"] for e in self.events()])
+
+    def test_the_list_is_bounded(self):
+        st = {}
+        for i in range(3):
+            loop.absorb_carry(st, {"carry": [f"c{i}-{j}" for j in range(15)]},
+                              f"t{i}")
+        self.assertEqual(len(st["carry"]), loop.CARRY_MAX)
+        self.assertEqual(st["carry"][-1]["line"], "c2-14")
+        loop.absorb_carry(st, {"carry": []}, "none")
+        loop.absorb_carry(st, {}, "none")
+        self.assertEqual(loop.carry_text({}), "")
+
+
+TDD_PLAN = """# Plan
+
+### Phase 1, Step 1: Writer with tests
+**Output:** src/writer.py
+**Test Contract:**
+- test_writes: input -> writes results/out.json
+**Boundary:** src/, results/out.json
+**Run Command:** python3 src/writer.py 2>&1 | tee logs/latest.log
+"""
+
+
+class TestRedLogGate(DriverCase):
+    """opd-pipe problem 10: 78 of 93 code tickets wrote the code first."""
+    drive, ran = TestOutputGate.drive, TestOutputGate.ran
+    complete, gates = TestOutputGate.complete, TestOutputGate.gates
+
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "Plan.md").write_text(TDD_PLAN)
+        loop.git_commit = lambda msg: "deadbee"
+
+    def test_a_ticket_with_a_test_contract_needs_its_red_run_on_disk(self):
+        self.drive(self.complete)
+        self.assertTrue(self.gates())
+        self.assertIn("red run", self.gates()[0]["detail"])
+        self.assertIn("tdd-red-1.log", self.gates()[0]["detail"])
+
+    def test_the_red_log_satisfies_it(self):
+        def gen():
+            self.complete()
+            (self.tmp / "logs" / "tdd-red-1.log").write_text(
+                "FAILED test_writes - ModuleNotFoundError")
+        calls, st = self.drive(gen)
+        self.assertEqual(self.gates(), [])
+        self.assertEqual(self.ledger()[0]["verdict"], "PASS")
+
+    def test_the_generator_is_told_where(self):
+        calls, _ = self.drive(self.complete)
+        gen = [p for r, p in calls if r == "generator"][0]
+        self.assertIn("Red log: logs/tdd-red-1.log", gen)
+
+    def test_no_test_contract_means_no_red_log_required(self):
+        (self.tmp / "Plan.md").write_text(OUTPUT_PLAN)
+        self.drive(self.complete)
+        self.assertEqual(self.gates(), [])
+
+
+class TestApprovalNeedsHuman(DriverCase):
+    """opd-pipe problem 11: 22 gates approved in a median of 36 s under
+    delegation, one of them on the Assumption that drove the drift."""
+
+    def wait(self):
+        flag = self.tmp / "approvals" / "plan.approved"
+
+        class Clock(FakeClock):
+            def sleep(self, _sec):
+                flag.touch()
+        loop.time = Clock()
+        loop.wait_approval({}, "plan", "review it")
+        return [e for e in self.events()
+                if e["event"] == "approval_needs_human"]
+
+    def test_a_concern_line_raises_the_event(self):
+        (self.tmp / "Evaluation.md").write_text(
+            "# Evaluation\n\n- **CRITERIA CONCERN:** acc >= 0.9 has no "
+            "probe -- amend before data to 0.85\n\nOPEN ASSUMPTION: 6 -- "
+            "the tokenizer is shared\n\nAll else OK.\n")
+        ev = self.wait()
+        self.assertEqual(len(ev), 1)
+        self.assertIn("CRITERIA CONCERN: acc >= 0.9", ev[0]["detail"])
+        self.assertIn("OPEN ASSUMPTION: 6", ev[0]["detail"])
+
+    def test_a_clean_review_raises_nothing(self):
+        (self.tmp / "Evaluation.md").write_text("# Evaluation\n\nOK.\n")
+        self.assertEqual(self.wait(), [])
+
+
+class TestAutoDeferredTrialAudit(DriverCase):
+    """opd-pipe problem 6: `Audit: deferred` was written once in 20
+    loops; the driver can see a no-code Trial re-run itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, loop, "run_trial", loop.run_trial)
+        self.addCleanup(setattr, loop, "tree_fingerprint",
+                        loop.tree_fingerprint)
+        self.cfg = self.write_goal(type="experiment")
+        (self.tmp / "Plan.md").write_text(
+            CARRY_PLAN.replace("**Boundary:** src/\n",
+                               "**Boundary:** src/\n**Trial:** true\n", 1)
+            .replace("**Boundary:** src/other/\n",
+                     "**Boundary:** src/other/\n**Trial:** true\n", 1)
+            .replace("**Boundary:** src/third/\n",
+                     "**Boundary:** src/third/\n**Trial:** true\n", 1))
+        loop.git_commit = lambda msg: "abc1234"
+        loop.run_trial = lambda *a, **k: True
+        loop.tree_fingerprint = lambda: "same"          # no code change
+        self.results({"metrics": {"acc": 0.5}})
+
+    def drive(self, st):
+        prompts = []
+
+        def fake(_st, role, prompt, *a, **k):
+            prompts.append((role, prompt))
+            if role == "evaluator":
+                loop.VERDICT.write_text(json.dumps(
+                    {"verdict": "PASS", "reason": "ok", "evidence": []}))
+            return "STATUS: pass"
+        loop.claude = fake
+        loop.phase_iterate(self.cfg, st)
+        return [p for r, p in prompts if r == "evaluator" and "Mode 2" in p]
+
+    def test_a_no_code_trial_rerun_is_deferred_but_first_green_is_not(self):
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        audits = self.drive(st)
+        # Step 1: acc goes green for the first time -> audited.
+        # Step 2: same harness, nothing changed, not first green -> free.
+        # Step 3: the last ticket is never deferred (the final pass follows).
+        self.assertEqual(len(audits), 2)
+        self.assertIn("'Phase 1, Step 1'", audits[0])
+        self.assertIn("'Phase 1, Step 3'", audits[1])
+        self.assertIn("no code change", self.ledger()[1]["reason"])
+
+    def test_a_trial_ticket_that_changed_code_is_still_audited(self):
+        fp = iter("abcdefghij")
+        loop.tree_fingerprint = lambda: next(fp)
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        self.assertEqual(len(self.drive(st)), 3)
 
 
 if __name__ == "__main__":

@@ -61,7 +61,11 @@ For each ticket, in order:
   `.claude/rules/phase-authority.md`.
 
 ### 3b. TDD Loop
-- Write failing tests from the **Test Contract**. Run → confirm fail.
+- Write failing tests from the **Test Contract**. Run → confirm fail,
+  teeing that first run to the red log the dispatch names
+  (`logs/tdd-red-<n>.log` in loop mode). On a ticket with a Test
+  Contract the output gate requires the red log; a code-first ticket is
+  a RETRY.
 - Write application logic from **Spec** and loaded Skill patterns.
 - Run tests → confirm pass.
 - Run the **Run Command** for domain-wide test coverage. Run Commands

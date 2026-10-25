@@ -73,9 +73,9 @@ per `governance.md` §3. Default `none`.
 **Audit:** Optional. `deferred` skips this ticket's per-ticket
 Evaluator audit under any cadence; the deterministic gate, the
 regression guard and the output gate still run, and a criterion's FIRST
-green or the final pass is never deferred. Only for a ticket with no
-code change that re-runs a harness which has already produced evidence
-this loop. Never on a ticket that introduces a mechanism.
+green or the final pass is never deferred. The driver applies the same
+skip on its own to a Trial ticket whose Generator changed nothing in
+the tree. Never write it on a ticket that introduces a mechanism.
 
 **Depends On:** Ticket IDs (Phase/Step) that must be committed before
 this one starts; `none` for the first. Everything depends (directly or
@@ -92,14 +92,11 @@ stops the session. A subdirectory `CLAUDE.md` inside it binds the
 ticket.
 
 **Run Command:** Exact shell command piped through
-`2>&1 | tee logs/latest.log` (`run-logging.md`). Two rules:
-
-- **Under ten minutes, or it is a `Trial:`.** A Generator's Bash call
-  is capped at 600 s. Anything slower is a `Trial:` the driver launches,
-  or is launched detached (`nohup … &`) and polled in sub-600 s waits.
-- **Chain the regression sweep with `;`, not `&&`**, so a failing
-  writer does not short-circuit the sweep that tells the Evaluator
-  whether the failure is local.
+`2>&1 | tee logs/latest.log` (`run-logging.md`). **Under ten minutes,
+or it is a `Trial:`** — a Generator's Bash call is capped at 600 s;
+anything slower is launched by the driver, or detached (`nohup … &`)
+and polled. **Chain the regression sweep with `;`, not `&&`**, so a
+failing writer does not short-circuit the sweep.
 
 ## Experiment Tickets
 
@@ -115,6 +112,7 @@ to, e.g. results/<loop>/gate1.json]
 noise listed as non-actionable; `stall_min: N`; `writes: <path>[, …]`]
 **Deadline:** [`K × measured min/iteration × 1.5 = N min`, naming the
 file the measurement came from]
+**GPUs:** [N — the driver bills GPU-hours as wall time × N; default 1]
 **Disk:** [bytes written per iteration/step, and what the trial deletes
 as it goes]
 
@@ -140,9 +138,9 @@ All other fields are unchanged. Rules:
   trials carry infrastructure exceptions.
 - **`Disk:` is a contract.** K iterations × the figure < `df` at launch,
   or the trial rotates; show the arithmetic.
-- Experiment tickets are detailed about OUTCOMES and interfaces, light
-  on implementation path. A launched trial's config is immutable; any
-  parameter change = new trial via REPLAN.
+- Detailed about OUTCOMES and interfaces, light on implementation
+  path. A launched trial's config is immutable; a parameter change is a
+  new trial via REPLAN.
 
 ## Planner Self-Check
 
@@ -177,7 +175,12 @@ Before ending the Planner session, verify for each ticket:
   premise depends on names its probe (`probe: <command> → <output>` in
   `Goal.md`, or one you ran). A tolerance states its dtype and comes
   from a measured noise floor; a time bar for a path this loop has not
-  run is `smoke × 1.5` at the run's actual concurrency.
+  run is `smoke × 1.5` at the run's actual concurrency; a buffer or
+  tensor the Spec implies is sized (shape × dtype) against the device.
+- **Every `*_ok` / `*_exact` / `*_match` flag or ratio names its
+  denominator in the Spec and requires it ≥ 1.** A comparison over an
+  empty set must read FAIL, never PASS; the Test Contract carries the
+  empty-side case.
 - Before the first GPU smoke of a new training path: is there a
   GPU-free config-probe ticket that trips every assertion the new argv
   can trip?
@@ -190,8 +193,9 @@ Before ending the Planner session, verify for each ticket:
   intra-group dependency, Environment Setup kept out, grouping worth it?
 - For experiment tickets: every Success Threshold maps to a `goal.json`
   criterion; the Metrics Contract names the exact file; `Deadline:` is
-  K × MEASURED × 1.5 with its source; the Profile carries `stall_min`
-  and `writes:`; `Disk:` arithmetic fits `df` or the trial rotates.
+  K × MEASURED × 1.5 with its source; `GPUs:` matches the Trial's
+  device count; the Profile carries `stall_min` and `writes:`; `Disk:`
+  arithmetic fits `df` or the trial rotates.
 
 Every gap becomes a potential Generator hallucination.
 

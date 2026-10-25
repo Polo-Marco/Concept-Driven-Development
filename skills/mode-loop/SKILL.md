@@ -57,6 +57,14 @@ cheaper copy of it.
 
 If ambiguous, ask — don't guess.
 
+**The goal must be in `Concept.md` before it is in `Goal.md`.** On an
+`experiment` or `modify` goal, grep `Concept.md` for the experiment's
+identifier or the feature's name. If it is absent, stop and say so: the
+user updates Concept via `[discuss]` (it has the authority; it only
+needs confirmation), then the loop starts. A Planner sees one loop's
+Goal and cannot notice that the project's stated question changed four
+experiments ago.
+
 ### 2. Interrogate until the goal is measurable
 
 Push back until EVERY success criterion is machine-checkable. A

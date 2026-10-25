@@ -257,7 +257,11 @@ def tree_fingerprint() -> str:
 # (Plan.md's [x], Evaluation.md, verdict.json, ledger.jsonl) is evidence
 # a reviewer wants attached to the commit it explains, so it is left
 # tracked on purpose.
-DRIVER_IGNORED = ("loop-state.json", "events.jsonl", "journal/traces/")
+DRIVER_IGNORED = ("loop-state.json", "events.jsonl", "journal/traces/",
+                  # 8.1.21: the driver commits `git add -A`; opd-pipe
+                  # cc4c156 carried five .pyc files the Evaluator had
+                  # warned about one audit earlier.
+                  "__pycache__/", "*.pyc")
 
 
 def ensure_gitignore() -> None:
@@ -1153,6 +1157,22 @@ def plan_problems(cfg: dict, plan_text: str) -> list:
                 f"Boundary lets any code that runs in that session -- a "
                 f"test fixture, a stray default path -- write the "
                 f"evidence its own criterion is judged on.")
+    # 8.1.21: the Overview is the one section every Generator reads. In
+    # opd-pipe it grew 39 -> 1,657 lines over 24 commits (none shorter)
+    # and two sampled Generators skipped it for `sed -n 5866,6100p`
+    # (journal/from-opd-pipe-retro-20261025.md, problem 4). A cap is
+    # rule-bound, so it is decided here, before a review is bought.
+    arch = ROOT / "Architecture.md"
+    if arch.exists():
+        n = overview_lines(arch.read_text(errors="ignore"))
+        if n > OVERVIEW_MAX_LINES:
+            problems.append(
+                f"Architecture.md `## Overview` is {n} non-blank lines "
+                f"(cap {OVERVIEW_MAX_LINES}). It is the one section every "
+                f"Generator reads; mode-build sizes it at 20-30 lines. "
+                f"Move per-loop and per-component detail into the "
+                f"sections tickets name in **Architecture:**, and keep "
+                f"the Overview a standalone summary.")
     return problems
 
 
@@ -1288,6 +1308,117 @@ def budget_exceeded(st: dict, cfg: dict) -> str:
 GATE_REMIND_SECONDS = 4 * 3600
 
 
+def pause_flag() -> Path:
+    return APPROVALS / "pause-after"
+
+
+def pause_requested() -> str:
+    """The ticket `loop.py pause-after` named, or "".
+
+    8.1.21: a flag FILE, like approve's. The running driver holds its own
+    copy of loop-state.json and rewrites it on every save(), so a key
+    written into the file from outside was gone before the ticket
+    boundary read it -- opd-pipe e007-l2b requested the pause at the plan
+    gate and the driver ran straight through Phase 2, Step 2
+    (journal/from-opd-pipe-retro-20261025.md, problem 9).
+    """
+    try:
+        return pause_flag().read_text().strip()
+    except OSError:
+        return ""
+
+
+GATE_CONCERN = re.compile(
+    r"^\s*[-*]?\s*\**(CRITERIA CONCERN|OPEN ASSUMPTION)\**:?\**\s*(.*)",
+    re.I)
+
+
+def gate_concerns() -> list:
+    """Lines in Evaluation.md only a human can settle.
+
+    8.1.21: 22 of 22 plan gates in one deployment were approved by a
+    delegated operator inside two minutes (median 36 s), including the
+    one whose accepted Assumption 6 the tower later called the root of
+    the loop's drift (journal/from-opd-pipe-retro-20261025.md, problem
+    11). The driver cannot make a human read; it can say WHICH gates
+    carry a question for one, as a distinct event the delegation rule
+    can key on.
+    """
+    p = ROOT / "Evaluation.md"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(errors="ignore").splitlines():
+        m = GATE_CONCERN.match(line)
+        if m:
+            out.append(f"{m.group(1).upper()}: {m.group(2).strip()}"[:300])
+    return out[:20]
+
+
+CARRY_MAX = 20
+
+
+def absorb_carry(st: dict, v: dict, source: str) -> None:
+    """Keep the Evaluator's non-blocking findings where the next session
+    will see them.
+
+    8.1.21: 28 of 132 verdicts in one deployment carried a Non-blocking
+    line; three of them later happened exactly as written (an OOM a
+    later smoke hit, a missing ensurepip a later JIT needed, bytecode
+    that entered the next commit) because each later session started
+    fresh and nothing handed the line forward
+    (journal/from-opd-pipe-retro-20261025.md, problem 2). The Evaluator
+    saw right; the loop forgot. Memory is the driver's job.
+    """
+    lines = [str(x).strip() for x in (v.get("carry") or [])
+             if str(x).strip()]
+    if not lines:
+        return
+    items = list(st.get("carry") or [])
+    items += [{"from": source, "line": l[:300]} for l in lines[:CARRY_MAX]]
+    st["carry"] = items[-CARRY_MAX:]
+    event("carry", detail=f"{source}: " + " | ".join(lines))
+
+
+def carry_text(st: dict, audit: bool = False) -> str:
+    items = st.get("carry") or []
+    if not items:
+        return ""
+    head = ("\n\nCarried findings -- judged non-blocking by an earlier "
+            "audit and handed forward so they are not forgotten. "
+            + ("For each one, state resolved / does not apply here, with "
+               "evidence; a resource finding (memory, disk, time, a "
+               "missing system package) that a later Trial will meet is "
+               "not non-blocking."
+               if audit else
+               "Check each against THIS ticket; if one bites here, fix it "
+               "inside your Boundary or stop and report it.") + "\n")
+    return head + "".join(f"  - [{i['from']}] {i['line']}\n" for i in items)
+
+
+def gpu_count(body: str) -> int:
+    """`**GPUs:** N` on an experiment ticket; default 1.
+
+    8.1.21: gpu_hours were trial wall-hours -- a 5.1 h trial on two GPUs
+    was billed 5.1, so a deployment's 68.5 "GPU-hours" under-counted
+    its real use and `max_gpu_hours` bounded the wrong number
+    (journal/from-opd-pipe-retro-20261025.md, problem 9).
+    """
+    m = re.search(r"\d+", field(body, "GPUs"))
+    return max(1, int(m.group())) if m else 1
+
+
+OVERVIEW_MAX_LINES = 40
+
+
+def overview_lines(arch_text: str) -> int:
+    m = re.search(r"^## Overview[ \t]*$\n(.*?)(?=^## |\Z)", arch_text,
+                  re.M | re.S)
+    if not m:
+        return 0
+    return sum(1 for l in m.group(1).splitlines() if l.strip())
+
+
 def wait_approval(st: dict, name: str, detail: str) -> None:
     """Block until the named gate is approved.
 
@@ -1308,6 +1439,14 @@ def wait_approval(st: dict, name: str, detail: str) -> None:
     clock_stop(st)             # v8.1.7: a human is not driver runtime
     save(STATE, st)
     event("approval_request", gate=name, detail=detail)
+    concerns = gate_concerns() if name in ("plan", "replan") else []
+    if concerns:
+        # 8.1.21: a separate event, so a delegation rule can wait for a
+        # human on exactly these gates and auto-approve the rest.
+        event("approval_needs_human", gate=name,
+              detail="; ".join(concerns))
+        detail += ("\n  Evaluation.md leaves these to YOU:\n    "
+                   + "\n    ".join(concerns))
     gap = notify_gap()
     # v8.1.4: print WHERE. The loop runs in a worktree, so Plan.md is not
     # in the tree the user typed `start` in, and this banner -- whose one
@@ -1459,6 +1598,7 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
     trial_cmd = field(body, "Trial").strip("` \t\n")
     if not trial_cmd:
         return True                       # build ticket: no trial phase
+    gpus = gpu_count(body)                # 8.1.21: GPU-hours, not hours
     # v8.1.19 (B12/B13): the driver reads `Deadline:` -- to size the poll
     # interval and to WARN. It never kills on it alone: JEVI's Deadline
     # was 4x under on a healthy trial, and a kill there would have been
@@ -1487,7 +1627,7 @@ def run_trial(tid: str, body: str, st: dict, cfg: dict,
         elapsed = (time.time() - trial_start) / 3600
         delta = max(0.0, elapsed - billed[0])
         billed[0] = elapsed
-        st["gpu_hours"] = round(st.get("gpu_hours", 0.0) + delta, 3)
+        st["gpu_hours"] = round(st.get("gpu_hours", 0.0) + delta * gpus, 3)
         save(STATE, st)
 
     with log.open("w") as lf:
@@ -1796,11 +1936,11 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
         problems = plan_problems(
             cfg, plan.read_text() if plan.exists() else "")
         if problems:
-            why = "criterion evidence has more than one owner: " \
-                  + "; ".join(problems)
+            why = ("deterministic plan gate (evidence ownership, Overview "
+                   "size): " + "; ".join(problems))
             event("plan_rejected", detail=why)
-            fix = ("A deterministic gate rejected Plan.md before any "
-                   "review was paid for. Fix the **Boundary:** fields:\n"
+            fix = ("A deterministic gate rejected the plan before any "
+                   "review was paid for. Fix exactly these:\n"
                    "- " + "\n- ".join(problems) + "\n\nChange nothing "
                    "else unless the fix requires it.")
         else:
@@ -1833,7 +1973,9 @@ def phase_contract_review(cfg: dict, st: dict) -> None:
                 # safety pre-gate used to default to "OK", which silently
                 # passed the gate whenever the Evaluator crashed or wrote
                 # bad JSON.
-                v = load(VERDICT, {}).get("verdict")
+                vd = load(VERDICT, {})
+                absorb_carry(st, vd, f"contract review r{revision}")
+                v = vd.get("verdict")
                 st["review"] = {"plan_hash": h, "revision": revision,
                                 "verdict": "OK" if v == "OK" else "REVISE"}
                 st.setdefault("review_log", []).append(
@@ -2078,6 +2220,7 @@ def adjudicate_stop(st: dict, tid: str, tail: str, cap: int = 0,
                     f"adjudication returned no usable verdict")
     evaluator_verdict(st, what)
     v = load(VERDICT, {})
+    absorb_carry(st, v, f"adjudication of {tid}")
     if v.get("verdict") not in ("REPLAN", "RETRY", "ESCALATE"):
         v = {"verdict": "ESCALATE", "reason": fallback, "evidence": []}
     kind = " (trial)" if trial else " (retry cap)" if cap else ""
@@ -2164,6 +2307,21 @@ def output_gaps(body: str, tid: str, iteration: int, dispatched: float,
                         f"{iteration}.log is missing or empty and "
                         f"logs/latest.log was not written) -- it did not "
                         f"run to completion under tee")
+    # 8.1.21: TDD is checkable or it is prose. 78 of 93 code tickets in
+    # one deployment wrote the code first and the tests after
+    # (journal/from-opd-pipe-retro-20261025.md, problem 10). A ticket
+    # with a Test Contract leaves its FIRST, failing test run on disk;
+    # the Evaluator's planted failure still judges whether the tests
+    # are worth anything.
+    tc = field(body, "Test Contract").strip().lower()
+    if tc and tc not in ("none", "n/a", "-") \
+            and field(body, "Run Command").strip():
+        red = ROOT / "logs" / f"tdd-red-{iteration}.log"
+        if not (red.exists() and red.stat().st_size > 0):
+            gaps.append(f"no red run on record: logs/tdd-red-{iteration}"
+                        f".log is missing or empty -- tee the Test "
+                        f"Contract's first run, before implementing, to "
+                        f"it (generator-protocol.md 3b)")
     for r, (d, owner) in zip(crit, due):
         if d and owner == tid and not r.get("ok"):
             gaps.append(f"owned criterion reads red: {criteria_line(r)}")
@@ -2240,7 +2398,12 @@ def phase_iterate(cfg: dict, st: dict) -> None:
             rep = claude(st, "generator",
                          f"Execute this ticket per your instructions:\n\n"
                          f"{body}\n\nTicket log: logs/ticket-"
-                         f"{st['iteration']}.log" + prior,
+                         f"{st['iteration']}.log\nRed log: logs/tdd-red-"
+                         f"{st['iteration']}.log -- tee the Test "
+                         f"Contract's FIRST run, before you implement, "
+                         f"to it; on a ticket with a Test Contract the "
+                         f"output gate requires it." + prior
+                         + carry_text(st),
                          field(body, "Boundary"))
             wrote_nothing = tree_fingerprint() == before
             if st.get("session_died"):
@@ -2385,8 +2548,14 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                 # gate already checked this ticket's outputs, log and
                 # owned criteria for free.
                 deferred = field(body, "Audit").strip().lower() == "deferred"
-                if (cadence == "final-pass" or deferred) and len(todo) > 1 \
-                        and not first_green:
+                # 8.1.21: the Planner marked one ticket in 20 loops. The
+                # driver can see the condition itself -- a Trial ticket
+                # whose Generator changed nothing re-ran a harness --
+                # and first green / final pass are still never deferred
+                # (journal/from-opd-pipe-retro-20261025.md, problem 6).
+                auto = bool(field(body, "Trial").strip()) and wrote_nothing
+                if (cadence == "final-pass" or deferred or auto) \
+                        and len(todo) > 1 and not first_green:
                     # v8.1: "deferred" no longer means unchecked. The
                     # deterministic gate above ran, the Generator's own
                     # TDD ran, and a regression would have blocked here.
@@ -2394,7 +2563,9 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                          "reason": "deterministic gate clean; LLM audit "
                                    + ("deferred to final pass (Audit: "
                                       "deferred)" if deferred else
-                                      "deferred to final pass"),
+                                      "deferred to final pass (Trial "
+                                      "re-run, no code change)" if auto
+                                      else "deferred to final pass"),
                          "evidence": [criteria_line(r) for r in crit]}
                 else:
                     evaluator_verdict(
@@ -2411,6 +2582,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                               f"ticket built, not left behind by a test "
                               f"fixture, a stale artifact or a default "
                               f"output path." if first_green else "")
+                           + carry_text(st, audit=True)
                            + " Write Evaluation.md and verdict.json.")
                     # v8.1.13: name which of the two it was. Both dead
                     # sessions and a live session that wrote no verdict
@@ -2425,6 +2597,7 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                                    "nothing about the result was decided"
                                    if st.get("session_died")
                                    else "missing verdict.json")})
+                    absorb_carry(st, v, tid)
             # v8.1.6: a Generator that changed nothing, TWICE, is a
             # protocol failure and not a retryable one. Attempt 1 is
             # forgiven -- attempt 2 carries the verdict it never saw, so
@@ -2506,10 +2679,13 @@ def phase_iterate(cfg: dict, st: dict) -> None:
                       "was committed -- see commit_failed")
                 return
             event("ticket_done", detail=f"{tid} @ {sha}")
-            if st.get("pause_after") == tid:
+            if pause_requested() == tid or st.get("pause_after") == tid:
                 # v8.1.19: the pause the user asked for, at the one
                 # boundary where nothing is half-done (see `pause-after`
                 # in main()). Consumed on firing, so `start` resumes.
+                # 8.1.21: read from the flag file; the state key is the
+                # pre-8.1.21 shape, still honoured.
+                pause_flag().unlink(missing_ok=True)
                 st.pop("pause_after", None)
                 save(STATE, st)
                 event("paused", detail=f"after {tid} as requested -- "
@@ -2570,8 +2746,9 @@ def phase_final(cfg: dict, st: dict) -> None:
            "it have been hand-written? Do harness versions, sample "
            "counts and configs corroborate it? Any secret leaked into "
            "results or logs? Anything in the history the plan never "
-           "asked for? Execute to verify. Write Evaluation.md and "
-           "verdict.json.")
+           "asked for? Execute to verify."
+           + carry_text(st, audit=True)
+           + " Write Evaluation.md and verdict.json.")
     v = load(VERDICT, {})
     if v.get("verdict") == "PASS":
         event("goal_reached", detail=v.get("reason", ""),
@@ -2688,7 +2865,9 @@ def write_journal(cfg: dict, st: dict) -> Path:
                "criteria_amended", "criteria_amendment_refused",
                "network_wait", "network_restored", "network_wait_exhausted",
                "preflight_skipped", "paused", "verdict_missing",
-               "deadline_exceeded", "template_drift")
+               "deadline_exceeded", "template_drift",
+               # 8.1.21
+               "approval_needs_human", "carry", "pause_requested")
     evs = []
     # v8.1.18: a STREAK of `session_died` is one line with a count and a
     # time window. A 37-minute DNS outage wrote 50 identical lines into
@@ -2875,8 +3054,9 @@ def phase_close(cfg: dict, st: dict, force: bool) -> None:
             p.unlink()
             removed.append(f)
     if APPROVALS.exists():
-        for f in APPROVALS.glob("*.approved"):
-            f.unlink()
+        for f in list(APPROVALS.glob("*.approved")) + [pause_flag()]:
+            if f.exists():
+                f.unlink()
         try:
             APPROVALS.rmdir()
         except OSError:
@@ -3225,6 +3405,17 @@ def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     argv = sys.argv[1:]
     allow_here = "--here" in argv
+    # 8.1.21: `approve --note "<why>"`. The flag filter below kept the
+    # note's TEXT as a positional, which `approve` then read as a gate
+    # name and refused -- the first approve of opd-pipe e007-l1 did
+    # nothing (journal/from-opd-pipe-retro-20261025.md, problem 9).
+    note = ""
+    if "--note" in argv:
+        i = argv.index("--note")
+        if i + 1 >= len(argv):
+            die('usage: loop.py approve [plan|replan] --note "<why>"')
+        note = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
     args = [a for a in argv if not a.startswith("-")]
 
     if args and args[0] in ("status", "approve", "close", "replan",
@@ -3260,8 +3451,8 @@ def main() -> None:
         if any(i == tid and d for i, _t, _b, d in known):
             print(f"!! {tid} is already done -- the pause will never fire. "
                   f"Name a later ticket.")
-        st["pause_after"] = tid
-        save(STATE, st)
+        APPROVALS.mkdir(exist_ok=True)
+        pause_flag().write_text(tid + "\n")     # see pause_requested()
         event("pause_requested", detail=f"pause after {tid}", by="user")
         print(f"the driver will pause after {tid} PASSES and is committed "
               f"(phase stays `iterate`; `start` resumes). It reads this "
@@ -3296,6 +3487,10 @@ def main() -> None:
         # any pre-existing flag on entry, so approving before the driver
         # reached the gate silently did nothing -- an invisible failure
         # mode. Target the pending gate, and say so when there is none.
+        if len(args) > 1 and args[1] not in ("plan", "replan"):
+            die(f"'{args[1]}' is not a gate (plan | replan). Nothing "
+                f"approved. A note goes after --note: "
+                f'approve --note "<why>"')
         gate = args[1] if len(args) > 1 else \
             load(STATE, {}).get("pending_gate")
         if gate not in ("plan", "replan"):
@@ -3304,7 +3499,9 @@ def main() -> None:
             sys.exit(1)
         APPROVALS.mkdir(exist_ok=True)
         (APPROVALS / f"{gate}.approved").touch()
-        print(f"approved: {gate}")
+        if note:
+            event("note", detail=f"approval of {gate}: {note}", by="user")
+        print(f"approved: {gate}" + (f" (noted: {note})" if note else ""))
         return
     if args and args[0] == "replan":
         # v8.1.15: the user-initiated half of the REPLAN route.

@@ -677,3 +677,33 @@ of each rule file holds the full original prose.
   driver's contract from `loop.py`.
 - **Prompt on stdin** (v8.1.18): a 128 KB replan prompt hit E2BIG in
   three deployments (`journal/retro-20261015-cross-project.md`, B2).
+
+### 8.1.21 (journal/from-opd-pipe-retro-20261025.md)
+- **Rule / register split, word caps** (maintainer observation): the
+  always-loaded set was ~15,000 words × 660 sessions.
+- **Denominator rule; empty-side probe** (problem 1): `identity_exact
+  = 1` over zero compared items passed the free gate in e010-l1 and the
+  same expression sat in four packages after `c537307` fixed one.
+- **`carry`** (problem 2): 28 non-blocking lines, three came true
+  (e011-l1 OOM → REPLAN; e007-l0 ensurepip → Triton JIT REPLAN;
+  e010-l1 `__pycache__` → `cc4c156`).
+- **Start once is existence; memory arithmetic** (problem 3): two of
+  four REPLANs were runtime facts a single launch or a shape × dtype
+  product would have shown at review.
+- **Overview cap in `plan_problems()`** (problem 4): 39 → 1,657 lines;
+  two sampled Generators skipped it.
+- **Concept check in the Ask phase** (problem 5): `Concept.md` still
+  described E007 through E011.
+- **Auto-deferred Trial re-runs** (problem 6): `Audit: deferred` used
+  once in 20 loops.
+- **`pause-after` as a flag file** (problem 9): the key was overwritten
+  by the running driver's next save (e007-l2b).
+- **GPU-hours × `GPUs:`** (problem 9): 5.1 h on two GPUs billed 5.1.
+- **`approve --note`** (problem 9): the note text was read as a gate
+  name (e007-l1).
+- **`__pycache__/` and `*.pyc` in `ensure_gitignore()`** (problem 2):
+  five `.pyc` files committed by `git add -A`.
+- **Red log in the output gate** (problem 10): 78 of 93 code tickets
+  were code-first; the TDD rule had no mechanical check.
+- **`approval_needs_human`** (problem 11): 22 gates in a median of
+  36 s; Assumption 6 accepted at one of them.

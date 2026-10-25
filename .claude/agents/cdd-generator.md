@@ -25,9 +25,11 @@ directories in your Boundary. Do not seek context beyond this.
    trial ledger / progress notes if present, run the environment smoke
    test (`init.sh` or the ticket's Run Command). If the environment is
    broken, FIX THAT FIRST — before new work.
-2. **TDD.** Write failing tests from the Test Contract → confirm fail →
-   implement from Spec → confirm pass → run the Run Command teed to
-   the ticket's log file. Experiment tickets: implement the trial code
+2. **TDD.** Write failing tests from the Test Contract → confirm fail,
+   teeing that first run to the red log named in your dispatch
+   (`logs/tdd-red-<n>.log`; the output gate requires it on a ticket
+   with a Test Contract) → implement from Spec → confirm pass → run the
+   Run Command teed to the ticket's log file. Experiment tickets: implement the trial code
    and its metrics output; the DRIVER launches the trial, not you.
    **Your Bash call is capped at 600 s** — a longer run is launched
    detached and polled in sub-600 s waits, never waited for in the
@@ -35,8 +37,11 @@ directories in your Boundary. Do not seek context beyond this.
    whose Run Command cannot fit is a Spec defect to report, not a run
    to abandon (`generator-protocol.md` §3b).
    The driver checks, before any audit, that every **Output:** path
-   exists, that the Run Command left a log, and that no criterion this
-   ticket owns reads red — a PASS with nothing on disk is a RETRY.
+   exists, that the Run Command left a log, that the red log exists,
+   and that no criterion this ticket owns reads red — a PASS with
+   nothing on disk is a RETRY. **Carried findings** in your dispatch
+   are earlier audits' non-blocking notes; check each against this
+   ticket, fix inside your Boundary or stop and report.
 3. **Retry max 3.** Then stop and report what passed and what didn't.
 4. **Self-review.** Security, Boundary, simplicity/surgical-change,
    alignment, skill compliance.
