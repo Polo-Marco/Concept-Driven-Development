@@ -707,3 +707,59 @@ of each rule file holds the full original prose.
   were code-first; the TDD rule had no mechanical check.
 - **`approval_needs_human`** (problem 11): 22 gates in a median of
   36 s; Assumption 6 accepted at one of them.
+
+### mode-loop (Ask phase) — moved in 8.1.21
+- **Refuse on missing machinery, never degrade** (`journal/from-ccd-ai-bench-retro-20260715.md`):
+  a project with the v8.0 CLAUDE.md and no driver ran a manual flow and
+  recorded itself as an 8.0 run.
+- **Never point a criterion at the answer; a stopping bar names its
+  measurement** (v8.1.13, v8.1.15): `>= 0.90` as a tripwire escalated at
+  0.8978, three calls short of 1067, eight hours after the science was
+  finished; the real tripwire was `< 0.5` and the contract review had
+  written it down (`journal/from-aibench-retro-20260819.md`,
+  `journal/retro-20260824-aibench.md` gap A/B).
+- **Probe lines for every number and fact** (v8.1.20): thirteen of
+  thirty goals in one deployment, eleven of twenty-seven replans in
+  another, the one loop rated *bad* ($74, zero measurement) — a count,
+  a cap, a sha256, a premise, a bf16 tolerance below one ulp, a
+  throughput bar from another path (PB pb10), a `.env` value the parser
+  stripped (JEV loop 10), a class import as a runtime preflight (JEV
+  loop 9) (`journal/retro-20261015-cross-project.md`, S2/R1).
+- **Three questions per criterion** (v8.1.16): six criterion defects in
+  four agentRl loops, five frozen contracts in nine aibench loops — a
+  bar that read 1.0 on its control, a key the harness cannot emit, a
+  numerator and denominator from one list.
+- **Detectable effect; stop rule before the first read** (v8.1.17):
+  three training loops ($251, ~100 GPU-h) ended "within one SE" of the
+  same baseline because no Goal said what a 16-task slice could resolve
+  (`journal/from-agentrl-retro-20260918.md`, problem 6).
+- **`max_replans` by kind** (v8.1.20, R4): first-of-kind loops replanned
+  3, 4, 2, 2, 2 times; re-runs 0, 0, 0, 0, 0.
+- **Cadence by novelty** (v8.1.20, R3): the Evaluator was 33–62 % of
+  spend across seven deployments; every outcome-changing catch was in a
+  loop introducing a new mechanism; the two `final-pass` loops lost
+  nothing (S3).
+- **Full model IDs** (v8.1.16): a bare tier alias resolved differently
+  on the day, so no journal could say which model ran a loop.
+- **Generator on sonnet by default** (2026-10): JEV 19/19 first-attempt
+  passes, STAGES 70 tickets, NVFP4, JEVI — zero Generator-side defects
+  at about half the cost.
+- **Runtime-path preflight** (`journal/from-aibench-retro-20260802.md`):
+  three of seven human interruptions were a missing `[api]` extra, an
+  incompatible `datasets`, a missing `transformers`, each at tickets
+  7–8.
+- **Gate concern dispositions** (v8.1.20, R2): the same concern
+  acknowledged at four consecutive gates became a post-result 0.95 →
+  0.94 amendment (PB problem 2).
+- **Delegated approval answers every gate question first** (v8.1.20,
+  R12): one loop approved past an unanswered question escalated on it
+  four tickets later (JEV loop 4).
+- **`start` does the mechanical steps** (2026-07-30 inbox): eight
+  manual steps per loop, the gate banner invisible, `approve` in a
+  second shell.
+- **Fast path for audit findings** (mode-modify, v8.1.16): four manual
+  `[modify]` loops in three hours for a two-line fix, rated *bad*
+  (`journal/from-aibench-retro-20260902.md`, problem 6).
+- **Harness staleness step; hot-patch inventory** (mode-retro, R11 /
+  v8.1.20): three of seven retros noted the step was missing; four
+  deployments patched the same three defects and none came home.

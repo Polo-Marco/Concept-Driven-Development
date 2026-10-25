@@ -87,7 +87,8 @@ direct framework edit), the agent acts as the **Framework Maintainer**:
   file ≤ 1,200 words, except `loop-protocol.md` ≤ 2,000 and
   `task-ticket-format.md` ≤ 1,500; `CLAUDE.md` ≤ 1,200; each agent file
   ≤ 1,000 except `cdd-evaluator.md` ≤ 1,800 (raised from 1,700 in
-  8.1.21, which added four Mode 1/2 checks). A rule that needs more
+  8.1.21, which added four Mode 1/2 checks); `skills/mode-loop/SKILL.md`
+  ≤ 3,500, every other `skills/*/SKILL.md` ≤ 2,000. A rule that needs more
   words than the cap allows is two rules, or one rule and a register
   entry. Growing a cap is a release decision, named in the commit.
 

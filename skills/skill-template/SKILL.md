@@ -5,7 +5,7 @@ author: framework
 version: 8.1.10
 ---
 
-# Skill Template Standard (v8.1.10)
+# Skill Template Standard
 
 ## Purpose
 

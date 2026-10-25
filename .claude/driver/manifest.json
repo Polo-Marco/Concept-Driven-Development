@@ -17,18 +17,18 @@
     ".claude/agents/cdd-evaluator.md": "63b12d6e3018b26a2c6fe99606d34df999c6172c761aa0f3f656941e5a9e950f",
     ".claude/agents/cdd-generator.md": "a01fdc6d1959c3c62e5bcc3b97175fc6bf6a4e3eff5015793e31a16358a7f50a",
     ".claude/driver/loop.py": "764afdca60592a295794e697a81a94166cd4a458bed354587e1843bf46cb8ee7",
-    ".claude/driver/test_loop.py": "f46b74e3715697cc3835a826888f80808bb9789b07cd7cbe6ef9b978370bcb74",
+    ".claude/driver/test_loop.py": "19f94c61cf075dbfc0eab3d728520fc5cc201039a43ea44a02c018f2c84385d1",
     ".claude/driver/toy_project.sh": "75794685ec3f814e954eaebf4547596e9b6a25a6f2f5ef3dc1c4128817567214",
     ".claude/driver/toy_experiment.sh": "d64e4c11feda78a0b585b3d29cd39b7c42e294066926ebf9052af686592f5061",
     ".claude/driver/notify.sh.example": "02b5919338cd78ef177cb63f7b4d3b760700fac00f8bc1ef5600c57c8f9e61a1",
-    "skills/mode-modify/SKILL.md": "96efe9e9a9e276049a7df43f0bc88fdd9bf4762779ef53ac65573ad19d962b0d",
+    "skills/mode-modify/SKILL.md": "9f25a450a5b11554872c0bf3e40d9b7377ae109fdc37f672f1fef62f82609e52",
     "skills/mode-discuss/SKILL.md": "7186cab3724ed5c9a5de45a9d0485ec4ad5b68514d1ab2028d348e7e769df587",
     "skills/mode-migrate/SKILL.md": "a4730d181ad8fbb740394fc9da5d2e33d3ec4dc0f297456ee7bea5252591c01f",
-    "skills/mode-retro/SKILL.md": "88204d7606a265c672e088dc35695749357512a3ca262b33b823d6662fa99048",
+    "skills/mode-retro/SKILL.md": "3a7fbe795cb0f037791706673a256d059d73e6cf5ebfa8969e61e99e89452ade",
     "skills/mode-evaluate/SKILL.md": "e02c3951ecc03d401ea599b71b91d36954408a3a8f3dbcc8cefc4647025672f5",
-    "skills/mode-loop/SKILL.md": "38bc25dc876769c91a2f675313a99ca87e73369a0d0078491084417cca5105b8",
+    "skills/mode-loop/SKILL.md": "2c91d36c98b3e043ef055dcb802b1d8d8a7b087485ebd48d29802cac20755356",
     "skills/mode-merge/SKILL.md": "e8e2e419217106ad050098c0cb4aa58399394eb50f0f00827e3bcaf0839ad12e",
     "skills/mode-build/SKILL.md": "befb36b8dde83dc56fa83bfed83b471484703b2c7c02094af3bb147630313209",
-    "skills/skill-template/SKILL.md": "329d4fc9aadb2be46e0d680309270444edd29b16d5a07f1fa7a742a851452d91"
+    "skills/skill-template/SKILL.md": "e668d9fddc88499e330facdf3551b6a9a4fb7dce5076feb85c4e206a86ec70e6"
   }
 }

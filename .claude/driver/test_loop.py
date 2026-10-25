@@ -255,6 +255,15 @@ class DriverCase(unittest.TestCase):
         install_machinery(self.tmp)
         (self.tmp / "logs").mkdir(exist_ok=True)
 
+    def iterate_state(self, **over):
+        """A fresh `iterate`-phase loop state, as the driver has it after
+        the plan gate. 8.1.21: this dict was pasted 23 times."""
+        st = {"phase": "iterate", "iteration": 0, "replans": 0,
+              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
+              "started_epoch": loop.time.time()}
+        st.update(over)
+        return st
+
     def write_goal(self, **over):
         cfg = {"goal": "test goal", "type": "modify",
                "criteria": [{"metric": "acc", "op": ">", "value": 0.0,
@@ -717,9 +726,7 @@ class TestStateMachine(DriverCase):
                      "evidence": ["pytest: 3 passed"]}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         self.assertEqual(st["phase"], "final_eval")
         self.assertEqual((self.tmp / "Plan.md").read_text().count("[x]"), 2)
@@ -759,9 +766,7 @@ class TestStateMachine(DriverCase):
         cfg = self.write_goal(evaluation_cadence="final-pass")
         self.results({"metrics": {"acc": 0.0}})   # never satisfied
         loop.claude = lambda *a, **k: "done"
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         ledger = self.ledger()
         self.assertTrue(ledger, "the ledger must record the attempt")
@@ -785,9 +790,7 @@ class TestStateMachine(DriverCase):
         loop.claude = lambda _st, role, *a, **k: (
             "STATUS: stopped — needs an architectural decision"
             if role == "generator" else "")
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         self.assertTrue(any(e["event"] == "escalate"
                             for e in self.events()))
@@ -1543,9 +1546,7 @@ class TestPlanHeadingLevels(DriverCase):
                     {"verdict": "PASS", "reason": "ok"}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         text = (self.tmp / "Plan.md").read_text()
         self.assertIn("## Phase 1, Step 1 [x]:", text)
@@ -1578,9 +1579,7 @@ class TestUnparseablePlan(DriverCase):
         cfg = self.write_goal()
         calls = []
         loop.claude = lambda _st, role, *a, **k: (calls.append(role) or "")
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         kinds = [e["event"] for e in self.events()]
         self.assertIn("escalate", kinds)
@@ -1596,9 +1595,7 @@ class TestUnparseablePlan(DriverCase):
         for tid in ("Phase 1, Step 1", "Phase 1, Step 2"):
             done = done.replace(f"### {tid}:", f"### {tid} [x]:")
         (self.tmp / "Plan.md").write_text(done)
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         self.assertIn("all_tickets_done",
                       [e["event"] for e in self.events()])
@@ -1666,9 +1663,7 @@ class TestHumanFacingOutput(DriverCase):
         report = ("prologue " * 80) + "boundary denial explained. " \
                  "STATUS: stopped"
         loop.claude = lambda *a, **k: report
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         esc = [e for e in self.events() if e["event"] == "escalate"][0]
         said = esc["detail"].split("generator stopped: ", 1)[1]
@@ -1679,9 +1674,7 @@ class TestHumanFacingOutput(DriverCase):
     def test_a_short_report_is_not_clipped_at_all(self):
         (self.tmp / "Plan.md").write_text(PLAN)
         loop.claude = lambda *a, **k: "needs a decision. STATUS: stopped"
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         esc = [e for e in self.events() if e["event"] == "escalate"][0]
         self.assertIn("needs a decision.", esc["detail"])
@@ -1756,9 +1749,7 @@ class TestPassRequiresACommit(DriverCase):
                     {"verdict": "PASS", "reason": "ok"}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         self.assertNotIn("[x]", (self.tmp / "Plan.md").read_text(),
                          "an uncommitted ticket must stay runnable")
@@ -2180,9 +2171,7 @@ class TestTrialLogPerAttempt(DriverCase):
             return "done"
         loop.claude = fake
         loop.git_commit = lambda msg: "abc1234"
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         gen = [p for r, p in prompts if r == "generator"]
         self.assertTrue(gen)
@@ -2226,9 +2215,7 @@ class TestReplanIsAnEvent(DriverCase):
                      "reason": "approach exhausted: lr=0.5 ruled out"}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
 
         replans = [e for e in self.events() if e["event"] == "replan"]
@@ -3446,9 +3433,7 @@ class TestCriteriaDue(DriverCase):
                     {"verdict": "PASS", "reason": "ok"}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         ev = self.events()
         # ticket 1 never claims evidence it does not owe...
@@ -3710,9 +3695,7 @@ class TestSessionDeathIsNotAVerdict(DriverCase):
             st["session_died"] = role == "evaluator"
             return ""
         loop.claude = dead
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         self.assertTrue(any(e["event"] == "escalate" for e in self.events()))
         reason = self.ledger()[-1]["reason"]
@@ -4285,9 +4268,7 @@ class TestOutputGate(DriverCase):
                     {"verdict": "PASS", "reason": "ok", "evidence": []}))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         return calls, st
 
@@ -4402,9 +4383,7 @@ class TestRetryCapIsAdjudicated(LiveRunCase):
                     loop.VERDICT.write_text(json.dumps(v))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.write_goal(), st)
         return calls, st
 
@@ -4874,9 +4853,7 @@ class TestAuditDeferredField(DriverCase):
                     {"verdict": "PASS", "reason": "ok"}))
             return "STATUS: pass"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         first = [p for r, p in calls if r == "evaluator" and "Mode 2" in p]
         self.assertTrue(first and "FIRST time" in first[0])
@@ -5206,9 +5183,7 @@ class TestTrialFailingTwiceIsAdjudicated(DriverCase):
                 loop.VERDICT.write_text(json.dumps({"verdict": "OK"}))
             return "STATUS: pass"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(self.cfg, st)
         return st, prompts
 
@@ -5319,9 +5294,7 @@ class TestPauseAfter(DriverCase):
                     {"verdict": "PASS", "reason": "ok"}))
             return "STATUS: pass"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         self.assertEqual(calls.count("generator"), 2)
         self.assertNotIn("paused", [e["event"] for e in self.events()])
@@ -5521,9 +5494,7 @@ class TestNetworkWaitIsNotAnAttempt(DriverCase):
             st["session_died_why"] = "connectivity not restored"
             return ""
         loop.claude = dead
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         rows = self.ledger()
         self.assertEqual(len(rows), 1)
@@ -5829,9 +5800,7 @@ class TestPauseAfterSurvivesTheDriversSaves(DriverCase):
         loop.STATE.write_text(json.dumps({"phase": "gate"}))
         self.run_cmd("pause-after", "Phase 1, Step 1")
         # the driver, holding its own copy, saves without the key
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.save(loop.STATE, st)
         self.results({"metrics": {"acc": 0.5}})
         loop.git_commit = lambda msg: "abc1234"
@@ -5973,9 +5942,7 @@ class TestCarry(DriverCase):
                 loop.VERDICT.write_text(json.dumps(v))
             return "done"
         loop.claude = fake
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         loop.phase_iterate(cfg, st)
         loop.phase_final(cfg, st)
         gens = [p for r, p in prompts if r == "generator"]
@@ -6113,9 +6080,7 @@ class TestAutoDeferredTrialAudit(DriverCase):
         return [p for r, p in prompts if r == "evaluator" and "Mode 2" in p]
 
     def test_a_no_code_trial_rerun_is_deferred_but_first_green_is_not(self):
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         audits = self.drive(st)
         # Step 1: acc goes green for the first time -> audited.
         # Step 2: same harness, nothing changed, not first green -> free.
@@ -6128,9 +6093,7 @@ class TestAutoDeferredTrialAudit(DriverCase):
     def test_a_trial_ticket_that_changed_code_is_still_audited(self):
         fp = iter("abcdefghij")
         loop.tree_fingerprint = lambda: next(fp)
-        st = {"phase": "iterate", "iteration": 0, "replans": 0,
-              "spent_usd": 0.0, "gpu_hours": 0.0, "criteria_green": [],
-              "started_epoch": loop.time.time()}
+        st = self.iterate_state()
         self.assertEqual(len(self.drive(st)), 3)
 
 

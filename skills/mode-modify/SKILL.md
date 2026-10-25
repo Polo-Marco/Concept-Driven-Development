@@ -28,16 +28,11 @@ Modify has two entry intents. Detect which from the request:
 There is no separate `[debug]` mode; the bug sub-flow below absorbs it.
 Only one work order (`Plan.md` OR `Triage.md`) exists at a time.
 
-## Audit-Finding Fast Path — `[modify] @Evaluation.md` (v8.1.16)
+## Audit-Finding Fast Path — `[modify] @Evaluation.md`
 
-The cheapest legitimate route from an Evaluator's findings to a fix.
-Four manual `[modify]` loops in under three hours for a two-line fix
-(rated **bad**) were long because each ran the full Ask/Spec preamble
-on findings that already carried a reproduced root cause, and each
-plan shipped the next audit's class
-(`journal/from-aibench-retro-20260902.md`, problem 6 and rec 7;
-`journal/retro-20260824-aibench.md`, rec 6). Two rules the sessions
-already followed, written down so they stop being judgment calls:
+The cheapest legitimate route from an Evaluator's findings to a fix:
+the findings already carry a reproduced root cause, so the full
+Ask/Spec preamble is skipped. Two rules:
 
 1. **A finding that lives entirely in Planner-owned files** (Concept,
    Architecture, README, skills, nested `CLAUDE.md`, `Plan.md` prose)

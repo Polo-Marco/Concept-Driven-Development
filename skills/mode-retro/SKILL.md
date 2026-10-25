@@ -67,16 +67,14 @@ overreach"). Cite the specific journal entries. The driver's Outcome
 block now carries the counts a retro used to reconstruct by hand —
 review rounds, Monitor polls and non-HEALTHY verdicts, GPU-hours, each
 trial's wall time, `Filled by:` on the Feedback block — and
-`journal/raw/<record>/` keeps the ledger and events of every closed loop
-(v8.1.19); read them before opening a trace.
+`journal/raw/<record>/` keeps the ledger and events of every closed
+loop; read them before opening a trace.
 
 ### Step 2b: Harness staleness check (every retro; mandatory on a new model generation)
 
-`CLAUDE.md` and `loop-protocol.md` have promised this step since v8.0;
-three of the seven 2026-10-15 retros noted the skill did not contain it
-(`journal/retro-20261015-cross-project.md`, R11). Every loop component
-encodes an assumption about what a role's model cannot be trusted to
-do, and assumptions go stale. For each component, one table row:
+Every loop component encodes an assumption about what a role's model
+cannot be trusted to do, and assumptions go stale. For each component,
+one table row:
 
 | component | assumption it encodes | fired (true / false) | verdict |
 |---|---|---|---|
@@ -98,12 +96,11 @@ misfiring for a reason the model generation explains.
 
 Run `git log <framework-tag>..HEAD --oneline -- .claude/ skills/
 CLAUDE.md` (the tag the project was deployed from; `status` prints
-`+local(N: …)` when the tree differs from the shipped manifest,
-v8.1.20). Every commit listed is a hot-patch that exists only in this
-project. For each, produce `git format-patch -1 <sha> -o
+`+local(N: …)` when the tree differs from the shipped manifest). Every
+commit listed is a hot-patch that exists only in this project. For
+each, produce `git format-patch -1 <sha> -o
 <framework-repo>/journal/hotfixes/` in the retro's Recommendations and
-say what it fixed. Four deployments patched the same three driver and
-hook defects on 2026-10-15 and none of the eleven patches had come home.
+say what it fixed.
 
 ### Step 3: Recommend (minimal, concrete)
 For each pattern, recommend the smallest fix, targeted at the right
