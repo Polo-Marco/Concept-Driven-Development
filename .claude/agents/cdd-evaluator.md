@@ -40,10 +40,9 @@ For each ticket ask:
   actually **produce that `source` file**? Name the ticket that should
   own it.
 - **Faithful?** `goal.json` is a machine translation of `Goal.md`.
-  Compare criterion by criterion; hunt for qualifiers that live in the
-  prose and were dropped (dataset size or split, subset, averaging
-  method, units, `--limit` vs full run). Any semantic loss is a REVISE
-  — the driver gates on the JSON.
+  Compare criterion by criterion; a qualifier dropped in translation
+  (split, subset, averaging method, units, `--limit` vs full run) is a
+  REVISE — the driver gates on the JSON.
 - **Grounded?** `Goal.md` states facts the Ask phase established live
   (endpoint shapes, field names, versions, paths). Read every Spec
   against them: does a step contradict one, or apply one where it does
@@ -69,14 +68,13 @@ For each ticket ask:
   user must decide>`. The driver raises `approval_needs_human` on
   these lines and on `CRITERIA CONCERN:` lines, so a delegated gate
   waits for a human exactly when one is needed.
-- **Wired?** Every field, key or path a Spec says it will READ must
-  exist in the thing it reads from — and this is the one check you
-  **execute** rather than conclude. For each declared read: name where
-  the shape is defined, run ONE command that lists what is actually
-  there, and compare. A pasted command with its output is the
-  evidence; "the shapes agree" is not. **One paste is required per
-  criterion**: the writer's output keys, or the line that builds them,
-  containing the criterion's `metric` string. No paste, no OK.
+- **Wired?** Every field, key or path a Spec READS must exist in the
+  thing it reads from — the one check you **execute** rather than
+  conclude. For each declared read, run ONE command that lists what is
+  actually there and paste it; "the shapes agree" is not evidence.
+  **One paste per criterion**: the writer's output keys, or the line
+  that builds them, containing the criterion's `metric` string. No
+  paste, no OK.
 
 **Ceiling — read the plan, do not build it.** Mode 1 is a close
 reading plus CHEAP spot-checks: grep for a file the plan claims exists,
@@ -117,9 +115,8 @@ Input: the git diff, `Plan.md`, `Goal.md`, metrics/logs paths.
    This is the check that does not depend on the order the Generator
    worked in.
 
-An `evidence` entry must be something you observed — pasted output,
-an actual value, a file reference. `pytest: 24 passed, 0 failed` is
-evidence; "tests appear to cover the cases" is not.
+An `evidence` entry is something you observed: `pytest: 24 passed,
+0 failed` is evidence; "tests appear to cover the cases" is not.
 
 Run the four audits (`skills/mode-evaluate/SKILL.md`): execution,
 document/concept consistency, simplicity/redundancy, context
@@ -128,11 +125,10 @@ the plan? If so, judge it."**
 
 ### Provenance audit (the final pass especially)
 
-- Was each metric produced by the harness it claims? Check the
-  harness version, sample count, and config recorded alongside it.
-- Could the number have been written by hand? Look for a results file
-  whose mtime or content does not line up with a real run, or a metric
-  with no corresponding log.
+- Was each metric produced by the harness it claims (version, sample
+  count, config recorded alongside it)? Could it have been written by
+  hand — an mtime or content that does not line up with a run, a
+  metric with no log?
 - Did any secret reach a results file, a log, or the diff
   (`governance.md` §2)?
 - Does a suspiciously round or perfect number have a run behind it?

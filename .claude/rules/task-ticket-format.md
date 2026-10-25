@@ -167,10 +167,8 @@ Before ending the Planner session, verify for each ticket:
 - Is each `source` a path only THIS loop can write (`evidence_gate()`
   refuses a stable pointer or an unversioned file)?
 - Does the Environment Setup ticket's Run Command EXERCISE a pinned
-  harness's runtime path (import + one trivial invocation), not only
-  install it?
-- Does any Run Command run longer than ~5 minutes? Then it is a
-  `Trial:` or launched detached.
+  harness's runtime path, not only install it?
+- Any Run Command over ~5 minutes is a `Trial:` or launched detached.
 - **Every number** a Test Contract, tolerance, routing rule or Spec
   premise depends on names its probe (`probe: <command> → <output>` in
   `Goal.md`, or one you ran). A tolerance states its dtype and comes
