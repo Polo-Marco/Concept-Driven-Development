@@ -763,3 +763,22 @@ of each rule file holds the full original prose.
 - **Harness staleness step; hot-patch inventory** (mode-retro, R11 /
   v8.1.20): three of seven retros noted the step was missing; four
   deployments patched the same three defects and none came home.
+
+### 8.2.1 toy run (2026-10-25, ~/cdd-toy, $4.79, 21 min, 4/4 tickets)
+- **`approval_needs_human` label is case-sensitive with a colon**: the
+  first live gate matched the review's own heading "**Open
+  assumptions.** Read all 5 ..." and raised the event on a review that
+  had found nothing.
+- **A shell comment is data on every net**: the Evaluator's
+  `cp -r src tests scripts /tmp/eval_sandbox/   # restore clean copy`
+  was denied as a write to 'copy'. Seventh false positive of the
+  "decide on the token" class; the other four denials in the run were
+  correct (in-tree `git checkout`, an in-tree Edit, two in-tree
+  `rm results/metrics.json`).
+- **`status` role column widened to 16** for `evaluator_audit`.
+- Observed working: audit tier on haiku for tickets 1–3 and sonnet for
+  the first green and final; `carry` written by the contract review,
+  handed to every dispatch, marked resolved at the final audit; red
+  logs on all four tickets (ticket 1's was a passing run — the gate
+  checks presence, the planted failure checks validity); `approve
+  --note`; `close` with `journal/raw/`.

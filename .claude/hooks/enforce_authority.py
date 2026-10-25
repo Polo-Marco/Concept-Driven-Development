@@ -314,6 +314,26 @@ QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 # (journal/retro-20261015-cross-project.md, A4: JEV loop 6). A span that
 # spans lines cannot be a path.
 _META = re.compile(r"[|;&<>\n]")
+# 8.2.1: a shell COMMENT is data on every net. The first live run of
+# 8.2.1 denied a read-only Evaluator's `cp -r src tests scripts
+# /tmp/eval_sandbox/   # restore clean copy` as a write to 'copy' -- the
+# trailing-argument rule read the last word of the comment as cp's
+# destination. A `#` opens a comment only at the start of a word and
+# outside quotes, so quoted spans are masked (same length) before the
+# comment positions are found, and the original text is cut there.
+_COMMENT = re.compile(r"(?:^|(?<=\s))#[^\n]*")
+
+
+def strip_comments(cmd: str) -> str:
+    masked = QUOTED.sub(lambda q: "x" * len(q.group(0)), cmd)
+    out, i = [], 0
+    for m in _COMMENT.finditer(masked):
+        out.append(cmd[i:m.start()])
+        i = m.end()
+    out.append(cmd[i:])
+    return "".join(out)
+
+
 LAST_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(sed|mv|cp|install|truncate)\b")
 ALL_ARG_CMDS = re.compile(r"^\s*(?:sudo\s+)?(rm|tee|shred)\b")
 DD_OF = re.compile(r"\bdd\b[^|;&]*?\bof=([^\s|;&]+)")
@@ -609,7 +629,7 @@ def main() -> None:
 
     # ---- Bash: block git mutations for every agent role -------------
     if tool == "Bash":
-        cmd = tin.get("command", "")
+        cmd = strip_comments(tin.get("command", ""))   # 8.2.1
         # A heredoc BODY is data, not shell — for EVERY scan on this
         # branch, not only the target scan. v8.1.13: the truncation
         # lived inside bash_write_targets(), so the git net and the

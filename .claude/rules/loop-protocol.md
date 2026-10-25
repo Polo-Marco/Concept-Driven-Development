@@ -26,8 +26,8 @@ user. This file states the rules. The incident behind each one lives in
    - `Write`/`Edit` are decided exactly. `Bash` is scanned for write
      targets (redirects, `tee`, `sed -i`, `mv`/`cp`, `rm`, `dd`) and
      git subcommands, deciding on the RESOLVED target, never on a
-     token: a redirect's own syntax, a quoted span, a heredoc body and
-     a `grep` pattern are data; `cd` and assignments are tracked per
+     token: a redirect's own syntax, a quoted span, a heredoc body, a
+     shell comment and a `grep` pattern are data; `cd` and assignments are tracked per
      shell segment; anything still unresolved (`$VAR`, an interpreter
      escape such as `python3 -c`) fails OPEN by design. Real
      confinement is the VM plus the worktree, not the hook.

@@ -6043,6 +6043,17 @@ class TestApprovalNeedsHuman(DriverCase):
         (self.tmp / "Evaluation.md").write_text("# Evaluation\n\nOK.\n")
         self.assertEqual(self.wait(), [])
 
+    def test_prose_about_the_label_is_not_the_label(self):
+        """First live run (toy, 2026-10-25): the Evaluator's heading
+        "**Open assumptions.** Read all 5 Plan.md Assumptions ..." and
+        its sentence "No `OPEN ASSUMPTION:` lines" raised the event on a
+        review that had found nothing for a human."""
+        (self.tmp / "Evaluation.md").write_text(
+            "**Open assumptions.** Read all 5 Plan.md Assumptions. All are "
+            "the Planner's.\n`OPEN ASSUMPTION:` lines: none written.\n"
+            "- criteria concern: none\n")
+        self.assertEqual(self.wait(), [])
+
 
 class TestAutoDeferredTrialAudit(DriverCase):
     """opd-pipe problem 6: `Audit: deferred` was written once in 20
@@ -6162,8 +6173,44 @@ class TestEvaluatorAuditTier(DriverCase):
         st = {"roles": {"evaluator_audit": {"sessions": 3, "minutes": 12.0,
                                              "usd": 1.5}}}
         text = "\n".join(loop.role_table(cfg, st, live=False))
-        self.assertIn("evaluator_audit", text)
+        self.assertIn("evaluator_audit ", text,
+                      "the role column must be wide enough for the tier")
         self.assertIn("claude-sonnet-5-5", text)
+
+
+class TestHookCommentsAreData(HookCaller, unittest.TestCase):
+    """8.2.1 toy run, 17:19:08: a read-only Evaluator's `cp ... /tmp/x/
+    # restore clean copy` was denied as a shell write to 'copy'."""
+
+    def test_the_live_false_positive(self):
+        self.assertEqual(self.call("evaluator", "Bash", {"command":
+            "cd /repo\ncp -r src tests scripts /tmp/eval_sandbox/   "
+            "# restore clean copy\ncd /tmp/eval_sandbox\npython3 x.py"}),
+            self.ALLOW)
+
+    def test_a_comment_naming_git_or_rm_is_not_a_command(self):
+        self.assertEqual(self.call("generator", "Bash", {"command":
+            "# git commit happens in the driver\npytest -q"}), self.ALLOW)
+        self.assertEqual(self.call("evaluator", "Bash", {"command":
+            "ls results  # do not rm goal.json here"}), self.ALLOW)
+
+    def test_a_quoted_hash_is_not_a_comment(self):
+        # the write after the quoted '#' is still a write to a core file
+        self.assertEqual(self.call("generator", "Bash", {"command":
+            "echo '# heading' > Architecture.md"}), self.DENY)
+
+    def test_a_real_write_before_the_comment_is_still_decided(self):
+        self.assertEqual(self.call("generator", "Bash", {"command":
+            "cp a.txt Plan.md  # harmless"}), self.DENY)
+        self.assertEqual(self.call("generator", "Bash", {"command":
+            'git commit -m "x"  # note'}), self.DENY)
+
+    def test_strip_comments_unit(self):
+        sys.path.insert(0, str(HOOK.parent))
+        import enforce_authority as ea
+        self.assertEqual(ea.strip_comments("a # b\nc"), "a \nc")
+        self.assertEqual(ea.strip_comments("echo '#x' > f"), "echo '#x' > f")
+        self.assertEqual(ea.strip_comments("x#y"), "x#y")
 
 
 if __name__ == "__main__":

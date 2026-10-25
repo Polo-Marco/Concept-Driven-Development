@@ -1349,9 +1349,12 @@ def pause_requested() -> str:
         return ""
 
 
+# Case-SENSITIVE and the label must be followed by a colon: the first
+# live run (toy, 2026-10-25) matched the Evaluator's own prose heading
+# "**Open assumptions.** Read all 5 ..." and raised the event on a
+# review that had found none.
 GATE_CONCERN = re.compile(
-    r"^\s*[-*]?\s*\**(CRITERIA CONCERN|OPEN ASSUMPTION)\**:?\**\s*(.*)",
-    re.I)
+    r"^\s*[-*]?\s*\**(CRITERIA CONCERN|OPEN ASSUMPTION)\**:\**\s*(.*)")
 
 
 def gate_concerns() -> list:
@@ -3307,7 +3310,7 @@ def role_table(cfg: dict, st: dict, live: bool = True) -> list:
     run = st.get("session_running") or {}
     # v8.1.18: 28-wide model column -- `claude-haiku-4-5-20251001low`
     # overflowed the 22 (JEVI; retro-20261015, C7).
-    rows = ["roles       model                       effort  sessions  time     spend"]
+    rows = ["roles             model                       effort  sessions  time     spend"]
     shown = list(ROLES) + [t for t in MODEL_TIERS
                      if t in cfg.get("models", {}) or t in st.get("roles", {})]
     for role in shown:
@@ -3317,7 +3320,7 @@ def role_table(cfg: dict, st: dict, live: bool = True) -> list:
         mins = t.get("minutes", 0.0)
         clock = f"{int(mins // 60)}h{int(mins % 60):02d}m" if mins >= 60 \
             else f"{mins:.0f}m"
-        line = (f"  {role:<10}{model:<28}{effort:<8}{t.get('sessions', 0):<10}"
+        line = (f"  {role:<16}{model:<28}{effort:<8}{t.get('sessions', 0):<10}"
                 f"{clock:<9}${t.get('usd', 0.0):.2f}")
         if live and run.get("role") == role:
             up = (time.time() - run.get("started_epoch", time.time())) / 60
